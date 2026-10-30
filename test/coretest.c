@@ -184,6 +184,87 @@ static void test_html(void)
     }
 }
 
+
+static void test_css2(void)
+{
+    expect_text("<style>.menu a{display:none} div > b {display:none} #x .y i{display:none}</style>"
+                "<div class=menu><p><a href=1>gone</a></p></div><a href=2>stays</a>"
+                "<div><b>gone</b></div><p><b>kept</b></p>"
+                "<div id=x><span class='y z'><i>gone</i></span></div><span class=y><i>kept</i></span>", "|stays|kept|kept");
+    expect_text("<style>p.a{display:none} p{display:block} .b.c{display:none}</style><p class=a>x</p><p class='c b'>y</p><p class=b>z</p>", "|z");
+    expect_text("<style>ul li + li{display:none} a:hover{display:none} [type]{display:none}</style><ul><li>a<li>b</ul>", "|\xE2\x80\xA2" "a|\xE2\x80\xA2" "b");
+    {
+        /* specificity: the id rule wins although it comes first */
+        BwDoc* d = parse("<style>#t{color:#ff0000} p{color:#00ff00} .c{color:#0000ff}</style><p id=t class=c>x</p>");
+        unsigned int i;
+        int col = -1;
+        for (i = 0; i < d->opCount; i++) if (d->ops[i].type == BW_OP_TEXT) col = d->ops[i].color;
+        CHECK(col == 0xFF0000);
+        bw_doc_free(d);
+    }
+    {
+        /* a link colored by a descendant rule keeps it; a plain one gets the link color */
+        BwDoc* d = parse("<style>nav a{color:#ffffff;text-decoration:none}</style><nav><a href=a>n</a></nav><a href=b>m</a>");
+        unsigned int i;
+        int c1 = -1, c2 = -1, f1 = -1;
+        for (i = 0; i < d->opCount; i++) if (d->ops[i].type == BW_OP_TEXT) {
+            if (d->pool[d->ops[i].off] == 'n') { c1 = d->ops[i].color; f1 = d->ops[i].flags; }
+            if (d->pool[d->ops[i].off] == 'm') c2 = d->ops[i].color;
+        }
+        CHECK(c1 == 0xFFFFFF && !(f1 & BW_OPF_UNDERLINE));
+        CHECK(c2 == d->linkColor);
+        bw_doc_free(d);
+    }
+    {
+        BwDoc* d = parse("<link rel=stylesheet href=/a.css><link rel='alternate stylesheet' href=b.css><link rel=stylesheet media=print href=p.css>"
+                         "<link rel=icon href=i.ico><style>@import url(\"imp.css\"); @import 'pr.css' print; p{}</style>x");
+        CHECK(d->styleCount == 2);
+        if (d->styleCount == 2) {
+            CHECK(strcmp(d->styleUrls[0], "http://test.cz/a.css") == 0);
+            CHECK(strcmp(d->styleUrls[1], "http://test.cz/dir/imp.css") == 0);
+        }
+        bw_doc_free(d);
+    }
+    {
+        const char* css[2];
+        unsigned int cl[2];
+        const char* h = "<p class=ad>ad</p><p>text</p>";
+        BwDoc* d;
+        char t[256];
+        css[0] = ".ad{display:none}"; cl[0] = (unsigned int)strlen(css[0]);
+        css[1] = 0; cl[1] = 0;
+        d = bw_doc_parse_ex(h, (unsigned int)strlen(h), "http://x/", 0, -1, css, cl, 2);
+        doc_text(d, t, sizeof(t));
+        CHECK(strcmp(t, "|text") == 0);
+        CHECK(d->externalCss == 2);
+        bw_doc_free(d);
+    }
+}
+
+static int font_of(const BwDoc* d, unsigned short c)
+{
+    unsigned int i;
+    for (i = 0; i < d->opCount; i++) if (d->ops[i].type == BW_OP_TEXT && d->pool[d->ops[i].off] == c) return d->ops[i].font;
+    return -1;
+}
+
+static void test_sizes(void)
+{
+    BwDoc* d = parse("<style>body{font-size:62.5%} p{font-size:1.4em} .s{font-size:11px} .r{font-size:2rem}</style>"
+                     "<body>a<p>b<span class=s>c</span></p><h1>d</h1><small>e</small><p class=r>f</p><font size=5>g</font></body>");
+    CHECK(BW_FONT_SIZE(font_of(d, 'a')) == 0);      /* 10 px */
+    CHECK(BW_FONT_SIZE(font_of(d, 'b')) == 1);      /* 14 px */
+    CHECK(BW_FONT_SIZE(font_of(d, 'c')) == 0);
+    CHECK(BW_FONT_SIZE(font_of(d, 'd')) == 2 && (font_of(d, 'd') & BW_FONT_BOLD));   /* 2 x 10 px */
+    CHECK(BW_FONT_SIZE(font_of(d, 'e')) == 0);
+    CHECK(BW_FONT_SIZE(font_of(d, 'f')) == 3);      /* 32 px */
+    CHECK(BW_FONT_SIZE(font_of(d, 'g')) == 2);
+    bw_doc_free(d);
+    d = parse("<h1>x</h1><h2>y</h2><h3>z</h3><p>w</p>");
+    CHECK(BW_FONT_SIZE(font_of(d, 'x')) == 3 && BW_FONT_SIZE(font_of(d, 'y')) == 2 && BW_FONT_SIZE(font_of(d, 'z')) == 2 && BW_FONT_SIZE(font_of(d, 'w')) == 1);
+    bw_doc_free(d);
+}
+
 static void test_forms(void)
 {
     BwDoc* d = parse("<form action='/s' method=get><input name=q value='a b'><input type=hidden name=h value='\xC5\xA1'>"
@@ -301,6 +382,9 @@ static char* read_file(const char* name, unsigned int* len)
     return d;
 }
 
+static const char* gCss = 0;
+static unsigned int gCssLen = 0;
+
 static void dump(const char* name)
 {
     unsigned int len, i;
@@ -309,7 +393,7 @@ static void dump(const char* name)
     BwLayout* l;
     int lastY = -1000;
     if (!data) { printf("cannot read %s\n", name); return; }
-    d = bw_doc_parse(data, len, "http://example.cz/", 0, -1);
+    d = bw_doc_parse_ex(data, len, "http://example.cz/", 0, -1, &gCss, &gCssLen, gCss ? 1 : 0);
     l = bw_layout(d, 500, &kM);
     printf("ops %u, pool %u, links %u, images %u, controls %u, css rules %u, height %d, boxes %u\n",
            d->opCount, d->poolLen, d->linkCount, d->imageCount, d->controlCount, d->cssRules, l->height, l->boxCount);
@@ -369,10 +453,19 @@ static void fuzz(const char* name)
 int main(int argc, char** argv)
 {
     if (argc == 2) { dump(argv[1]); return 0; }
+    if (argc == 4 && strcmp(argv[1], "-css") == 0) {
+        unsigned int n;
+        gCss = read_file(argv[2], &n);
+        gCssLen = n;
+        dump(argv[3]);
+        return 0;
+    }
     if (argc == 3 && strcmp(argv[1], "-fuzz") == 0) { fuzz(argv[2]); return 0; }
     test_urls();
     test_charsets();
     test_html();
+    test_css2();
+    test_sizes();
     test_forms();
     test_layout();
     test_cookies();

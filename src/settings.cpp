@@ -14,6 +14,7 @@ CBrSettings* CBrSettings::NewL(RFs& aFs)
 CBrSettings::CBrSettings(RFs& aFs) : iFs(aFs)
     {
     iImages = ETrue;
+    iStyles = ETrue;
     iLogOn = ETrue;
     iMouseOn = EFalse;
     iFullScreen = EFalse;
@@ -48,6 +49,7 @@ void CBrSettings::LoadL()
         TPtrC8 key = line.Left(eq);
         TPtrC8 val = line.Mid(eq + 1);
         if (key == _L8("images")) iImages = val != _L8("0");
+        else if (key == _L8("styles")) iStyles = val != _L8("0");
         else if (key == _L8("log")) iLogOn = val != _L8("0");
         else if (key == _L8("mouse")) iMouseOn = val == _L8("1");
         else if (key == _L8("fullscreen")) iFullScreen = val == _L8("1");
@@ -66,6 +68,7 @@ void CBrSettings::Save()
     if (f.Replace(iFs, KSettingsFile, EFileWrite) != KErrNone) { IgLog(_L("settings: cannot write")); return; }
     TBuf8<1200> d;
     d.Append(_L8("images=")); d.AppendNum(iImages ? 1 : 0);
+    d.Append(_L8("\r\nstyles=")); d.AppendNum(iStyles ? 1 : 0);
     d.Append(_L8("\r\nlog=")); d.AppendNum(iLogOn ? 1 : 0);
     d.Append(_L8("\r\nmouse=")); d.AppendNum(iMouseOn ? 1 : 0);
     d.Append(_L8("\r\nfullscreen=")); d.AppendNum(iFullScreen ? 1 : 0);

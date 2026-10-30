@@ -33,7 +33,10 @@ enum TBrCommands
     EBrCmdAbout,
     EBrCmdTop,
     EBrCmdBottom,
-    EBrCmdStartPage
+    EBrCmdStartPage,
+    EBrCmdFind,
+    EBrCmdFindNext,
+    EBrCmdStyles
     };
 
 enum TBrControls

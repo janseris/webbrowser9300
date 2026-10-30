@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.1");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.1");
+_LIT(KBrVersion, "0.2");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.2");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -200,6 +200,42 @@ private:
     TBuf8<128> iHost;
     };
 
+class MStyleObserver
+    {
+public:
+    virtual void StyleArrived(const TDesC8& aUrl, const TDesC8* aCss) = 0;   // aCss NULL: failed
+    virtual void StylesDone() = 0;                                          // the queue is empty
+    };
+
+class CStyleFetcher : public CBase, public MHttpObserver
+    {
+public:
+    static CStyleFetcher* NewL(MStyleObserver& aObserver, BwCookieJar& aCookies);
+    ~CStyleFetcher();
+    void AddL(const TDesC8& aUrl);
+    void StartL();
+    void Stop();
+    TBool Busy() const { return iCurrent != NULL || iQueue.Count() > 0; }
+    TInt Waiting() const { return iQueue.Count() + (iCurrent ? 1 : 0); }
+    void HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders, const TDesC8& aBody);
+    void HttpProgress(const TDesC& aText);
+private:
+    CStyleFetcher(MStyleObserver& aObserver, BwCookieJar& aCookies);
+    void SendL();
+    void Done(const TDesC8* aCss);
+    static TInt WatchdogTick(TAny* aSelf);
+    MStyleObserver& iObserver;
+    BwCookieJar& iCookies;
+    CHttpClient* iHttp;
+    CPeriodic* iWatchdog;
+    RPointerArray<HBufC8> iQueue;
+    HBufC8* iCurrent;               // the URL as the page names it (the cache key)
+    HBufC8* iCurrentFinal;          // after redirects
+    TInt iRedirects;
+    TInt iLastBytes, iIdleTicks;
+    TBuf8<128> iHost;
+    };
+
 // ------------------------------------------------------------------ images.cpp
 
 class CFbsBitmap;
@@ -229,6 +265,7 @@ public:
     void SetEnabled(TBool aOn) { iEnabled = aOn; }
     TInt Pending() const { return iQueue.Count() + (iCurrent ? 1 : 0); }
     TInt CachedKb() const { return iBytes / 1024; }
+    TBool FullSize(const char* aUrl, TSize& aSize);     // a cached picture's original size
     // MHttpObserver
     void HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders, const TDesC8& aBody);
     void HttpProgress(const TDesC& aText);
@@ -309,6 +346,7 @@ class CBrSettings : public CBase
 public:
     static CBrSettings* NewL(RFs& aFs);
     TBool iImages;
+    TBool iStyles;
     TBool iLogOn;
     TBool iMouseOn;
     TBool iFullScreen;
@@ -357,6 +395,7 @@ public:
     TInt Focus() const { return iFocus; }
     void ScrollToAnchor(const TDesC8& aName);
     void ScrollTo(TInt aY);
+    TBool Find(const TDesC& aText, TBool aNext);
     void ShowListL(TInt aId, const TDesC& aTitle, const RPointerArray<HBufC>& aItems, TInt aSelected, MListObserver& aObserver);
     TBool ListOpen() const { return iListOpen; }
     void SetPointerOn(TBool aOn);
@@ -411,6 +450,7 @@ private:
     TBool iRelayoutPending;
     TInt iLayoutMs;
     TBool iPointerOn;
+    TInt iFindBox, iFindOff, iFindLen;     // the last match (box index; -1 none)
     // the list
     TBool iListOpen;
     TInt iListId;
@@ -422,6 +462,18 @@ private:
     };
 
 // ------------------------------------------------------------------ app.cpp
+
+// a password: the text is not shown
+class CSecretDialog : public CEikDialog
+    {
+public:
+    CSecretDialog(TDes& aText, const TDesC& aTitle) : iText(aText), iTitle(aTitle) {}
+    void PreLayoutDynInitL();
+    TBool OkToExitL(TInt aButtonId);
+private:
+    TDes& iText;
+    const TDesC& iTitle;
+    };
 
 class CTextDialog : public CEikDialog
     {
@@ -445,7 +497,8 @@ struct THistoryEntry
     TBool iWasPost;
     };
 
-class CBrAppUi : public CEikAppUi, public MPageObserver, public MImageObserver, public MHttpObserver, public MListObserver
+class CBrAppUi : public CEikAppUi, public MPageObserver, public MImageObserver, public MHttpObserver, public MListObserver,
+                 public MStyleObserver
     {
 public:
     void ConstructL();
@@ -482,11 +535,17 @@ public:
     void HttpProgress(const TDesC& aText);
     // MListObserver
     void ListChosen(TInt aListId, TInt aIndex);
+    // MStyleObserver
+    void StyleArrived(const TDesC8& aUrl, const TDesC8* aCss);
+    void StylesDone();
 
     void Say(const TDesC& aText);
 
 private:
-    void ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus);
+    void ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus, TBool aReparse = EFalse);
+    BwDoc* ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl, const char* aCt, TBool aReparse);
+    TInt FindCss(const TDesC8& aUrl) const;
+    void FindL(TBool aNext);
     void ShowInternalL(const TDesC8& aUrl);
     void ShowLoadedL(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8*& aBody);
     HBufC8* StartPageLC();
@@ -538,6 +597,13 @@ private:
     HBufC8* iRefreshUrl;
     TInt iLoadStartMs, iParseMs, iDownloadMs, iPageBytes;
     TBool iSubmitAfterEdit;
+    CStyleFetcher* iStyles;
+    RPointerArray<HBufC8> iCssUrls;     // the stylesheet cache, oldest first (an empty text: failed)
+    RPointerArray<HBufC8> iCssTexts;
+    TInt iCssBytes;
+    TInt iStylesMissing;
+    TInt iStylesGot;                    // stylesheets that arrived for this page
+    HBufC* iFindText;
     };
 
 class CBrDocument : public CEikDocument

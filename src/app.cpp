@@ -7,6 +7,7 @@
 #include <eikmenub.h>
 #include <eikbtgpc.h>
 #include <eikedwin.h>
+#include <eikseced.h>
 #include <eikvcurs.h>
 #include <apgcli.h>
 #include <hal.h>
@@ -24,6 +25,7 @@ const TInt KHistoryMax = 40;
 const TInt KCacheBodies = 6;                    // pages kept in RAM for Back
 const TInt KCacheBytes = 1500 * 1024;
 const TInt KCacheOneMax = 500 * 1024;
+const TInt KCssCacheBytes = 900 * 1024;           // stylesheets kept for the next pages of a site
 
 enum { EListSelect = 1, EListInfo = 2 };
 enum { EHelperNone = 0, EHelperUpdate, EHelperLog, EHelperShot };
@@ -44,6 +46,26 @@ TBool CTextDialog::OkToExitL(TInt aButtonId)
         {
         CEikEdwin* ed = (CEikEdwin*)Control(EBrTextField);
         ed->GetText(iText);
+        }
+    return ETrue;
+    }
+
+void CSecretDialog::PreLayoutDynInitL()
+    {
+    SetTitleL(iTitle);
+    CEikSecretEditor* ed = (CEikSecretEditor*)Control(EBrTextField);
+    ed->SetMaxLength(Min(iText.MaxLength(), 128));
+    ed->SetText(iText.Left(128));
+    }
+
+TBool CSecretDialog::OkToExitL(TInt aButtonId)
+    {
+    if (aButtonId == EEikBidOk)
+        {
+        CEikSecretEditor* ed = (CEikSecretEditor*)Control(EBrTextField);
+        TBuf<128> t;
+        ed->GetText(t);
+        iText.Copy(t.Left(iText.MaxLength()));
         }
     return ETrue;
     }
@@ -168,6 +190,7 @@ void CBrAppUi::ConstructL()
     iLoader = CPageLoader::NewL(*this, iCookies);
     iLoader->Http().SetPromptForAccessPoint(iSettings->iPromptAccessPoint);
     iHelperHttp = CHttpClient::NewL();
+    iStyles = CStyleFetcher::NewL(*this, iCookies);
     iRefreshTimer = CPeriodic::NewL(CActive::EPriorityStandard);
     iCurrentUrl = HBufC8::NewL(1);
     iView = CBrView::NewL(ClientRect(), *this, *iImages, *iFonts);
@@ -189,6 +212,10 @@ CBrAppUi::~CBrAppUi()
     delete iRefreshTimer;
     delete iRefreshUrl;
     delete iExitCallback;
+    delete iStyles;
+    iCssUrls.ResetAndDestroy();
+    iCssTexts.ResetAndDestroy();
+    delete iFindText;
     delete iLoader;
     delete iImages;
     delete iHelperHttp;
@@ -277,6 +304,13 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
         case EBrCmdHistory: OpenUrlL(_L8("about:history")); break;
         case EBrCmdAddBookmark: AddBookmarkL(); break;
         case EBrCmdPageInfo: PageInfoL(); break;
+        case EBrCmdFind: FindL(EFalse); break;
+        case EBrCmdFindNext: FindL(ETrue); break;
+        case EBrCmdStyles:
+            iSettings->iStyles = !iSettings->iStyles;
+            iSettings->Save();
+            Say(iSettings->iStyles ? _L("Stylesheets on (from the next page)") : _L("Stylesheets off (from the next page)"));
+            break;
         case EBrCmdSetHome: HomeDialogL(); break;
         case EBrCmdImages:
             iSettings->iImages = !iSettings->iImages;
@@ -374,6 +408,7 @@ void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
     if (aResourceId == R_BR_MENU_VIEW)
         {
         aMenuPane->SetItemButtonState(EBrCmdImages, iSettings->iImages ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdStyles, iSettings->iStyles ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdFullScreen, iSettings->iFullScreen ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdMouse, iSettings->iMouseOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextSmaller, iSettings->iTextSize < 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
@@ -612,7 +647,8 @@ void CBrAppUi::TrimHistoryCache()
     for (TInt i = iHistory.Count() - 1; i >= 0; i--)
         {
         THistoryEntry& e = iHistory[i];
-        if (!e.iBody) continue;
+        if (!e.iBody || i == iHistoryPos) continue;
+        if (e.iBody->Length() > KCacheOneMax) { delete e.iBody; e.iBody = NULL; continue; }
         if (kept >= KCacheBodies || bytes + e.iBody->Length() > KCacheBytes) { delete e.iBody; e.iBody = NULL; continue; }
         kept++;
         bytes += e.iBody->Length();
@@ -621,8 +657,95 @@ void CBrAppUi::TrimHistoryCache()
 
 // ------------------------------------------------------------------ pages
 
-void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus)
+// The external stylesheets of a parsed page from the cache: parse again with them. The ones
+// not cached yet are fetched (unless this is the parse after they came).
+BwDoc* CBrAppUi::ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl, const char* aCt, TBool aReparse)
     {
+    iStylesMissing = 0;
+    if (!aReparse) iStylesGot = 0;
+    if (!iSettings->iStyles || !aDoc->styleCount) return aDoc;
+    const char* css[BW_MAX_STYLESHEETS];
+    unsigned int len[BW_MAX_STYLESHEETS];
+    TInt cached = 0;
+    for (TUint i = 0; i < aDoc->styleCount; i++)
+        {
+        css[i] = NULL;
+        len[i] = 0;
+        TPtrC8 u((const TUint8*)aDoc->styleUrls[i]);
+        TInt k = FindCss(u);
+        if (k >= 0)
+            {
+            // used: to the end (the newest)
+            HBufC8* cu = iCssUrls[k]; HBufC8* ct = iCssTexts[k];
+            iCssUrls.Remove(k); iCssTexts.Remove(k);
+            iCssUrls.Append(cu); iCssTexts.Append(ct);
+            k = iCssUrls.Count() - 1;
+            if (iCssTexts[k]->Length()) { css[i] = (const char*)iCssTexts[k]->Ptr(); len[i] = iCssTexts[k]->Length(); cached++; }
+            }
+        else if (!aReparse)
+            {
+            iStylesMissing++;
+            TRAPD(err, iStyles->AddL(u));
+            (void)err;
+            }
+        }
+    if (iStylesMissing)
+        {
+        TRAPD(err, iStyles->StartL());
+        (void)err;
+        }
+    if (!cached) return aDoc;
+    BwDoc* d = bw_doc_parse_ex((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, -1, css, len, aDoc->styleCount);
+    if (!d) return aDoc;
+    bw_doc_free(aDoc);
+    return d;
+    }
+
+TInt CBrAppUi::FindCss(const TDesC8& aUrl) const
+    {
+    for (TInt i = 0; i < iCssUrls.Count(); i++) if (*iCssUrls[i] == aUrl) return i;
+    return -1;
+    }
+
+void CBrAppUi::StyleArrived(const TDesC8& aUrl, const TDesC8* aCss)
+    {
+    // kept even when it failed (empty): no new attempt this run
+    HBufC8* u = aUrl.Alloc();
+    HBufC8* t = aCss ? aCss->Alloc() : HBufC8::New(1);
+    if (!u || !t || iCssUrls.Append(u) != KErrNone) { delete u; delete t; return; }
+    if (iCssTexts.Append(t) != KErrNone) { iCssUrls.Remove(iCssUrls.Count() - 1); delete u; delete t; return; }
+    iCssBytes += t->Length();
+    if (aCss) iStylesGot++;
+    while (iCssBytes > KCssCacheBytes && iCssUrls.Count() > 1)
+        {
+        iCssBytes -= iCssTexts[0]->Length();
+        delete iCssUrls[0]; delete iCssTexts[0];
+        iCssUrls.Remove(0); iCssTexts.Remove(0);
+        }
+    TBuf<40> st;
+    st.Format(_L("Stylesheets: %d to load"), iStyles->Waiting());
+    if (iStyles->Waiting()) iView->SetStatus(st);
+    }
+
+void CBrAppUi::StylesDone()
+    {
+    // the page on the screen again, with them (if it is still the page that asked)
+    if (iHistoryPos < 0 || iHistoryPos >= iHistory.Count()) return;
+    THistoryEntry& e = iHistory[iHistoryPos];
+    if (!iStylesGot || !e.iBody || *e.iUrl != *iCurrentUrl || iLoader->Busy()) return;
+    iStylesGot = 0;
+    TInt scroll = iView->ScrollY();
+    TInt focus = iView->Focus();
+    HBufC8* ct = e.iContentType ? e.iContentType->Alloc() : KNullDesC8().Alloc();
+    if (!ct) return;
+    TRAPD(err, ShowPageL(*e.iUrl, *ct, *e.iBody, scroll, focus, ETrue));
+    delete ct;
+    if (err == KErrNone) iView->SetStatus(_L("Stylesheets applied"));
+    }
+
+void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus, TBool aReparse)
+    {
+    if (!aReparse) iStyles->Stop();
     TUint32 t0 = TickMs();
     HBufC8* zurl = ZeroTermLC(aUrl);
     HBufC8* zct = ZeroTermLC(aContentType);
@@ -641,7 +764,10 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
              aContentType.FindF(_L8("javascript")) >= 0)
         doc = bw_doc_plain((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), bw_charset_sniff((const char*)zct->Ptr(), "", 0));
     else
+        {
         doc = bw_doc_parse((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), -1);
+        if (doc) doc = ApplyStylesL(doc, aBody, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse);
+        }
     CleanupStack::PopAndDestroy(2);
     if (!doc) { Say(_L("Out of memory: the page cannot be shown")); return; }
     iParseMs = (TInt)(TickMs() - t0);
@@ -654,7 +780,13 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         if (doc->failed) l.Append(KOom);
         IgLog(l);
         }
-    iImages->ClearAll();
+    if (!aReparse) iImages->ClearAll();
+    // the sizes of pictures already decoded (a new layout of the same page)
+    for (TUint i = 0; i < doc->imageCount; i++)
+        {
+        TSize full;
+        if (doc->images[i].src && iImages->FullSize(doc->images[i].src, full)) { doc->images[i].natW = full.iWidth; doc->images[i].natH = full.iHeight; }
+        }
     HBufC8* cur = aUrl.AllocL();
     delete iCurrentUrl;
     iCurrentUrl = cur;
@@ -663,13 +795,13 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
     IgLogF2(_L("layout %d ms, %d boxes"), iView->LayoutMs(), iView->BoxCount());
     UpdateTitle();
     // a #fragment
-    if (aScrollY == 0)
+    if (aScrollY == 0 && !aReparse)
         {
         TInt h = aUrl.Locate('#');
         if (h >= 0) iView->ScrollToAnchor(aUrl.Mid(h + 1));
         }
     // <meta http-equiv=refresh>
-    if (doc->refreshUrl && doc->refreshDelay <= 15)
+    if (!aReparse && doc->refreshUrl && doc->refreshDelay <= 15)
         {
         TPtrC8 r((const TUint8*)doc->refreshUrl);
         if (r != aUrl)
@@ -707,17 +839,19 @@ void CBrAppUi::ShowLoadedL(const TDesC8& aUrl, const TDesC8& aContentType, HBufC
     iRestoreScroll = 0;
     iRestoreFocus = -1;
     iNavigatingHistory = EFalse;
-    ShowPageL(aUrl, aContentType, *aBody, scroll, focus);
     THistoryEntry& e = iHistory[iHistoryPos];
     delete e.iContentType;
-    e.iContentType = aContentType.Alloc();
+    e.iContentType = aContentType.AllocL();
+    // the page on the screen keeps its copy (stylesheets lay it out again; Back shows it)
     delete e.iBody;
-    e.iBody = NULL;
-    if (aBody->Length() <= KCacheOneMax) { e.iBody = aBody; aBody = NULL; }
-    delete e.iTitle;
-    e.iTitle = NULL;
+    e.iBody = aBody;
+    aBody = NULL;
+    ShowPageL(aUrl, aContentType, *iHistory[iHistoryPos].iBody, scroll, focus);
+    THistoryEntry& e2 = iHistory[iHistoryPos];
+    delete e2.iTitle;
+    e2.iTitle = NULL;
     BwDoc* d = iView->Doc();
-    if (d && d->titleLen) e.iTitle = TPtrC((const TUint16*)d->title, d->titleLen).Alloc();
+    if (d && d->titleLen) e2.iTitle = TPtrC((const TUint16*)d->title, d->titleLen).Alloc();
     TrimHistoryCache();
     }
 
@@ -854,8 +988,16 @@ void CBrAppUi::EditControlL(TInt aControl)
     // a textarea gets the multi-line dialog
     TBool ok;
     {
-    CTextDialog* dlg = new (ELeave) CTextDialog(t, title);
-    ok = dlg->ExecuteLD(c.type == BW_CTL_TEXTAREA ? R_BR_TEXT_DIALOG_MULTI : R_BR_TEXT_DIALOG) == EEikBidOk;
+    if (c.type == BW_CTL_PASSWORD)
+        {
+        CSecretDialog* dlg = new (ELeave) CSecretDialog(t, title);
+        ok = dlg->ExecuteLD(R_BR_SECRET_DIALOG) == EEikBidOk;
+        }
+    else
+        {
+        CTextDialog* dlg = new (ELeave) CTextDialog(t, title);
+        ok = dlg->ExecuteLD(c.type == BW_CTL_TEXTAREA ? R_BR_TEXT_DIALOG_MULTI : R_BR_TEXT_DIALOG) == EEikBidOk;
+        }
     }
     if (ok)
         {
@@ -947,6 +1089,30 @@ void CBrAppUi::ListChosen(TInt aListId, TInt aIndex)
     iSelectControl = -1;
     }
 
+void CBrAppUi::FindL(TBool aNext)
+    {
+    if (!iView->Doc()) return;
+    if (!aNext || !iFindText)
+        {
+        HBufC* buf = HBufC::NewLC(100);
+        TPtr t = buf->Des();
+        if (iFindText) t.Copy(iFindText->Left(100));
+        if (!TextDialogL(_L("Find in page"), t) || !t.Length()) { CleanupStack::PopAndDestroy(buf); return; }
+        for (TInt i = 0; i < t.Length(); i++) if (t[i] == 0x2029) t[i] = ' ';
+        delete iFindText;
+        iFindText = buf;
+        CleanupStack::Pop(buf);
+        aNext = EFalse;
+        }
+    if (!iView->Find(*iFindText, aNext))
+        {
+        TBuf<80> m(_L("Not found: "));
+        m.Append(iFindText->Left(60));
+        Say(m);
+        }
+    else iView->SetStatus(_L("Found (Ctrl+N: next)"));
+    }
+
 void CBrAppUi::PageInfoL()
     {
     RPointerArray<HBufC> items;
@@ -967,6 +1133,8 @@ void CBrAppUi::PageInfoL()
         TPtrC8 cs((const TUint8*)(d->charset >= 0 && d->charset <= 4 ? kCs[d->charset] : "?"));
         TBuf<20> cs16; cs16.Copy(cs);
         t.Format(_L("Charset %S, %d links, %d pictures, %d form fields, %d CSS rules"), &cs16, d->linkCount, d->imageCount, d->controlCount, d->cssRules);
+        AddItemL(items, t);
+        t.Format(_L("Stylesheets %d (%d applied), cache %d KB"), d->styleCount, d->externalCss, iCssBytes / 1024);
         AddItemL(items, t);
         t.Format(_L("Page %d px high, %d boxes, %d ops, %d KB of text"), iView->PageHeight(), iView->BoxCount(), d->opCount, d->poolLen * 2 / 1024);
         AddItemL(items, t);
@@ -1011,7 +1179,7 @@ HBufC8* CBrAppUi::StartPageLC()
         p.Append(_L8("</a>"));
         }
     p.Append(_L8("</ul><p><a href='about:bookmarks'>Edit bookmarks</a> | <a href='about:history'>History</a></p>"
-                 "<p class=s>Ctrl+L address, Ctrl+B bookmarks, Ctrl+D add bookmark, Esc back, Ctrl+R reload, Ctrl+I page info. "
+                 "<p class=s>Ctrl+L address, Ctrl+B bookmarks, Ctrl+D add bookmark, Esc back, Ctrl+R reload, Ctrl+F find, Ctrl+N find next, Ctrl+I page info. "
                  "Up/Down: links and scrolling, Left/Right: previous/next link, Shift+Up/Down or Space: page.</p></body></html>"));
     return b;
     }

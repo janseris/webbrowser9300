@@ -171,13 +171,22 @@ typedef struct {
     int bgColor, textColor, linkColor;
     int failed;          /* out of memory somewhere: the doc may be incomplete */
     unsigned int cssRules;   /* how many CSS rules were read (for the page info) */
+    char** styleUrls;        /* <link rel=stylesheet> for this screen, absolute, in order */
+    unsigned int styleCount, styleCap;
+    unsigned int externalCss;    /* how many stylesheet texts were given to the parse */
 } BwDoc;
+
+#define BW_MAX_STYLESHEETS 8
 
 /* Parses a page. url: the final URL (after redirects); contentType: the header value or NULL;
  * cs: a charset forced by the user (-1: sniff). Returns NULL only on out of memory. */
 BwDoc* bw_doc_parse(const char* data, unsigned int len, const char* url, const char* contentType, int cs);
 /* A plain-text page (text/plain) as a document */
 BwDoc* bw_doc_plain(const char* data, unsigned int len, const char* url, int cs);
+/* The same with stylesheet texts (the page's external ones, in order, UTF-8) read before the
+ * page's own <style> blocks. A NULL text is skipped. */
+BwDoc* bw_doc_parse_ex(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
+                       const char* const* css, const unsigned int* cssLen, unsigned int cssCount);
 void bw_doc_free(BwDoc* doc);
 /* The anchor index for a fragment name, -1 if none */
 int bw_doc_find_anchor(const BwDoc* doc, const char* name);

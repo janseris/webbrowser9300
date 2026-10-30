@@ -90,6 +90,15 @@ void CImageLoader::TrimFor(TInt aBytes)
     if (dropped) IgLogF2(_L("images: %d dropped, %d KB kept"), dropped, iBytes / 1024);
     }
 
+TBool CImageLoader::FullSize(const char* aUrl, TSize& aSize)
+    {
+    if (!aUrl) return EFalse;
+    CEntry* e = Find(TPtrC8((const TUint8*)aUrl));
+    if (!e || !e->iBitmap) return EFalse;
+    aSize = e->iFull;
+    return ETrue;
+    }
+
 TBool CImageLoader::Failed(const char* aUrl)
     {
     if (!aUrl) return ETrue;

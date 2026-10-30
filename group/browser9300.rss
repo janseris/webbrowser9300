@@ -40,7 +40,8 @@ RESOURCE HOTKEYS r_br_hotkeys
         HOTKEY { command = EBrCmdAddBookmark; key = 'd'; },
         HOTKEY { command = EBrCmdHistory; key = 'h'; },
         HOTKEY { command = EBrCmdPageInfo; key = 'i'; },
-        HOTKEY { command = EBrCmdForward; key = 'f'; },
+        HOTKEY { command = EBrCmdFind; key = 'f'; },
+        HOTKEY { command = EBrCmdFindNext; key = 'n'; },
         HOTKEY { command = EBrCmdStartPage; key = 's'; },
         HOTKEY { command = EBrCmdImages; key = 'g'; },
         HOTKEY { command = EEikCmdExit; key = 'e'; }
@@ -67,6 +68,8 @@ RESOURCE MENU_PANE r_br_menu_page
         MENU_ITEM { command = EBrCmdForward; txt = "Forward"; },
         MENU_ITEM { command = EBrCmdReload; txt = "Reload"; },
         MENU_ITEM { command = EBrCmdStop; txt = "Stop"; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdFind; txt = "Find in page..."; },
+        MENU_ITEM { command = EBrCmdFindNext; txt = "Find next"; flags = EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdHome; txt = "Home page"; },
         MENU_ITEM { command = EBrCmdStartPage; txt = "Start page"; },
         MENU_ITEM { command = EBrCmdPageInfo; txt = "Page info"; flags = EEikMenuItemSeparatorAfter; },
@@ -90,6 +93,7 @@ RESOURCE MENU_PANE r_br_menu_view
     items =
         {
         MENU_ITEM { command = EBrCmdImages; txt = "Load pictures"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdStyles; txt = "Load stylesheets"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdFullScreen; txt = "Full screen"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdMouse; txt = "Mouse pointer"; flags = EEikMenuItemCheckBox | EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdTextSmaller; txt = "Text: small"; flags = EEikMenuItemCheckBox; },
@@ -145,6 +149,22 @@ RESOURCE DIALOG r_br_text_dialog_multi
             type = EEikCtEdwin;
             id = EBrTextField;
             control = EDWIN { width = 50; lines = 6; maxlength = 4000; };
+            }
+        };
+    }
+
+RESOURCE DIALOG r_br_secret_dialog
+    {
+    title = "Password";
+    flags = EEikDialogFlagWait;
+    buttons = R_EIK_BUTTONS_CANCEL_OK;
+    items =
+        {
+        DLG_LINE
+            {
+            type = EEikCtSecretEd;
+            id = EBrTextField;
+            control = SECRETED { num_letters = 24; };
             }
         };
     }

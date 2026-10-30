@@ -62,6 +62,10 @@ typedef struct {
     int listCounter;              /* ol: the next number */
     int listDepth;                /* how many lists are open around (for the bullet) */
     int marginBottom;
+    int px100;                    /* the font size in px * 100 (16 px = normal) */
+    /* for descendant selectors: the id and class attribute in P.ancBuf (offsets, ~0u none) */
+    unsigned int bufStart, idOff, clsOff;
+    unsigned int bloom;
 } Elem;
 
 /* ---- CSS */
@@ -80,16 +84,30 @@ typedef struct {
 
 typedef struct {
     unsigned int mask;
-    unsigned char display, bold, italic, align, underline, size, hidden, pre, mono, strike;
+    unsigned char display, bold, italic, align, underline, sizeRel, hidden, pre, mono, strike;
+    int sizeVal;                   /* px * 100, or (sizeRel) a factor * 10000 */
     int color, bg;
 } CssProps;
 
+/* one compound selector: tag#id.class.class */
 typedef struct {
     int tag;                       /* 0 any */
     char* id;                      /* NULL any */
     char* classes;                 /* NUL-separated, ends with an empty one; NULL none */
-    int spec;                      /* 0 tag, 1 class, 2 id */
     unsigned int bloom;            /* bits of the tag / id / classes it needs (a quick reject) */
+} CssCompound;
+
+typedef struct {
+    /* the subject (the rightmost compound) */
+    int tag;
+    char* id;
+    char* classes;
+    unsigned int bloom;
+    /* the compounds to its left, nearest first, and how each joins: 1 child (>), 0 descendant */
+    CssCompound* anc;
+    unsigned char* ancChild;
+    unsigned int ancCount;
+    int spec;                      /* ids * 10000 + classes * 100 + tags */
     CssProps props;
 } CssRule;
 
@@ -126,6 +144,13 @@ typedef struct {
     unsigned int optValueLen;
     int optSelected;
     int seenBody;
+    IgBuf ancBuf;                  /* the open elements' id / class values */
+    unsigned int lastCssMask;      /* what the CSS set on the element just styled */
+    int inlineCss;                 /* parsing a <style> block (its @import counts) */
+    /* rules by the key of their subject: bucket b holds idx[start[b] .. start[b+1]) */
+    unsigned int* idx;
+    unsigned int* start;
+    unsigned int indexedRules;     /* ruleCount when the index was built */
 } P;
 
 /* ------------------------------------------------------------------ small helpers */
@@ -481,15 +506,22 @@ static int contains_ci(const char* s, unsigned int n, const char* lit)
     return 0;
 }
 
-/* a CSS font-size value -> size class (-1 unknown) */
-static int css_font_size(const char* v, unsigned int n)
+/* a CSS font-size value: px * 100 (*rel 0) or a factor of the parent's size * 10000 (*rel 1);
+ * -1 unknown */
+static int css_font_size(const char* v, unsigned int n, int* rel)
 {
     unsigned int i = 0;
     int num;
-    if (contains_ci(v, n, "xx-small") || contains_ci(v, n, "x-small") || word_is(v, n, "small") || word_is(v, n, "smaller")) return 0;
-    if (word_is(v, n, "medium")) return 1;
-    if (word_is(v, n, "large") || word_is(v, n, "x-large") || word_is(v, n, "larger")) return 2;
-    if (contains_ci(v, n, "xx-large")) return 3;
+    *rel = 0;
+    if (word_is(v, n, "xx-small")) return 900;
+    if (word_is(v, n, "x-small")) return 1000;
+    if (word_is(v, n, "small")) return 1300;
+    if (word_is(v, n, "medium")) return 1600;
+    if (word_is(v, n, "large")) return 1800;
+    if (word_is(v, n, "x-large")) return 2400;
+    if (word_is(v, n, "xx-large")) return 3200;
+    if (word_is(v, n, "smaller")) { *rel = 1; return 8300; }
+    if (word_is(v, n, "larger")) { *rel = 1; return 12000; }
     while (i < n && is_ws((unsigned char)v[i])) i++;
     {
         unsigned int st = i;
@@ -508,31 +540,22 @@ static int css_font_size(const char* v, unsigned int n)
         }
         num = whole * 100 + frac;
     }
-    if (i + 2 <= n && ig_strieq_n(v + i, "px", 2)) {
-        if (num <= 1250) return 0;
-        if (num <= 1700) return 1;
-        if (num <= 2400) return 2;
-        return 3;
-    }
-    if (i + 2 <= n && ig_strieq_n(v + i, "pt", 2)) {
-        if (num <= 950) return 0;
-        if (num <= 1300) return 1;
-        if (num <= 1800) return 2;
-        return 3;
-    }
-    if ((i + 2 <= n && (ig_strieq_n(v + i, "em", 2))) || (i + 3 <= n && ig_strieq_n(v + i, "rem", 3))) {
-        if (num < 90) return 0;
-        if (num <= 115) return 1;
-        if (num <= 160) return 2;
-        return 3;
-    }
-    if (i < n && v[i] == '%') {
-        if (num < 9000) return 0;
-        if (num <= 11500) return 1;
-        if (num <= 16000) return 2;
-        return 3;
-    }
+    if (i + 2 <= n && ig_strieq_n(v + i, "px", 2)) return num;
+    if (i + 2 <= n && ig_strieq_n(v + i, "pt", 2)) return num * 4 / 3;
+    if (i + 3 <= n && ig_strieq_n(v + i, "rem", 3)) return num * 16;
+    if (i + 2 <= n && ig_strieq_n(v + i, "em", 2)) { *rel = 1; return num * 100; }
+    if (i < n && v[i] == '%') { *rel = 1; return num; }
+    if (i + 2 <= n && ig_strieq_n(v + i, "vw", 2)) return num * 64 / 10;       /* of a 640 px screen */
     return -1;
+}
+
+/* px * 100 -> the 4 size classes */
+static int px_class(int px100)
+{
+    if (px100 < 1400) return 0;
+    if (px100 < 1800) return 1;
+    if (px100 < 2600) return 2;
+    return 3;
 }
 
 /* Parses "prop: value; prop: value" into props. */
@@ -624,14 +647,16 @@ static void parse_decls(const char* s, unsigned int n, CssProps* pr)
                     st = k;
                     while (k < vl && !is_ws((unsigned char)v[k]) && v[k] != '/') k++;
                     if (k > st && ((v[st] >= '0' && v[st] <= '9') || v[st] == '.')) {
-                        sz = css_font_size(v + st, k - st);
-                        if (sz >= 0) { pr->mask |= CSS_SIZE; pr->size = (unsigned char)sz; break; }
+                        int rel;
+                        sz = css_font_size(v + st, k - st, &rel);
+                        if (sz > 0) { pr->mask |= CSS_SIZE; pr->sizeVal = sz; pr->sizeRel = (unsigned char)rel; break; }
                     }
                     while (k < vl && !is_ws((unsigned char)v[k])) k++;
                 }
             } else if (word_is(p, pl, "font-size")) {
-                int sz = css_font_size(v, vl);
-                if (sz >= 0) { pr->mask |= CSS_SIZE; pr->size = (unsigned char)sz; }
+                int rel;
+                int sz = css_font_size(v, vl, &rel);
+                if (sz > 0) { pr->mask |= CSS_SIZE; pr->sizeVal = sz; pr->sizeRel = (unsigned char)rel; }
             } else if (word_is(p, pl, "font-family")) {
                 if (contains_ci(v, vl, "mono") || contains_ci(v, vl, "courier")) { pr->mask |= CSS_MONO; pr->mono = 1; }
             } else if (word_is(p, pl, "text-align")) {
@@ -748,62 +773,25 @@ static unsigned int bloom_bit(const char* s, unsigned int n)
     return 1u << (h & 31);
 }
 
-static int add_rule(P* p, int tag, const char* id, unsigned int idLen, const char* cls, unsigned int clsLen,
-                    const CssProps* pr)
-{
-    CssRule* r;
-    if (!grow((void**)&p->rules, &p->ruleCap, p->ruleCount, sizeof(CssRule))) return 0;
-    r = &p->rules[p->ruleCount];
-    ig_memset(r, 0, sizeof(CssRule));
-    r->tag = tag;
-    if (idLen) { r->id = ig_strndup(id, idLen); if (!r->id) return 0; }
-    if (clsLen) {
-        /* "a.b" -> "a\0b\0\0" */
-        unsigned int k;
-        r->classes = (char*)ig_malloc(clsLen + 2);
-        if (!r->classes) { ig_free(r->id); return 0; }
-        for (k = 0; k < clsLen; k++) r->classes[k] = cls[k] == '.' ? 0 : cls[k];
-        r->classes[clsLen] = 0;
-        r->classes[clsLen + 1] = 0;
-    }
-    r->spec = idLen ? 2 : clsLen ? 1 : 0;
-    r->bloom = (tag ? 1u << (tag & 31) : 0) | (idLen ? bloom_bit(id, idLen) : 0);
-    if (clsLen) {
-        unsigned int k = 0;
-        while (k < clsLen) {
-            unsigned int st = k;
-            while (k < clsLen && cls[k] != '.') k++;
-            if (k > st) r->bloom |= bloom_bit(cls + st, k - st);
-            k++;
-        }
-    }
-    r->props = *pr;
-    p->ruleCount++;
-    return 1;
-}
-
-/* one selector (no combinators) -> a rule; anything we cannot match is dropped */
-static void add_selector(P* p, const char* s, unsigned int n, const CssProps* pr)
+/* tag#id.a.b at s[0..n) -> a compound (strings allocated); 0 if it is not one we can match */
+static int parse_compound(const char* s, unsigned int n, CssCompound* c, int* nIds, int* nCls, int* nTags)
 {
     unsigned int i = 0, ts, te, is = 0, ie = 0, cs = 0, ce = 0;
-    int tag = 0;
-    while (n && is_ws((unsigned char)s[n - 1])) n--;
-    while (i < n && is_ws((unsigned char)s[i])) i++;
+    ig_memset(c, 0, sizeof(CssCompound));
     /* a:link / a:visited are just a */
     if (n > 5 && ig_strieq_n(s + n - 5, ":link", 5)) n -= 5;
     else if (n > 8 && ig_strieq_n(s + n - 8, ":visited", 8)) n -= 8;
     ts = i;
     while (i < n && (is_alnum((unsigned char)s[i]) || s[i] == '-' || s[i] == '_' || s[i] == '*')) i++;
     te = i;
-    if (te > ts) {
-        if (!(te - ts == 1 && s[ts] == '*')) {
-            char name[16];
-            unsigned int k;
-            if (te - ts >= sizeof(name)) return;
-            for (k = ts; k < te; k++) name[k - ts] = (char)lower((unsigned char)s[k]);
-            tag = lookup_tag(name, te - ts);
-            if (!tag) return;
-        }
+    if (te > ts && !(te - ts == 1 && s[ts] == '*')) {
+        char name[16];
+        unsigned int k;
+        if (te - ts >= sizeof(name)) return 0;
+        for (k = ts; k < te; k++) name[k - ts] = (char)lower((unsigned char)s[k]);
+        c->tag = lookup_tag(name, te - ts);
+        if (!c->tag) return 0;
+        (*nTags)++;
     }
     while (i < n) {
         if (s[i] == '#' && !is) {
@@ -811,16 +799,139 @@ static void add_selector(P* p, const char* s, unsigned int n, const CssProps* pr
             is = i;
             while (i < n && (is_alnum((unsigned char)s[i]) || s[i] == '-' || s[i] == '_')) i++;
             ie = i;
+            if (ie == is) return 0;
+            (*nIds)++;
         } else if (s[i] == '.') {
+            unsigned int st;
             if (!cs) cs = i + 1;
             i++;
+            st = i;
             while (i < n && (is_alnum((unsigned char)s[i]) || s[i] == '-' || s[i] == '_')) i++;
+            if (i == st) return 0;
             ce = i;
-        } else return;       /* combinator, pseudo-class, attribute selector: not for us */
+            (*nCls)++;
+        } else return 0;       /* pseudo-class, attribute selector: not for us */
     }
-    if (!tag && !is && !cs && te == ts) return;
-    add_rule(p, tag, s + is, ie - is, cs ? s + cs : 0, cs ? ce - cs : 0, pr);
-    p->doc->cssRules++;
+    if (!c->tag && !is && !cs && te == ts) return 0;
+    c->bloom = c->tag ? 1u << (c->tag & 31) : 0;
+    if (ie > is) {
+        c->id = ig_strndup(s + is, ie - is);
+        if (!c->id) return 0;
+        c->bloom |= bloom_bit(s + is, ie - is);
+    }
+    if (cs) {
+        unsigned int clsLen = ce - cs, k = 0;
+        const char* cls = s + cs;
+        c->classes = (char*)ig_malloc(clsLen + 2);
+        if (!c->classes) { ig_free(c->id); c->id = 0; return 0; }
+        for (k = 0; k < clsLen; k++) c->classes[k] = cls[k] == '.' ? 0 : cls[k];
+        c->classes[clsLen] = 0;
+        c->classes[clsLen + 1] = 0;
+        k = 0;
+        while (k < clsLen) {
+            unsigned int st = k;
+            while (k < clsLen && cls[k] != '.') k++;
+            if (k > st) c->bloom |= bloom_bit(cls + st, k - st);
+            k++;
+        }
+    }
+    return 1;
+}
+
+static void free_compound(CssCompound* c)
+{
+    ig_free(c->id);
+    ig_free(c->classes);
+}
+
+#define MAX_COMPOUNDS 8
+
+/* one selector -> a rule. Descendant (space) and child (>) combinators are matched; a selector
+ * with anything else (+, ~, pseudo-classes, attributes) is dropped */
+static void add_selector(P* p, const char* s, unsigned int n, const CssProps* pr)
+{
+    CssCompound comp[MAX_COMPOUNDS];
+    unsigned char child[MAX_COMPOUNDS];
+    int count = 0, nIds = 0, nCls = 0, nTags = 0, k, ok = 1;
+    unsigned int i = 0;
+    int pendingChild = 0;
+    while (n && is_ws((unsigned char)s[n - 1])) n--;
+    while (i < n && ok) {
+        unsigned int st;
+        while (i < n && is_ws((unsigned char)s[i])) i++;
+        if (i < n && s[i] == '>') { pendingChild = 1; i++; continue; }
+        if (i >= n) break;
+        if (s[i] == '+' || s[i] == '~') { ok = 0; break; }
+        st = i;
+        while (i < n && !is_ws((unsigned char)s[i]) && s[i] != '>' && s[i] != '+' && s[i] != '~') i++;
+        if (count >= MAX_COMPOUNDS) { ok = 0; break; }
+        if (!parse_compound(s + st, i - st, &comp[count], &nIds, &nCls, &nTags)) { ok = 0; break; }
+        child[count] = (unsigned char)pendingChild;   /* how it joins the one before it */
+        pendingChild = 0;
+        count++;
+    }
+    if (ok && (count == 0 || pendingChild)) ok = 0;
+    if (ok) {
+        CssRule* r;
+        if (!grow((void**)&p->rules, &p->ruleCap, p->ruleCount, sizeof(CssRule))) ok = 0;
+        else {
+            r = &p->rules[p->ruleCount];
+            ig_memset(r, 0, sizeof(CssRule));
+            r->tag = comp[count - 1].tag;
+            r->id = comp[count - 1].id;
+            r->classes = comp[count - 1].classes;
+            r->bloom = comp[count - 1].bloom;
+            r->spec = nIds * 10000 + nCls * 100 + nTags;
+            r->props = *pr;
+            if (count > 1) {
+                r->anc = (CssCompound*)ig_malloc((unsigned int)(count - 1) * sizeof(CssCompound));
+                r->ancChild = (unsigned char*)ig_malloc((unsigned int)(count - 1));
+                if (!r->anc || !r->ancChild) {
+                    ig_free(r->anc); ig_free(r->ancChild);
+                    ok = 0;
+                } else {
+                    /* nearest first: comp[count-2] is the subject's parent side */
+                    for (k = 0; k < count - 1; k++) {
+                        r->anc[k] = comp[count - 2 - k];
+                        r->ancChild[k] = child[count - 1 - k];
+                    }
+                    r->ancCount = (unsigned int)(count - 1);
+                }
+            }
+            if (ok) { p->ruleCount++; p->doc->cssRules++; return; }
+        }
+    }
+    for (k = 0; k < count; k++) free_compound(&comp[k]);
+}
+
+static void add_style_url(P* p, const char* u, unsigned int n)
+{
+    BwDoc* d = p->doc;
+    char* url;
+    if (!n || d->styleCount >= BW_MAX_STYLESHEETS) return;
+    if (!grow((void**)&d->styleUrls, &d->styleCap, d->styleCount, sizeof(char*))) return;
+    url = bw_url_resolve(d->baseUrl, u, n);
+    if (url) d->styleUrls[d->styleCount++] = url;
+}
+
+/* "url(x.css) screen" / "'x.css'" */
+static void add_import(P* p, const char* s, unsigned int n)
+{
+    unsigned int i = 0, st, e;
+    while (i < n && is_ws((unsigned char)s[i])) i++;
+    if (i + 4 <= n && ig_strieq_n(s + i, "url(", 4)) i += 4;
+    while (i < n && (is_ws((unsigned char)s[i]) || s[i] == '"' || s[i] == '\'')) i++;
+    st = i;
+    while (i < n && s[i] != '"' && s[i] != '\'' && s[i] != ')' && !is_ws((unsigned char)s[i])) i++;
+    e = i;
+    while (i < n && (s[i] == '"' || s[i] == '\'' || s[i] == ')')) i++;
+    if (i < n && !media_matches(s + i, n - i)) {
+        /* "print" etc. (an empty media list matches) */
+        unsigned int k = i;
+        while (k < n && is_ws((unsigned char)s[k])) k++;
+        if (k < n) return;
+    }
+    add_style_url(p, s + st, e - st);
 }
 
 static void parse_css(P* p, const char* s, unsigned int n, int depth)
@@ -835,7 +946,12 @@ static void parse_css(P* p, const char* s, unsigned int n, int depth)
             unsigned int st = i;
             while (i < n && s[i] != '{' && s[i] != ';') i++;
             if (i >= n) break;
-            if (s[i] == ';') { i++; continue; }        /* @import, @charset */
+            if (s[i] == ';') {
+                /* @import in the page's own <style>: one more stylesheet to load */
+                if (p->inlineCss && i - st > 7 && ig_strieq_n(s + st, "@import", 7)) add_import(p, s + st + 7, i - st - 7);
+                i++;
+                continue;
+            }
             if (depth < 3 && ((i - st > 6 && ig_strieq_n(s + st, "@media", 6) && media_matches(s + st + 6, i - st - 6)) ||
                               (i - st > 9 && ig_strieq_n(s + st, "@supports", 9)))) {
                 unsigned int bs = i + 1, be;
@@ -879,9 +995,19 @@ static void parse_css(P* p, const char* s, unsigned int n, int depth)
 static void free_rules(P* p)
 {
     unsigned int i;
-    for (i = 0; i < p->ruleCount; i++) { ig_free(p->rules[i].id); ig_free(p->rules[i].classes); }
+    for (i = 0; i < p->ruleCount; i++) {
+        unsigned int k;
+        ig_free(p->rules[i].id);
+        ig_free(p->rules[i].classes);
+        for (k = 0; k < p->rules[i].ancCount; k++) free_compound(&p->rules[i].anc[k]);
+        ig_free(p->rules[i].anc);
+        ig_free(p->rules[i].ancChild);
+    }
     ig_free(p->rules);
     p->rules = 0;
+    ig_free(p->idx);
+    ig_free(p->start);
+    p->idx = p->start = 0;
     p->ruleCount = p->ruleCap = 0;
 }
 
@@ -1039,7 +1165,7 @@ static int indent_of(int tag)
     }
 }
 
-static void apply_props(Elem* e, const CssProps* pr)
+static void apply_props(Elem* e, const CssProps* pr, int parentPx)
 {
     if (pr->mask & CSS_DISPLAY) e->display = pr->display;
     if (pr->mask & CSS_COLOR) e->color = pr->color;
@@ -1047,7 +1173,12 @@ static void apply_props(Elem* e, const CssProps* pr)
     if (pr->mask & CSS_BOLD) e->font = (unsigned char)(pr->bold ? (e->font | BW_FONT_BOLD) : (e->font & ~BW_FONT_BOLD));
     if (pr->mask & CSS_ITALIC) e->font = (unsigned char)(pr->italic ? (e->font | BW_FONT_ITALIC) : (e->font & ~BW_FONT_ITALIC));
     if (pr->mask & CSS_MONO) e->font = (unsigned char)(e->font | BW_FONT_MONO);
-    if (pr->mask & CSS_SIZE) e->font = BW_FONT_MAKE(pr->size, e->font & 7);
+    if (pr->mask & CSS_SIZE) {
+        int px = pr->sizeRel ? (int)((long)parentPx * pr->sizeVal / 10000) : pr->sizeVal;
+        if (px < 600) px = 600;
+        if (px > 8000) px = 8000;
+        e->px100 = px;
+    }
     if (pr->mask & CSS_ALIGN) e->align = pr->align;
     if (pr->mask & CSS_UNDERLINE) e->flags = (unsigned char)(pr->underline ? (e->flags | BW_OPF_UNDERLINE) : (e->flags & ~BW_OPF_UNDERLINE));
     if (pr->mask & CSS_STRIKE) e->flags = (unsigned char)(pr->strike ? (e->flags | BW_OPF_STRIKE) : (e->flags & ~BW_OPF_STRIKE));
@@ -1055,10 +1186,131 @@ static void apply_props(Elem* e, const CssProps* pr)
     if (pr->mask & CSS_HIDDEN) e->hidden = 1;
 }
 
+#define MAX_MATCHED 64
+#define MAX_CLASS_BUCKETS 16
+#define KEY_BUCKETS 64
+#define B_ID (T_COUNT)
+#define B_CLASS (T_COUNT + KEY_BUCKETS)
+#define B_ANY (T_COUNT + 2 * KEY_BUCKETS)
+#define N_BUCKETS (B_ANY + 1)
+
+static unsigned int key_bucket(const char* s, unsigned int n)
+{
+    unsigned int h = 2166136261u, i;
+    for (i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 16777619u; }
+    return (h >> 8) & (KEY_BUCKETS - 1);
+}
+
+static unsigned int rule_bucket(const CssRule* r)
+{
+    if (r->id) return B_ID + key_bucket(r->id, ig_strlen(r->id));
+    if (r->classes) return B_CLASS + key_bucket(r->classes, ig_strlen(r->classes));
+    if (r->tag) return (unsigned int)r->tag;
+    return B_ANY;
+}
+
+/* (re)builds the index when rules were added since */
+static int build_index(P* p)
+{
+    unsigned int i;
+    if (p->idx && p->indexedRules == p->ruleCount) return 1;
+    ig_free(p->idx);
+    p->idx = 0;
+    if (!p->start) {
+        p->start = (unsigned int*)ig_malloc((N_BUCKETS + 1) * sizeof(unsigned int));
+        if (!p->start) return 0;
+    }
+    p->idx = (unsigned int*)ig_malloc((p->ruleCount ? p->ruleCount : 1) * sizeof(unsigned int));
+    if (!p->idx) return 0;
+    for (i = 0; i <= N_BUCKETS; i++) p->start[i] = 0;
+    for (i = 0; i < p->ruleCount; i++) p->start[rule_bucket(&p->rules[i]) + 1]++;
+    for (i = 1; i <= N_BUCKETS; i++) p->start[i] += p->start[i - 1];
+    {
+        /* fill in rule order (each bucket stays sorted by source order) */
+        unsigned int* fill = (unsigned int*)ig_malloc(N_BUCKETS * sizeof(unsigned int));
+        if (!fill) { ig_free(p->idx); p->idx = 0; return 0; }
+        for (i = 0; i < N_BUCKETS; i++) fill[i] = p->start[i];
+        for (i = 0; i < p->ruleCount; i++) p->idx[fill[rule_bucket(&p->rules[i])]++] = i;
+        ig_free(fill);
+    }
+    p->indexedRules = p->ruleCount;
+    return 1;
+}
+
+static unsigned int elem_bloom(int tag, const char* id, const char* cls)
+{
+    unsigned int have = 1u << (tag & 31);
+    if (id) have |= bloom_bit(id, ig_strlen(id));
+    if (cls) {
+        unsigned int k = 0;
+        while (cls[k]) {
+            unsigned int st;
+            while (cls[k] && is_ws((unsigned char)cls[k])) k++;
+            st = k;
+            while (cls[k] && !is_ws((unsigned char)cls[k])) k++;
+            if (k > st) have |= bloom_bit(cls + st, k - st);
+        }
+    }
+    return have;
+}
+
+static int classes_match(const char* list, const char* need)
+{
+    if (!list) return 0;
+    while (*need) {
+        if (!has_class(list, need)) return 0;
+        need += ig_strlen(need) + 1;
+    }
+    return 1;
+}
+
+static int compound_matches(P* p, const CssCompound* c, const Elem* e)
+{
+    const char* buf = p->ancBuf.data;
+    if (c->bloom & ~e->bloom) return 0;
+    if (c->tag && c->tag != e->tag) return 0;
+    if (c->id && (e->idOff == ~0u || !buf || !ig_streq(buf + e->idOff, c->id))) return 0;
+    if (c->classes && (e->clsOff == ~0u || !buf || !classes_match(buf + e->clsOff, c->classes))) return 0;
+    return 1;
+}
+
+/* the rule's left part against the open elements (the new element's parent is the top) */
+static int ancestors_match(P* p, const CssRule* r)
+{
+    int pos = p->depth - 1;
+    unsigned int k;
+    for (k = 0; k < r->ancCount; k++) {
+        const CssCompound* c = &r->anc[k];
+        if (r->ancChild[k]) {
+            if (pos < 1 || !compound_matches(p, c, &p->stack[pos])) return 0;
+            pos--;
+        } else {
+            while (pos >= 1 && !compound_matches(p, c, &p->stack[pos])) pos--;
+            if (pos < 1) return 0;
+            pos--;
+        }
+    }
+    return 1;
+}
+
+/* remembers a pushed element's id and classes for the descendant selectors of its children */
+static void note_attrs(P* p, Elem* e)
+{
+    const char* id = attr(p, "id");
+    const char* cls = attr(p, "class");
+    IgBuf* b = &p->ancBuf;
+    e->bufStart = b->len;
+    e->idOff = e->clsOff = ~0u;
+    e->bloom = elem_bloom(e->tag, id, cls);
+    if (!p->ruleCount) return;
+    if (id) { e->idOff = b->len; ig_buf_append(b, id, ig_strlen(id) + 1); }
+    if (cls) { e->clsOff = b->len; ig_buf_append(b, cls, ig_strlen(cls) + 1); }
+    if (b->failed) e->idOff = e->clsOff = ~0u;
+}
+
 /* computes the style of a new element from its parent, the tag, the attributes and the CSS */
 static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
 {
-    unsigned char size;
     const char* v;
     *e = *parent;
     e->tag = (unsigned char)tag;
@@ -1067,7 +1319,6 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     e->blockOpen = 0;
     e->listKind = 0;
     e->marginBottom = 0;
-    size = (unsigned char)BW_FONT_SIZE(e->font);
     switch (tag) {
     case T_B: case T_STRONG: case T_TH: case T_DT: case T_LEGEND: case T_SUMMARY:
         e->font |= BW_FONT_BOLD; break;
@@ -1082,14 +1333,14 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     case T_S: case T_STRIKE: case T_DEL:
         e->flags |= BW_OPF_STRIKE; break;
     case T_SMALL: case T_SUB: case T_SUP:
-        e->font = BW_FONT_MAKE(size > 0 ? size - 1 : 0, e->font & 7); break;
+        e->px100 = e->px100 * 83 / 100; break;
     case T_BIG:
-        e->font = BW_FONT_MAKE(size < 3 ? size + 1 : 3, e->font & 7); break;
-    case T_H1: e->font = BW_FONT_MAKE(3, (e->font & 7) | BW_FONT_BOLD); break;
-    case T_H2: e->font = BW_FONT_MAKE(2, (e->font & 7) | BW_FONT_BOLD); break;
-    case T_H3: e->font = BW_FONT_MAKE(2, (e->font & 7) | BW_FONT_BOLD); break;
-    case T_H4: e->font = BW_FONT_MAKE(1, (e->font & 7) | BW_FONT_BOLD); break;
-    case T_H5: case T_H6: e->font = BW_FONT_MAKE(1, (e->font & 7) | BW_FONT_BOLD); break;
+        e->px100 = e->px100 * 120 / 100; break;
+    case T_H1: e->px100 = e->px100 * 2; e->font |= BW_FONT_BOLD; break;
+    case T_H2: e->px100 = e->px100 * 3 / 2; e->font |= BW_FONT_BOLD; break;
+    case T_H3: e->px100 = e->px100 * 117 / 100; e->font |= BW_FONT_BOLD; break;
+    case T_H4: e->font |= BW_FONT_BOLD; break;
+    case T_H5: case T_H6: e->font |= BW_FONT_BOLD; break;
     case T_CENTER: case T_CAPTION: e->align = BW_ALIGN_CENTER; break;
     case T_MARK: e->bg = 0xFFFF00; break;
     case T_NOBR: break;
@@ -1113,18 +1364,18 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
         if (v) { int c = parse_color(v, ig_strlen(v)); if (c >= 0) e->color = c; }
         v = attr(p, "size");
         if (v) {
-            int sz = -1;
+            static const int kFontPx[7] = { 1000, 1300, 1600, 1800, 2400, 3200, 4800 };
+            int n = -1;
             unsigned int k = 0;
             while (v[k] == ' ') k++;
-            if (v[k] == '+') sz = size + 1;
-            else if (v[k] == '-') sz = size - 1;
-            else if (v[k] >= '1' && v[k] <= '7') {
-                int n = v[k] - '0';
-                sz = n <= 2 ? 0 : n == 3 ? 1 : n <= 5 ? 2 : 3;
+            if (v[k] == '+' && v[k + 1] >= '0' && v[k + 1] <= '9') n = 3 + (v[k + 1] - '0');
+            else if (v[k] == '-' && v[k + 1] >= '0' && v[k + 1] <= '9') n = 3 - (v[k + 1] - '0');
+            else if (v[k] >= '1' && v[k] <= '7') n = v[k] - '0';
+            if (n >= 0) {
+                if (n < 1) n = 1;
+                if (n > 7) n = 7;
+                e->px100 = kFontPx[n - 1];
             }
-            if (sz < 0) sz = 0;
-            if (sz > 3) sz = 3;
-            e->font = BW_FONT_MAKE(sz, e->font & 7);
         }
     }
     v = attr(p, "bgcolor");
@@ -1134,43 +1385,62 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     }
     if (has_attr(p, "hidden")) e->hidden = 1;
     if (attr(p, "aria-hidden") && ig_streq(attr(p, "aria-hidden"), "true") && (tag == T_SVG || tag == T_SPAN || tag == T_I)) e->hidden = 1;
-    /* the stylesheet: tag rules, then class rules, then id rules, each in source order */
+    /* the stylesheet: the matching rules by specificity, then source order */
+    p->lastCssMask = 0;
     if (p->ruleCount) {
         const char* id = attr(p, "id");
         const char* cls = attr(p, "class");
-        int spec;
-        unsigned int have = 1u << (tag & 31);
-        if (id) have |= bloom_bit(id, ig_strlen(id));
+        unsigned int have = elem_bloom(tag, id, cls);
+        unsigned int matched[MAX_MATCHED];
+        unsigned int nm = 0, k;
+        unsigned int buckets[2 + MAX_CLASS_BUCKETS];
+        unsigned int nb = 0;
+        unsigned int seen0 = 0, seen1 = 0;
+        if (!build_index(p)) return;
+        buckets[nb++] = (unsigned int)tag;
+        buckets[nb++] = B_ANY;
+        if (id) buckets[nb++] = B_ID + key_bucket(id, ig_strlen(id));
         if (cls) {
-            unsigned int k = 0;
-            while (cls[k]) {
-                unsigned int st;
-                while (cls[k] && is_ws((unsigned char)cls[k])) k++;
-                st = k;
-                while (cls[k] && !is_ws((unsigned char)cls[k])) k++;
-                if (k > st) have |= bloom_bit(cls + st, k - st);
+            unsigned int c = 0;
+            while (cls[c] && nb < 2 + MAX_CLASS_BUCKETS) {
+                unsigned int st, b;
+                while (cls[c] && is_ws((unsigned char)cls[c])) c++;
+                st = c;
+                while (cls[c] && !is_ws((unsigned char)cls[c])) c++;
+                if (c == st) break;
+                b = key_bucket(cls + st, c - st);
+                /* two classes in one bucket: visit it once */
+                if (b < 32 ? (seen0 & (1u << b)) : (seen1 & (1u << (b - 32)))) continue;
+                if (b < 32) seen0 |= 1u << b; else seen1 |= 1u << (b - 32);
+                buckets[nb++] = B_CLASS + b;
             }
         }
-        for (spec = 0; spec <= 2; spec++) {
-            unsigned int r;
-            for (r = 0; r < p->ruleCount; r++) {
+        for (k = 0; k < nb; k++) {
+            unsigned int j;
+            for (j = p->start[buckets[k]]; j < p->start[buckets[k] + 1]; j++) {
+                unsigned int r = p->idx[j];
                 const CssRule* rule = &p->rules[r];
                 if (rule->bloom & ~have) continue;
-                if (rule->spec != spec) continue;
                 if (rule->tag && rule->tag != tag) continue;
                 if (rule->id && (!id || !ig_streq(rule->id, id))) continue;
-                if (rule->classes) {
-                    const char* c = rule->classes;
-                    int ok = 1;
-                    if (!cls) continue;
-                    while (*c) {
-                        if (!has_class(cls, c)) { ok = 0; break; }
-                        c += ig_strlen(c) + 1;
+                if (rule->classes && !classes_match(cls, rule->classes)) continue;
+                if (rule->ancCount && !ancestors_match(p, rule)) continue;
+                if (nm < MAX_MATCHED) {
+                    /* insertion by (specificity, source order) */
+                    unsigned int at = nm;
+                    while (at > 0 && (p->rules[matched[at - 1]].spec > rule->spec ||
+                                      (p->rules[matched[at - 1]].spec == rule->spec && matched[at - 1] > r))) {
+                        matched[at] = matched[at - 1];
+                        at--;
                     }
-                    if (!ok) continue;
+                    matched[at] = r;
+                    nm++;
                 }
-                apply_props(e, &rule->props);
             }
+        }
+        for (k = 0; k < nm; k++) {
+            apply_props(e, &p->rules[matched[k]].props, parent->px100);
+            p->lastCssMask |= p->rules[matched[k]].props.mask;
         }
     }
     v = attr(p, "style");
@@ -1178,9 +1448,11 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
         CssProps pr;
         ig_memset(&pr, 0, sizeof(pr));
         parse_decls(v, ig_strlen(v), &pr);
-        apply_props(e, &pr);
+        apply_props(e, &pr, parent->px100);
+        p->lastCssMask |= pr.mask;
     }
     if (e->display == D_NONE) e->hidden = 1;
+    e->font = BW_FONT_MAKE(px_class(e->px100), e->font & 7);
 }
 
 /* ------------------------------------------------------------------ the element stack */
@@ -1227,6 +1499,7 @@ static void pop(P* p)
         if (op) op->a = e->marginBottom;
         p->lastSpace = 1;
     }
+    if (e->bufStart <= p->ancBuf.len) p->ancBuf.len = e->bufStart;
     p->depth--;
 }
 
@@ -1618,7 +1891,20 @@ static void start_tag(P* p, int tag, int selfClose)
             }
         }
         return;
-    case T_LINK: case T_PARAM: case T_SOURCE: case T_TRACK: case T_AREA: case T_COL: case T_EMBED:
+    case T_LINK:
+        {
+            const char* rel = attr(p, "rel");
+            const char* href = attr(p, "href");
+            const char* media = attr(p, "media");
+            if (rel && href && href[0] && contains_ci(rel, ig_strlen(rel), "stylesheet") && !contains_ci(rel, ig_strlen(rel), "alternate") &&
+                (!media || media_matches(media, ig_strlen(media))) && d->styleCount < BW_MAX_STYLESHEETS &&
+                grow((void**)&d->styleUrls, &d->styleCap, d->styleCount, sizeof(char*))) {
+                char* u = bw_url_resolve(d->baseUrl, href, ig_strlen(href));
+                if (u) d->styleUrls[d->styleCount++] = u;
+            }
+        }
+        return;
+    case T_PARAM: case T_SOURCE: case T_TRACK: case T_AREA: case T_COL: case T_EMBED:
         return;
     case T_FRAME:
         {
@@ -1628,8 +1914,10 @@ static void start_tag(P* p, int tag, int selfClose)
                 const char* nm = attr(p, "name");
                 Elem* e2;
                 if (p->depth < MAX_DEPTH) {
-                    e2 = &p->stack[p->depth++];
+                    e2 = &p->stack[p->depth];
                     compute_style(p, e2, parent, T_DIV);
+                    note_attrs(p, e2);
+                    p->depth++;
                     e2->display = D_BLOCK;
                     emit_block_start(p, e2, 2);
                     e2->target = t;
@@ -1649,6 +1937,7 @@ static void start_tag(P* p, int tag, int selfClose)
     if (p->depth >= MAX_DEPTH) return;
     e = &p->stack[p->depth];
     compute_style(p, e, parent, tag);
+    note_attrs(p, e);
     p->depth++;
 
     switch (tag) {
@@ -1678,37 +1967,9 @@ static void start_tag(P* p, int tag, int selfClose)
                 int t = new_link(p, href);
                 if (t >= 0) {
                     e->target = t;
-                    /* a:link color from CSS wins; otherwise the page's link color */
-                    {
-                        int linkRuleColor = 0;
-                        unsigned int r;
-                        for (r = 0; r < p->ruleCount; r++)
-                            if (p->rules[r].tag == T_A && !p->rules[r].classes && !p->rules[r].id && (p->rules[r].props.mask & CSS_COLOR)) linkRuleColor = 1;
-                        if (!linkRuleColor && !(attr(p, "style") && contains_ci(attr(p, "style"), ig_strlen(attr(p, "style")), "color"))) {
-                            /* keep a color the parent (font tag) set only if the class rules set it */
-                            int classColor = 0;
-                            const char* cls = attr(p, "class");
-                            if (cls) {
-                                for (r = 0; r < p->ruleCount; r++)
-                                    if (p->rules[r].classes && (p->rules[r].props.mask & CSS_COLOR) && (!p->rules[r].tag || p->rules[r].tag == T_A)) {
-                                        const char* c = p->rules[r].classes;
-                                        int ok = 1;
-                                        while (*c) { if (!has_class(cls, c)) { ok = 0; break; } c += ig_strlen(c) + 1; }
-                                        if (ok) classColor = 1;
-                                    }
-                            }
-                            if (!classColor) e->color = d->linkColor;
-                        }
-                    }
-                    if (!(e->flags & BW_OPF_UNDERLINE)) {
-                        /* underline unless a rule says text-decoration: none */
-                        int noUnderline = 0;
-                        unsigned int r;
-                        for (r = 0; r < p->ruleCount; r++)
-                            if ((!p->rules[r].tag || p->rules[r].tag == T_A) && (p->rules[r].props.mask & CSS_UNDERLINE) &&
-                                !p->rules[r].props.underline && !p->rules[r].id && !p->rules[r].classes) noUnderline = 1;
-                        if (!noUnderline) e->flags |= BW_OPF_UNDERLINE;
-                    }
+                    /* the page's link color and underline unless a rule for this link set them */
+                    if (!(p->lastCssMask & CSS_COLOR)) e->color = d->linkColor;
+                    if (!(p->lastCssMask & CSS_UNDERLINE)) e->flags |= BW_OPF_UNDERLINE;
                 }
             }
         }
@@ -1882,7 +2143,11 @@ static void raw_text_element(P* p, int tag, unsigned int* ip)
     if (tag == T_STYLE) {
         if (!top(p)->hidden || in_stack(p, T_HEAD) || 1) {
             const char* media = attr(p, "media");
-            if (!media || media_matches(media, ig_strlen(media))) parse_css(p, p->s + st, e - st, 0);
+            if (!media || media_matches(media, ig_strlen(media))) {
+                p->inlineCss = 1;
+                parse_css(p, p->s + st, e - st, 0);
+                p->inlineCss = 0;
+            }
         }
     } else if (tag == T_TITLE) {
         if (!p->doc->title) {
@@ -2075,13 +2340,16 @@ static void init_parser(P* p, BwDoc* d, const char* data, unsigned int len, int 
     p->captureCtl = -1;
     ig_buf_init(&p->attrBuf);
     ig_buf_init(&p->cap16);
+    ig_buf_init(&p->ancBuf);
     root = &p->stack[0];
     ig_memset(root, 0, sizeof(Elem));
     root->font = BW_FONT_MAKE(1, 0);
+    root->px100 = 1600;
     root->color = d->textColor;
     root->bg = -1;
     root->target = -1;
     root->display = D_BLOCK;
+    root->idOff = root->clsOff = ~0u;
     p->depth = 1;
     p->lastSpace = 1;
 }
@@ -2090,11 +2358,18 @@ static void done_parser(P* p)
 {
     ig_buf_free(&p->attrBuf);
     ig_buf_free(&p->cap16);
+    ig_buf_free(&p->ancBuf);
     ig_free(p->optValue);
     free_rules(p);
 }
 
 BwDoc* bw_doc_parse(const char* data, unsigned int len, const char* url, const char* contentType, int cs)
+{
+    return bw_doc_parse_ex(data, len, url, contentType, cs, 0, 0, 0);
+}
+
+BwDoc* bw_doc_parse_ex(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
+                       const char* const* css, const unsigned int* cssLen, unsigned int cssCount)
 {
     BwDoc* d;
     P* p;
@@ -2120,6 +2395,11 @@ BwDoc* bw_doc_parse(const char* data, unsigned int len, const char* url, const c
     p = (P*)ig_malloc(sizeof(P));
     if (!p) { bw_doc_free(d); return 0; }
     init_parser(p, d, data, len, cs);
+    {
+        unsigned int k;
+        for (k = 0; k < cssCount; k++) if (css[k]) parse_css(p, css[k], cssLen[k], 0);
+        d->externalCss = cssCount;
+    }
     run(p);
     done_parser(p);
     ig_free(p);
@@ -2170,6 +2450,8 @@ void bw_doc_free(BwDoc* d)
     ig_free(d->controls);
     for (i = 0; i < d->formCount; i++) ig_free(d->forms[i].action);
     ig_free(d->forms);
+    for (i = 0; i < d->styleCount; i++) ig_free(d->styleUrls[i]);
+    ig_free(d->styleUrls);
     for (i = 0; i < d->anchorCount; i++) ig_free(d->anchors[i].name);
     ig_free(d->anchors);
     ig_free(d->targets);

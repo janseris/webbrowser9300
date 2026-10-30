@@ -19,6 +19,29 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.2** (not yet run on the phone):
+  - **External stylesheets**: `<link rel=stylesheet>` (with its `media`) and `@import` in
+    `<style>` are loaded on the phone after the page is on the screen, one at a time over a
+    connection of their own (cookies, gzip, redirects, 30 s watchdog, up to 400 KB each, 8 per
+    page); when they are in, the page is laid out again at the same place. They stay in a
+    900 KB cache, so the next page of the same site gets them at once (the page is then shown
+    styled right away). View > Load stylesheets turns it off. Page info shows how many applied.
+  - **Descendant and child selectors** (`.menu a`, `nav > ul li`), matched exactly against the
+    open elements (their tag, id and classes are kept on the element stack); rules apply in
+    specificity order (ids, classes, tags), then source order. A selector with `+`, `~`,
+    pseudo-classes or attribute selectors is still dropped. Rules are indexed by their
+    subject's id / class / tag: 2,700 rules on a 1,500-article page cost 11 ms on the PC (it was
+    63 ms checking every rule).
+  - **Font sizes** are computed in pixels down the tree (`%`, `em` relative to the parent,
+    `rem`, `px`, `pt`, keywords, `<font size>`, headings 2 / 1.5 / 1.17 em) and then mapped to
+    the 4 phone sizes (under 14 px small, 14-17 normal, 18-25 large, 26+ extra large), so the
+    `body{font-size:62.5%} p{font-size:1.4em}` pattern gives normal text.
+  - Links take the page's link colour and underline unless a matching rule sets them.
+  - **Find in page** (Page > Find, Ctrl+F; Ctrl+N next): ignores case and accents ("prilis"
+    finds "příliš"), wraps around, the match is shown on yellow.
+  - **Password fields** are typed in a secret editor (the text is not shown).
+  - Ctrl+F is now Find; Forward is in the Page menu.
+
 - **0.1** (first version, not yet run on the phone):
   - HTML: tolerant parsing (implied `</p>`, `</li>`, `</td>`, `</option>`..., stray end tags,
     raw text in script/style/textarea/title, comments, CDATA), 378 named entities + numeric,
@@ -78,7 +101,8 @@ receives logs (`localserver\ota_server.js`).
 | Esc, Backspace | stop loading; otherwise back |
 | Ctrl+L | go to an address (side button **Go to**) |
 | Ctrl+B / Ctrl+D / Ctrl+H | bookmarks / add this page / history |
-| Ctrl+R, Ctrl+F | reload, forward |
+| Ctrl+R | reload (Forward: Page menu) |
+| Ctrl+F / Ctrl+N | find in page / find the next one |
 | Ctrl+I | page info |
 | Ctrl+G | pictures on / off |
 | Ctrl+S | the start page |
@@ -121,9 +145,6 @@ adds to that). Page info shows the real parse / layout times on the phone.
 ## Next
 
 - Measure on the phone: parse / layout times on real pages, memory, picture speed.
-- External stylesheets (one extra request per page, parsed on the phone) - many sites hide
-  their menus and banners only there.
-- Find in page, text selection and copy (Instagram's `textsel.cpp`), a password field dialog
-  that hides the text, choosing the charset by hand.
+- Text selection and copy (Instagram's `textsel.cpp`), choosing the charset by hand.
+- `@import` inside external stylesheets, `:first-child`-style pseudo-classes, `+` / `~`.
 - Faster picture decoding with Mapy's own PNG/JPEG decoders.
-- Descendant selectors (`.menu a`) with a parent chain on the element stack.

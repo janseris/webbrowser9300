@@ -323,3 +323,178 @@ void CPageLoader::HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders
     else iObserver.PageDownloaded(name, KNullDesC8);
     delete ctCopy;
     }
+
+// ------------------------------------------------------------------ stylesheets
+// The page's external stylesheets, one at a time over a connection of their own (so the
+// pictures do not wait): cookies, up to 3 redirects, a watchdog. Each result goes to the
+// observer (the app caches them per URL and lays the page out again when all are in).
+
+const TInt KMaxStyleRedirects = 3;
+const TInt KMaxStyleBytes = 400 * 1024;
+
+CStyleFetcher* CStyleFetcher::NewL(MStyleObserver& aObserver, BwCookieJar& aCookies)
+    {
+    CStyleFetcher* self = new (ELeave) CStyleFetcher(aObserver, aCookies);
+    CleanupStack::PushL(self);
+    self->iHttp = CHttpClient::NewL();
+    self->iHttp->SetQuiet(ETrue);
+    self->iWatchdog = CPeriodic::NewL(CActive::EPriorityStandard);
+    CleanupStack::Pop(self);
+    return self;
+    }
+
+CStyleFetcher::CStyleFetcher(MStyleObserver& aObserver, BwCookieJar& aCookies)
+    : iObserver(aObserver), iCookies(aCookies)
+    {
+    }
+
+CStyleFetcher::~CStyleFetcher()
+    {
+    if (iWatchdog) iWatchdog->Cancel();
+    delete iWatchdog;
+    delete iHttp;
+    iQueue.ResetAndDestroy();
+    delete iCurrent;
+    delete iCurrentFinal;
+    }
+
+void CStyleFetcher::Stop()
+    {
+    iWatchdog->Cancel();
+    if (iHttp->Busy()) iHttp->Abort();
+    iQueue.ResetAndDestroy();
+    delete iCurrent; iCurrent = NULL;
+    delete iCurrentFinal; iCurrentFinal = NULL;
+    }
+
+void CStyleFetcher::AddL(const TDesC8& aUrl)
+    {
+    if (iCurrent && *iCurrent == aUrl) return;
+    for (TInt i = 0; i < iQueue.Count(); i++) if (*iQueue[i] == aUrl) return;
+    HBufC8* u = aUrl.AllocLC();
+    User::LeaveIfError(iQueue.Append(u));
+    CleanupStack::Pop(u);
+    }
+
+void CStyleFetcher::StartL()
+    {
+    if (iCurrent || !iQueue.Count()) return;
+    iCurrent = iQueue[0];
+    iQueue.Remove(0);
+    iRedirects = 0;
+    delete iCurrentFinal;
+    iCurrentFinal = iCurrent->AllocL();
+    TRAPD(err, SendL());
+    if (err != KErrNone) Done(NULL);
+    }
+
+void CStyleFetcher::SendL()
+    {
+    HBufC8* z = HBufC8::NewLC(iCurrentFinal->Length() + 1);
+    z->Des().Copy(*iCurrentFinal);
+    z->Des().ZeroTerminate();
+    char host[128];
+    int port, secure;
+    const char* path;
+    unsigned int pathLen;
+    if (!bw_url_split((const char*)z->Ptr(), host, sizeof(host), &port, &secure, &path, &pathLen)) User::Leave(KErrArgument);
+    iHost.Copy(TPtrC8((const TUint8*)host));
+    HBufC8* h = HBufC8::NewLC(3500);
+    TPtr8 hp = h->Des();
+    hp.Append(_L8("User-Agent: "));
+    hp.Append(KBrUserAgent);
+    hp.Append(_L8("\r\nAccept: text/css,*/*;q=0.1\r\nAccept-Encoding: gzip\r\n"));
+    HBufC8* zp = HBufC8::NewLC(pathLen + 1);
+    zp->Des().Copy(TPtrC8((const TUint8*)path, pathLen));
+    zp->Des().ZeroTerminate();
+    char* cookie = bw_cookies_header(&iCookies, host, (const char*)zp->Ptr(), secure, NowUnixSeconds());
+    if (cookie)
+        {
+        TPtrC8 c((const TUint8*)cookie);
+        if (c.Length() < 3000) { hp.Append(_L8("Cookie: ")); hp.Append(c); hp.Append(_L8("\r\n")); }
+        ig_free(cookie);
+        }
+    iHttp->RequestL(iHost, _L8("GET"), TPtrC8((const TUint8*)path, pathLen), hp, KNullDesC8, *this, secure != 0, port);
+    CleanupStack::PopAndDestroy(3);
+    iLastBytes = 0;
+    iIdleTicks = 0;
+    iWatchdog->Cancel();
+    iWatchdog->Start(5000000, 5000000, TCallBack(WatchdogTick, this));
+    }
+
+TInt CStyleFetcher::WatchdogTick(TAny* aSelf)
+    {
+    CStyleFetcher* self = (CStyleFetcher*)aSelf;
+    if (!self->iCurrent) { self->iWatchdog->Cancel(); return 0; }
+    TInt now = self->iHttp->BytesReceived();
+    if (now != self->iLastBytes) { self->iLastBytes = now; self->iIdleTicks = 0; return 0; }
+    if (++self->iIdleTicks >= 6)
+        {
+        IgLog(_L("stylesheet: no data for 30 s"));
+        self->iHttp->Abort();
+        self->Done(NULL);
+        }
+    return 0;
+    }
+
+void CStyleFetcher::HttpProgress(const TDesC& /*aText*/)
+    {
+    }
+
+void CStyleFetcher::HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders, const TDesC8& aBody)
+    {
+    iWatchdog->Cancel();
+    if (!iCurrent) return;
+    if (aError == KErrNone && aHttpStatus >= 301 && aHttpStatus <= 308 && iRedirects < KMaxStyleRedirects)
+        {
+        char* loc = ig_http_header_dup((const char*)aHeaders.Ptr(), aHeaders.Length(), "Location", 0);
+        HBufC8* z = loc ? HBufC8::New(iCurrentFinal->Length() + 1) : NULL;
+        char* next = NULL;
+        if (z)
+            {
+            z->Des().Copy(*iCurrentFinal);
+            z->Des().ZeroTerminate();
+            next = bw_url_resolve((const char*)z->Ptr(), loc, ig_strlen(loc));
+            delete z;
+            }
+        ig_free(loc);
+        if (next)
+            {
+            HBufC8* n = TPtrC8((const TUint8*)next).Alloc();
+            ig_free(next);
+            if (n)
+                {
+                delete iCurrentFinal;
+                iCurrentFinal = n;
+                iRedirects++;
+                TRAPD(err, SendL());
+                if (err == KErrNone) return;
+                }
+            }
+        }
+    if (aError != KErrNone || aHttpStatus != 200 || aBody.Length() > KMaxStyleBytes)
+        {
+        IgLogF2(_L("stylesheet failed: err %d HTTP %d"), aError, aHttpStatus);
+        Done(NULL);
+        return;
+        }
+    IgLogF(_L("stylesheet: %d bytes"), aBody.Length());
+    Done(&aBody);
+    }
+
+void CStyleFetcher::Done(const TDesC8* aCss)
+    {
+    HBufC8* url = iCurrent;
+    iCurrent = NULL;
+    if (url)
+        {
+        iObserver.StyleArrived(*url, aCss);
+        delete url;
+        }
+    if (iQueue.Count())
+        {
+        TRAPD(err, StartL());
+        (void)err;
+        }
+    else iObserver.StylesDone();
+    }

@@ -26,8 +26,52 @@ CBrView* CBrView::NewL(const TRect& aRect, CBrAppUi& aAppUi, CImageLoader& aImag
     }
 
 CBrView::CBrView(CBrAppUi& aAppUi, CImageLoader& aImages, CBrFonts& aFonts)
-    : iAppUi(aAppUi), iImages(aImages), iFonts(&aFonts), iFocus(-1)
+    : iAppUi(aAppUi), iImages(aImages), iFonts(&aFonts), iFocus(-1), iFindBox(-1)
     {
+    }
+
+// Finds the text (case and accents ignored) in the laid-out text, from the screen's top or after
+// the last match; wraps around. ETrue when found (it is then highlighted and scrolled to).
+TBool CBrView::Find(const TDesC& aText, TBool aNext)
+    {
+    if (!iDoc || !iLayout || !aText.Length()) return EFalse;
+    TInt m = aText.Length();
+    HBufC* needle = HBufC::New(m);
+    if (!needle) return EFalse;
+    TPtr nd = needle->Des();
+    for (TInt k = 0; k < m; k++) nd.Append((TChar)User::Fold(aText[k]));
+    TInt n = (TInt)iLayout->boxCount;
+    TInt start = aNext && iFindBox >= 0 && iFindBox < n ? iFindBox : (TInt)bw_layout_first_box(iLayout, iScrollY);
+    TInt from = aNext && iFindBox >= 0 ? iFindOff + 1 : 0;
+    TBool found = EFalse;
+    for (TInt step = 0; step <= n && !found; step++)
+        {
+        TInt i = (start + step) % (n ? n : 1);
+        const BwBox& b = iLayout->boxes[i];
+        if (b.kind != BW_BOX_TEXT) { from = 0; continue; }
+        const unsigned short* t = iDoc->pool + b.off;
+        for (TInt p = from; p + m <= (TInt)b.len; p++)
+            {
+            TInt k = 0;
+            while (k < m && (TUint)User::Fold(t[p + k]) == (TUint)nd[k]) k++;
+            if (k == m)
+                {
+                found = ETrue;
+                iFindBox = i;
+                iFindOff = p;
+                iFindLen = m;
+                TInt h = PageHeightOnScreen();
+                if (b.y < iScrollY || b.y + b.h > iScrollY + h) iScrollY = b.y - h / 3;
+                ClampScroll();
+                break;
+                }
+            }
+        from = 0;
+        }
+    delete needle;
+    if (!found) iFindBox = -1;
+    Render();
+    return found;
     }
 
 void CBrView::ConstructL(const TRect& aRect)
@@ -121,6 +165,7 @@ void CBrView::Relayout()
             if (b.kind == BW_BOX_TEXT && b.y >= iScrollY) { anchorOff = (TInt)b.off; anchorDy = b.y - iScrollY; break; }
             }
         }
+    iFindBox = -1;
     TUint32 t0 = TickMs();
     BwLayout* l = bw_layout(iDoc, width, &iFonts->Metrics());
     iLayoutMs = (TInt)(TickMs() - t0);
@@ -516,11 +561,21 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
                     fr.Grow(1, 0);
                     aGc.DrawRect(fr);
                     }
+                TPtrC t((const TUint16*)iDoc->pool + b.off, b.len);
+                if ((TInt)i == iFindBox && iFindOff + iFindLen <= (TInt)b.len)
+                    {
+                    // the found text on yellow
+                    TInt fx = r.iTl.iX + current->TextWidthInPixels(t.Left(iFindOff));
+                    TInt fw = current->TextWidthInPixels(t.Mid(iFindOff, iFindLen));
+                    aGc.SetPenStyle(CGraphicsContext::ENullPen);
+                    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+                    aGc.SetBrushColor(TRgb(0xFF, 0xE0, 0x40));
+                    aGc.DrawRect(TRect(TPoint(fx, r.iTl.iY), TSize(fw, r.Height())));
+                    }
                 aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
                 aGc.SetPenStyle(CGraphicsContext::ESolidPen);
                 aGc.SetPenColor(focused ? TRgb(0x00, 0x00, 0x60) : Rgb(b.color));
                 TInt base = r.iTl.iY + current->AscentInPixels() + 1;
-                TPtrC t((const TUint16*)iDoc->pool + b.off, b.len);
                 aGc.DrawText(t, TPoint(r.iTl.iX, base));
                 if (b.flags & BW_OPF_UNDERLINE) aGc.DrawLine(TPoint(r.iTl.iX, base + 1), TPoint(r.iBr.iX, base + 1));
                 if (b.flags & BW_OPF_STRIKE)
