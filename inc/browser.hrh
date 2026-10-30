@@ -1,0 +1,44 @@
+// Browser 9300 - command ids (shared by browser.rss and the code)
+#ifndef BROWSER_HRH
+#define BROWSER_HRH
+
+enum TBrCommands
+    {
+    EBrCmdGoTo = 0x6000,
+    EBrCmdBack,
+    EBrCmdForward,
+    EBrCmdReload,
+    EBrCmdStop,
+    EBrCmdHome,
+    EBrCmdBookmarks,
+    EBrCmdAddBookmark,
+    EBrCmdHistory,
+    EBrCmdPageInfo,
+    EBrCmdImages,
+    EBrCmdFullScreen,
+    EBrCmdMouse,
+    EBrCmdTextSmaller,
+    EBrCmdTextNormal,
+    EBrCmdTextBigger,
+    EBrCmdSetHome,
+    EBrCmdUpdate,
+    EBrCmdSendLog,
+    EBrCmdSendPrevLog,
+    EBrCmdScreenshot,
+    EBrCmdServer,
+    EBrCmdLogging,
+    EBrCmdClearCookies,
+    EBrCmdPromptAp,
+    EBrCmdDropConnection,
+    EBrCmdAbout,
+    EBrCmdTop,
+    EBrCmdBottom,
+    EBrCmdStartPage
+    };
+
+enum TBrControls
+    {
+    EBrTextField = 1
+    };
+
+#endif

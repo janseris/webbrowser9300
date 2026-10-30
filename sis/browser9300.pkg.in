@@ -1,0 +1,8 @@
+; Browser 9300: a web browser for the Nokia 9300 / 9500 (Series 80 2.0)
+&EN
+#{"Browser 9300"},(0x0F5A9310),0,VERSION_MINOR,0
+; Series 80 2.0 (Nokia 9300 / 9500)
+(0x101F8ED2), 0, 0, 0, {"Series80ProductID"}
+"EPOC32/release/armi/urel/browser9300.app"-"C:\system\apps\browser9300\browser9300.app"
+"EPOC32/data/z/system/apps/browser9300/browser9300.rsc"-"C:\system\apps\browser9300\browser9300.rsc"
+"EPOC32/data/z/system/apps/browser9300/browser9300.aif"-"C:\system\apps\browser9300\browser9300.aif"

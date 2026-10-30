@@ -1,0 +1,150 @@
+// Browser 9300 - resources: menus, the side buttons, hot keys, the text dialog
+
+NAME BRWS
+
+#include <eikon.rh>
+#include <eikon.rsg>
+#include <eikcore.rsg>
+#include <uikon.hrh>
+#include "browser.hrh"
+
+RESOURCE RSS_SIGNATURE { }
+
+RESOURCE TBUF { buf = ""; }
+
+RESOURCE EIK_APP_INFO
+    {
+    menubar = r_br_menubar;
+    cba = r_br_cba;
+    hotkeys = r_br_hotkeys;
+    }
+
+RESOURCE CBA r_br_cba
+    {
+    buttons =
+        {
+        CBA_BUTTON { id = EBrCmdGoTo; txt = "Go to"; },
+        CBA_BUTTON { id = EBrCmdBack; txt = "Back"; },
+        CBA_BUTTON { id = EBrCmdBookmarks; txt = "Bookmarks"; },
+        CBA_BUTTON { id = EEikCmdExit; txt = "Close"; }
+        };
+    }
+
+RESOURCE HOTKEYS r_br_hotkeys
+    {
+    control =
+        {
+        HOTKEY { command = EBrCmdGoTo; key = 'l'; },
+        HOTKEY { command = EBrCmdReload; key = 'r'; },
+        HOTKEY { command = EBrCmdBookmarks; key = 'b'; },
+        HOTKEY { command = EBrCmdAddBookmark; key = 'd'; },
+        HOTKEY { command = EBrCmdHistory; key = 'h'; },
+        HOTKEY { command = EBrCmdPageInfo; key = 'i'; },
+        HOTKEY { command = EBrCmdForward; key = 'f'; },
+        HOTKEY { command = EBrCmdStartPage; key = 's'; },
+        HOTKEY { command = EBrCmdImages; key = 'g'; },
+        HOTKEY { command = EEikCmdExit; key = 'e'; }
+        };
+    }
+
+RESOURCE MENU_BAR r_br_menubar
+    {
+    titles =
+        {
+        MENU_TITLE { menu_pane = r_br_menu_page; txt = "Page"; },
+        MENU_TITLE { menu_pane = r_br_menu_bookmarks; txt = "Bookmarks"; },
+        MENU_TITLE { menu_pane = r_br_menu_view; txt = "View"; },
+        MENU_TITLE { menu_pane = r_br_menu_tools; txt = "Tools"; }
+        };
+    }
+
+RESOURCE MENU_PANE r_br_menu_page
+    {
+    items =
+        {
+        MENU_ITEM { command = EBrCmdGoTo; txt = "Go to address..."; },
+        MENU_ITEM { command = EBrCmdBack; txt = "Back"; },
+        MENU_ITEM { command = EBrCmdForward; txt = "Forward"; },
+        MENU_ITEM { command = EBrCmdReload; txt = "Reload"; },
+        MENU_ITEM { command = EBrCmdStop; txt = "Stop"; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdHome; txt = "Home page"; },
+        MENU_ITEM { command = EBrCmdStartPage; txt = "Start page"; },
+        MENU_ITEM { command = EBrCmdPageInfo; txt = "Page info"; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EEikCmdExit; txt = "Close"; }
+        };
+    }
+
+RESOURCE MENU_PANE r_br_menu_bookmarks
+    {
+    items =
+        {
+        MENU_ITEM { command = EBrCmdBookmarks; txt = "Bookmarks"; },
+        MENU_ITEM { command = EBrCmdAddBookmark; txt = "Add this page"; },
+        MENU_ITEM { command = EBrCmdHistory; txt = "History"; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdSetHome; txt = "Set as home page..."; }
+        };
+    }
+
+RESOURCE MENU_PANE r_br_menu_view
+    {
+    items =
+        {
+        MENU_ITEM { command = EBrCmdImages; txt = "Load pictures"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdFullScreen; txt = "Full screen"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdMouse; txt = "Mouse pointer"; flags = EEikMenuItemCheckBox | EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdTextSmaller; txt = "Text: small"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdTextNormal; txt = "Text: normal"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdTextBigger; txt = "Text: large"; flags = EEikMenuItemCheckBox | EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdTop; txt = "Top of the page"; },
+        MENU_ITEM { command = EBrCmdBottom; txt = "End of the page"; }
+        };
+    }
+
+RESOURCE MENU_PANE r_br_menu_tools
+    {
+    items =
+        {
+        MENU_ITEM { command = EBrCmdUpdate; txt = "Update from the PC"; },
+        MENU_ITEM { command = EBrCmdSendLog; txt = "Send the log to the PC"; },
+        MENU_ITEM { command = EBrCmdSendPrevLog; txt = "Send the previous log"; },
+        MENU_ITEM { command = EBrCmdScreenshot; txt = "Send a screenshot"; },
+        MENU_ITEM { command = EBrCmdServer; txt = "PC server address..."; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdLogging; txt = "Logging"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdPromptAp; txt = "Ask for the access point"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdDropConnection; txt = "Drop the connection"; },
+        MENU_ITEM { command = EBrCmdClearCookies; txt = "Delete cookies"; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdAbout; txt = "About"; }
+        };
+    }
+
+RESOURCE DIALOG r_br_text_dialog
+    {
+    title = "Text";
+    flags = EEikDialogFlagWait;
+    buttons = R_EIK_BUTTONS_CANCEL_OK;
+    items =
+        {
+        DLG_LINE
+            {
+            type = EEikCtEdwin;
+            id = EBrTextField;
+            control = EDWIN { width = 50; lines = 3; maxlength = 2000; flags = EEikEdwinNoHorizScrolling; };
+            }
+        };
+    }
+
+RESOURCE DIALOG r_br_text_dialog_multi
+    {
+    title = "Text";
+    flags = EEikDialogFlagWait;
+    buttons = R_EIK_BUTTONS_CANCEL_OK;
+    items =
+        {
+        DLG_LINE
+            {
+            type = EEikCtEdwin;
+            id = EBrTextField;
+            control = EDWIN { width = 50; lines = 6; maxlength = 4000; };
+            }
+        };
+    }

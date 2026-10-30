@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="cs"><head><meta charset="utf-8"><title>Zprávy – Titulní strana</title>
+<link rel="stylesheet" href="/s.css"><script>window.x={a:"<div>"};</script>
+<style>
+body { background:#fff; color:#222; font-family: Arial, sans-serif }
+.hidden, .cookie-banner { display:none }
+header { background-color: #003366; color: white }
+nav a { color: #fff }
+.lead { font-size: 18px; font-weight: bold }
+@media (max-width: 600px) { .wide { display:none } }
+@media print { body { color: red } }
+.btn { background: #c00 url(x.png) no-repeat; color:#fff }
+h2 a:hover { color: red }
+</style></head>
+<body>
+<div class="cookie-banner">We use cookies <button>OK</button></div>
+<header><h1>Zprávy dne</h1><nav><a href="/">Domů</a> | <a href="/domov">Domov</a> | <a href="/svet">Svět</a></nav></header>
+<main>
+<article><h2><a href="/clanek/1">Vláda schválila rozpočet na rok 2027</a></h2>
+<p class="lead">Poslanci dnes po dlouhé debatě schválili státní rozpočet. Schodek činí 230&nbsp;miliard korun.</p>
+<img src="/img/foto1.jpg" width="300" height="200" alt="Sněmovna"><p>Další text článku s <em>důležitými</em> informacemi a <a href="https://example.org/odkaz?a=1&amp;b=2">odkazem ven</a>. Velmi dlouhé slovo: https://www.example.com/a/very/long/path/that/does/not/fit/on/one/line/at/all/really/long</p>
+</article>
+<ul class="list"><li><a href="/a">První zpráva</a></li><li><a href="/b">Druhá zpráva</a><ul><li>vnořená</li></ul></li></ul>
+<table border=1 bgcolor="#eeeeee"><tr><th>Měna</th><th>Kurz</th></tr><tr><td>EUR</td><td align=right>24,35</td></tr><tr><td>USD</td><td>22,80</td></tr></table>
+<form action="/hledat" method="get"><label>Hledat: <input type="text" name="q" size="25" placeholder="Hledaný výraz"></label>
+<select name="kde"><option value="vse">Všude</option><option value="zpravy" selected>Zprávy</option></select>
+<input type="checkbox" name="foto" checked> s fotkou <input type="submit" value="Hledat"></form>
+<p class="wide">Jen pro široké obrazovky</p>
+<blockquote>Citát z projevu.</blockquote>
+<pre>  kód  {
+    return 1;
+  }</pre>
+<div style="text-align:center"><a class="btn" href="/vice">Další zprávy »</a></div>
+<hr><footer><p><small>&copy; 2026 Zprávy, a.s. <a href="#top">Nahoru</a></small></p></footer>
+</main>
+<script src="/app.js"></script>
+</body></html>

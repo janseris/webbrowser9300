@@ -1,0 +1,850 @@
+// Browser 9300 - the page on the screen: an off-screen bitmap with the header line, the visible
+// part of the layout (fills, text, pictures, form fields), the focused link or field, a scroll
+// bar, and a list drawn over the page (select options, page info).
+//
+// Keys: Up/Down move to the next link when it is on screen, otherwise scroll; Left/Right and
+// Tab jump from link to link; Shift+Up/Down or Space page; Ctrl+Up/Down top/bottom;
+// Enter opens / edits; Esc or Backspace go back.
+
+#include <eikenv.h>
+#include <fbs.h>
+#include "browser.h"
+
+const TInt KScrollStep = 36;
+const TInt KScrollBarW = 4;
+const TInt KListMaxRows = 10;
+
+static TRgb Rgb(TInt c) { return TRgb((c >> 16) & 255, (c >> 8) & 255, c & 255); }
+
+CBrView* CBrView::NewL(const TRect& aRect, CBrAppUi& aAppUi, CImageLoader& aImages, CBrFonts& aFonts)
+    {
+    CBrView* self = new (ELeave) CBrView(aAppUi, aImages, aFonts);
+    CleanupStack::PushL(self);
+    self->ConstructL(aRect);
+    CleanupStack::Pop(self);
+    return self;
+    }
+
+CBrView::CBrView(CBrAppUi& aAppUi, CImageLoader& aImages, CBrFonts& aFonts)
+    : iAppUi(aAppUi), iImages(aImages), iFonts(&aFonts), iFocus(-1)
+    {
+    }
+
+void CBrView::ConstructL(const TRect& aRect)
+    {
+    CreateWindowL();
+    iHeaderH = iEikonEnv->DenseFont()->HeightInPixels() + 5;
+    iRelayout = new (ELeave) CAsyncCallBack(TCallBack(RelayoutCallback, this), CActive::EPriorityIdle);
+    SetRect(aRect);
+    ActivateL();
+    }
+
+CBrView::~CBrView()
+    {
+    delete iRelayout;
+    bw_layout_free(iLayout);
+    bw_doc_free(iDoc);
+    delete iBufferGc;
+    delete iBufferDev;
+    delete iBuffer;
+    iListItems.ResetAndDestroy();
+    }
+
+void CBrView::EnsureBufferL()
+    {
+    TSize s = Rect().Size();
+    if (iBuffer && iBuffer->SizeInPixels() == s) return;
+    delete iBufferGc; iBufferGc = NULL;
+    delete iBufferDev; iBufferDev = NULL;
+    delete iBuffer; iBuffer = NULL;
+    iBuffer = new (ELeave) CFbsBitmap;
+    User::LeaveIfError(iBuffer->Create(s, EColor64K));
+    iBufferDev = CFbsBitmapDevice::NewL(iBuffer);
+    User::LeaveIfError(iBufferDev->CreateContext(iBufferGc));
+    }
+
+void CBrView::SizeChanged()
+    {
+    TRAPD(err, EnsureBufferL());
+    (void)err;
+    if (iDoc) Relayout();
+    else Render();
+    }
+
+void CBrView::SetFonts(CBrFonts& aFonts)
+    {
+    iFonts = &aFonts;
+    if (iDoc) Relayout();
+    }
+
+// ------------------------------------------------------------------ the document
+
+void CBrView::ClearDocument()
+    {
+    bw_layout_free(iLayout);
+    iLayout = NULL;
+    bw_doc_free(iDoc);
+    iDoc = NULL;
+    iScrollY = 0;
+    iFocus = -1;
+    Render();
+    }
+
+void CBrView::SetDocumentL(BwDoc* aDoc, TInt aScrollY, TInt aFocus)
+    {
+    bw_layout_free(iLayout);
+    iLayout = NULL;
+    bw_doc_free(iDoc);
+    iDoc = aDoc;
+    iScrollY = 0;
+    iFocus = -1;
+    iListOpen = EFalse;
+    Relayout();
+    iScrollY = aScrollY;
+    ClampScroll();
+    if (aFocus >= 0 && iDoc && (TUint)aFocus < iDoc->targetCount && TargetVisible(aFocus, EFalse)) iFocus = aFocus;
+    Render();
+    }
+
+void CBrView::Relayout()
+    {
+    iRelayoutPending = EFalse;
+    if (!iDoc) { Render(); return; }
+    TInt width = Rect().Width() - KScrollBarW;
+    // keep the first text on the screen where it is
+    TInt anchorOff = -1, anchorDy = 0;
+    if (iLayout && iScrollY > 0)
+        {
+        for (TUint i = bw_layout_first_box(iLayout, iScrollY); i < iLayout->boxCount; i++)
+            {
+            const BwBox& b = iLayout->boxes[i];
+            if (b.kind == BW_BOX_TEXT && b.y >= iScrollY) { anchorOff = (TInt)b.off; anchorDy = b.y - iScrollY; break; }
+            }
+        }
+    TUint32 t0 = TickMs();
+    BwLayout* l = bw_layout(iDoc, width, &iFonts->Metrics());
+    iLayoutMs = (TInt)(TickMs() - t0);
+    if (!l) { Render(); return; }
+    bw_layout_free(iLayout);
+    iLayout = l;
+    iImages.SetMaxSize(TSize(width - 8, 1200));
+    if (anchorOff >= 0)
+        {
+        for (TUint i = 0; i < iLayout->boxCount; i++)
+            {
+            const BwBox& b = iLayout->boxes[i];
+            if (b.kind == BW_BOX_TEXT && (TInt)b.off <= anchorOff && anchorOff < (TInt)(b.off + b.len))
+                {
+                iScrollY = b.y - anchorDy;
+                break;
+                }
+            }
+        }
+    ClampScroll();
+    if (iFocus >= 0 && (TUint)iFocus >= iDoc->targetCount) iFocus = -1;
+    Render();
+    }
+
+TInt CBrView::RelayoutCallback(TAny* aSelf)
+    {
+    ((CBrView*)aSelf)->Relayout();
+    return 0;
+    }
+
+void CBrView::ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize)
+    {
+    if (!iDoc) return;
+    TBool sizeChanged = EFalse, any = EFalse;
+    for (TUint i = 0; i < iDoc->imageCount; i++)
+        {
+        BwImage& im = iDoc->images[i];
+        if (!im.src) continue;
+        TPtrC8 src((const TUint8*)im.src);
+        if (src != aUrl) continue;
+        any = ETrue;
+        if (!aOk)
+            {
+            if (!im.failed) { im.failed = 1; if (!(im.attrW && im.attrH)) sizeChanged = ETrue; }
+            }
+        else if (im.natW != aFullSize.iWidth || im.natH != aFullSize.iHeight)
+            {
+            im.natW = aFullSize.iWidth;
+            im.natH = aFullSize.iHeight;
+            if (!(im.attrW && im.attrH)) sizeChanged = ETrue;
+            }
+        }
+    if (!any) return;
+    if (sizeChanged)
+        {
+        if (!iRelayout->IsActive()) iRelayout->CallBack();
+        iRelayoutPending = ETrue;
+        }
+    else if (!iRelayoutPending) Render();
+    }
+
+void CBrView::SetStatus(const TDesC& aText)
+    {
+    if (iStatusText == aText.Left(iStatusText.MaxLength())) return;
+    iStatusText.Copy(aText.Left(iStatusText.MaxLength()));
+    Render();
+    }
+
+void CBrView::SetTitle(const TDesC& aText)
+    {
+    iTitle.Copy(aText.Left(iTitle.MaxLength()));
+    Render();
+    }
+
+void CBrView::SetLoading(TBool aLoading)
+    {
+    iLoading = aLoading;
+    Render();
+    }
+
+void CBrView::ClampScroll()
+    {
+    TInt h = PageHeightOnScreen();
+    TInt max = iLayout ? iLayout->height - h : 0;
+    if (iScrollY > max) iScrollY = max;
+    if (iScrollY < 0) iScrollY = 0;
+    }
+
+void CBrView::ScrollTo(TInt aY)
+    {
+    iScrollY = aY;
+    ClampScroll();
+    Render();
+    }
+
+void CBrView::ScrollToAnchor(const TDesC8& aName)
+    {
+    if (!iDoc || !iLayout) return;
+    HBufC8* z = HBufC8::New(aName.Length() + 1);
+    if (!z) return;
+    z->Des().Copy(aName);
+    z->Des().ZeroTerminate();
+    TInt a = bw_doc_find_anchor(iDoc, (const char*)z->Ptr());
+    delete z;
+    if (a >= 0) { iFocus = -1; ScrollTo(iLayout->anchorY[a] - 2); }
+    else if (aName.Length() == 0 || aName == _L8("top")) ScrollTo(0);
+    }
+
+void CBrView::SetPointerOn(TBool aOn)
+    {
+    iPointerOn = aOn;
+    }
+
+// ------------------------------------------------------------------ drawing
+
+void CBrView::Draw(const TRect& /*aRect*/) const
+    {
+    CWindowGc& gc = SystemGc();
+    if (iBuffer) gc.BitBlt(Rect().iTl, iBuffer);
+    else
+        {
+        gc.SetBrushColor(KRgbWhite);
+        gc.Clear(Rect());
+        }
+    }
+
+void CBrView::Render()
+    {
+    TRAPD(err, EnsureBufferL());
+    if (err != KErrNone || !iBufferGc) return;
+    CFbsBitGc& gc = *iBufferGc;
+    gc.Reset();
+    RenderPage(gc);
+    RenderHeader(gc);
+    if (iListOpen) RenderList(gc);
+    gc.DiscardFont();
+    DrawDeferred();
+    }
+
+void CBrView::RenderHeader(CFbsBitGc& aGc)
+    {
+    TRect r(TPoint(0, 0), TSize(Rect().Width(), iHeaderH));
+    aGc.SetPenStyle(CGraphicsContext::ENullPen);
+    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+    aGc.SetBrushColor(iLoading ? TRgb(0x60, 0x30, 0x10) : TRgb(0x1C, 0x3A, 0x6E));
+    aGc.DrawRect(r);
+    aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+    const CFont* f = iEikonEnv->DenseFont();
+    aGc.UseFont(f);
+    TInt base = (iHeaderH - f->HeightInPixels()) / 2 + f->AscentInPixels();
+    TInt statusW = iStatusText.Length() ? f->TextWidthInPixels(iStatusText) + 8 : 0;
+    if (statusW > r.Width() / 2) statusW = r.Width() / 2;
+    // left: the focused link's address, else the title
+    TBuf<160> left;
+    if (!iLoading && iDoc && iFocus >= 0 && (TUint)iFocus < iDoc->targetCount && iDoc->targets[iFocus].kind == BW_TGT_LINK)
+        {
+        const char* href = iDoc->links[iDoc->targets[iFocus].index].href;
+        TPtrC8 h((const TUint8*)href);
+        left.Copy(h.Left(left.MaxLength()));
+        }
+    else left.Copy(iTitle);
+    TInt avail = r.Width() - statusW - 6;
+    TInt n = f->TextCount(left, avail);
+    aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+    aGc.SetPenColor(KRgbWhite);
+    aGc.DrawText(left.Left(n), TPoint(3, base));
+    if (statusW)
+        {
+        aGc.SetPenColor(TRgb(0xFF, 0xE0, 0x80));
+        TInt sn = f->TextCount(iStatusText, statusW - 4);
+        aGc.DrawText(iStatusText.Left(sn), TPoint(r.Width() - statusW + 2, base));
+        }
+    }
+
+void CBrView::DrawImage(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect, TInt aPriority)
+    {
+    const BwImage& im = iDoc->images[aBox.ref];
+    CFbsBitmap* bmp = im.src && !im.failed ? iImages.Get(im.src, aPriority) : NULL;
+    if (bmp)
+        {
+        TSize s = bmp->SizeInPixels();
+        if (s == aRect.Size()) aGc.BitBlt(aRect.iTl, bmp);
+        else aGc.DrawBitmap(aRect, bmp);
+        if (aBox.target >= 0 && aBox.target == iFocus)
+            {
+            aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+            aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+            aGc.SetPenColor(TRgb(0x00, 0x60, 0xFF));
+            aGc.SetPenSize(TSize(2, 2));
+            aGc.DrawRect(aRect);
+            aGc.SetPenSize(TSize(1, 1));
+            }
+        return;
+        }
+    // a frame with the alt text while it loads
+    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+    aGc.SetBrushColor(aBox.target >= 0 && aBox.target == iFocus ? TRgb(0xCC, 0xE0, 0xFF) : TRgb(0xEE, 0xEE, 0xEE));
+    aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+    aGc.SetPenColor(aBox.target >= 0 ? TRgb(0x40, 0x60, 0xC0) : TRgb(0xAA, 0xAA, 0xAA));
+    aGc.DrawRect(aRect);
+    aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+    if (im.altLen && aRect.Height() >= 10)
+        {
+        const CFont* f = iFonts->Font(aBox.font & ~(BW_FONT_BOLD | BW_FONT_ITALIC));
+        aGc.UseFont(f);
+        aGc.SetClippingRect(aRect);
+        aGc.SetPenColor(TRgb(0x55, 0x55, 0x55));
+        TPtrC alt((const TUint16*)iDoc->pool + im.altOff, im.altLen);
+        aGc.DrawText(alt, TPoint(aRect.iTl.iX + 3, aRect.iTl.iY + 2 + f->AscentInPixels()));
+        aGc.CancelClippingRect();
+        }
+    }
+
+void CBrView::DrawControl(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect, TBool aFocused)
+    {
+    const BwControl& c = iDoc->controls[aBox.ref];
+    const CFont* f = iFonts->Font(aBox.font);
+    aGc.UseFont(f);
+    TRgb border = aFocused ? TRgb(0x00, 0x60, 0xFF) : TRgb(0x80, 0x80, 0x80);
+    aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+    if (aFocused) aGc.SetPenSize(TSize(2, 2));
+    TInt base = aRect.iTl.iY + (aRect.Height() - f->HeightInPixels()) / 2 + f->AscentInPixels();
+    switch (c.type)
+        {
+        case BW_CTL_CHECKBOX:
+            aGc.SetBrushColor(KRgbWhite);
+            aGc.SetPenColor(border);
+            aGc.DrawRect(aRect);
+            if (c.checked)
+                {
+                aGc.SetPenSize(TSize(2, 2));
+                aGc.SetPenColor(KRgbBlack);
+                TRect in(aRect);
+                in.Shrink(3, 3);
+                aGc.DrawLine(TPoint(in.iTl.iX, in.iTl.iY + in.Height() / 2), TPoint(in.iTl.iX + in.Width() / 3, in.iBr.iY - 1));
+                aGc.DrawLine(TPoint(in.iTl.iX + in.Width() / 3, in.iBr.iY - 1), TPoint(in.iBr.iX - 1, in.iTl.iY));
+                }
+            break;
+        case BW_CTL_RADIO:
+            aGc.SetBrushColor(KRgbWhite);
+            aGc.SetPenColor(border);
+            aGc.DrawEllipse(aRect);
+            if (c.checked)
+                {
+                TRect in(aRect);
+                in.Shrink(aRect.Width() / 4 + 1, aRect.Height() / 4 + 1);
+                aGc.SetPenSize(TSize(1, 1));
+                aGc.SetPenColor(KRgbBlack);
+                aGc.SetBrushColor(KRgbBlack);
+                aGc.DrawEllipse(in);
+                }
+            break;
+        case BW_CTL_SUBMIT: case BW_CTL_BUTTON: case BW_CTL_RESET: case BW_CTL_IMAGE: case BW_CTL_FILE:
+            {
+            aGc.SetBrushColor(aFocused ? TRgb(0xD8, 0xE6, 0xFF) : TRgb(0xE0, 0xE0, 0xE0));
+            aGc.SetPenColor(border);
+            aGc.DrawRect(aRect);
+            unsigned int n = 0;
+            const unsigned short* t = bw_control_text(&c, &n);
+            TPtrC label((const TUint16*)t, n);
+            aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+            aGc.SetPenColor(c.type == BW_CTL_FILE ? TRgb(0x88, 0x88, 0x88) : KRgbBlack);
+            aGc.SetClippingRect(aRect);
+            TInt tw = f->TextWidthInPixels(label);
+            aGc.DrawText(label, TPoint(aRect.iTl.iX + Max(2, (aRect.Width() - tw) / 2), base));
+            aGc.CancelClippingRect();
+            }
+            break;
+        default:
+            {
+            // text, password, textarea, select
+            aGc.SetBrushColor(KRgbWhite);
+            aGc.SetPenColor(border);
+            aGc.DrawRect(aRect);
+            aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+            TRect clip(aRect);
+            clip.Shrink(3, 2);
+            if (c.type == BW_CTL_SELECT) clip.iBr.iX -= 12;
+            aGc.SetClippingRect(clip);
+            unsigned int n = 0;
+            const unsigned short* t = bw_control_text(&c, &n);
+            TBool placeholder = EFalse;
+            if (!n && c.labelLen && (c.type == BW_CTL_TEXT)) { t = c.label; n = c.labelLen; placeholder = ETrue; }
+            aGc.SetPenColor(placeholder ? TRgb(0x99, 0x99, 0x99) : KRgbBlack);
+            if (c.type == BW_CTL_PASSWORD)
+                {
+                TBuf<40> stars;
+                for (unsigned int i = 0; i < n && i < 40; i++) stars.Append('*');
+                aGc.DrawText(stars, TPoint(clip.iTl.iX, base));
+                }
+            else if (c.type == BW_CTL_TEXTAREA)
+                {
+                TInt y = aRect.iTl.iY + 3 + f->AscentInPixels();
+                TInt lh = f->HeightInPixels() + 2;
+                unsigned int s = 0;
+                while (s < n && y < aRect.iBr.iY)
+                    {
+                    unsigned int e = s;
+                    while (e < n && t[e] != '\n') e++;
+                    TPtrC line((const TUint16*)t + s, e - s);
+                    aGc.DrawText(line, TPoint(clip.iTl.iX, y));
+                    y += lh;
+                    s = e + 1;
+                    }
+                }
+            else if (t)
+                {
+                TPtrC v((const TUint16*)t, n);
+                // a long value shows its end, as an edit field would
+                TInt w = f->TextWidthInPixels(v);
+                TInt x = clip.iTl.iX;
+                if (w > clip.Width() && !placeholder) x = clip.iBr.iX - w;
+                aGc.DrawText(v, TPoint(x, base));
+                }
+            aGc.CancelClippingRect();
+            if (c.type == BW_CTL_SELECT)
+                {
+                TInt cx = aRect.iBr.iX - 9, cy = aRect.iTl.iY + aRect.Height() / 2 - 2;
+                aGc.SetPenSize(TSize(1, 1));
+                aGc.SetPenColor(KRgbBlack);
+                for (TInt k = 0; k < 4; k++) aGc.DrawLine(TPoint(cx - 3 + k, cy + k), TPoint(cx + 4 - k, cy + k));
+                }
+            }
+            break;
+        }
+    aGc.SetPenSize(TSize(1, 1));
+    aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+    }
+
+void CBrView::RenderPage(CFbsBitGc& aGc)
+    {
+    TInt top = PageTop();
+    TInt h = PageHeightOnScreen();
+    TInt w = Rect().Width();
+    TRect area(TPoint(0, top), TSize(w, h));
+    aGc.SetPenStyle(CGraphicsContext::ENullPen);
+    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+    aGc.SetBrushColor(iDoc ? Rgb(iDoc->bgColor) : KRgbWhite);
+    aGc.DrawRect(area);
+    if (!iDoc || !iLayout) return;
+    aGc.SetClippingRect(area);
+    // block backgrounds
+    for (TUint i = 0; i < iLayout->fillCount; i++)
+        {
+        const BwFill& f = iLayout->fills[i];
+        if (f.h <= 0 || f.y + f.h <= iScrollY || f.y >= iScrollY + h) continue;
+        aGc.SetBrushColor(Rgb(f.color));
+        aGc.DrawRect(TRect(TPoint(f.x, top + f.y - iScrollY), TSize(f.w, f.h)));
+        }
+    const CFont* current = NULL;
+    TInt currentId = -1;
+    iImages.BeginPass();
+    TInt viewBottom = iScrollY + h;
+    TInt first = (TInt)bw_layout_first_box(iLayout, iScrollY - h);     // a screen above: their pictures load too
+    for (TUint i = (TUint)first; i < iLayout->boxCount; i++)
+        {
+        const BwBox& b = iLayout->boxes[i];
+        if (b.y > viewBottom + 2 * h) break;
+        TBool visible = b.y < viewBottom && b.y + b.h > iScrollY;
+        if (!visible)
+            {
+            // near the screen: only ask for its picture, farther = later
+            if (b.kind == BW_BOX_IMAGE)
+                {
+                const BwImage& im = iDoc->images[b.ref];
+                if (im.src && !im.failed)
+                    {
+                    TInt d = b.y >= viewBottom ? b.y - viewBottom : iScrollY - (b.y + b.h);
+                    iImages.Get(im.src, 1000 + d);
+                    }
+                }
+            continue;
+            }
+        TRect r(TPoint(b.x, top + b.y - iScrollY), TSize(b.w, b.h));
+        TBool focused = b.target >= 0 && b.target == iFocus;
+        switch (b.kind)
+            {
+            case BW_BOX_TEXT:
+                {
+                if (b.font != currentId || !current)
+                    {
+                    current = iFonts->Font(b.font);
+                    currentId = b.font;
+                    aGc.UseFont(current);
+                    }
+                if (focused)
+                    {
+                    aGc.SetPenStyle(CGraphicsContext::ENullPen);
+                    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+                    aGc.SetBrushColor(TRgb(0xC4, 0xDA, 0xFF));
+                    TRect fr(r);
+                    fr.Grow(1, 0);
+                    aGc.DrawRect(fr);
+                    }
+                aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+                aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+                aGc.SetPenColor(focused ? TRgb(0x00, 0x00, 0x60) : Rgb(b.color));
+                TInt base = r.iTl.iY + current->AscentInPixels() + 1;
+                TPtrC t((const TUint16*)iDoc->pool + b.off, b.len);
+                aGc.DrawText(t, TPoint(r.iTl.iX, base));
+                if (b.flags & BW_OPF_UNDERLINE) aGc.DrawLine(TPoint(r.iTl.iX, base + 1), TPoint(r.iBr.iX, base + 1));
+                if (b.flags & BW_OPF_STRIKE)
+                    {
+                    TInt my = base - current->AscentInPixels() / 3;
+                    aGc.DrawLine(TPoint(r.iTl.iX, my), TPoint(r.iBr.iX, my));
+                    }
+                }
+                break;
+            case BW_BOX_IMAGE:
+                DrawImage(aGc, b, r, Abs(b.y - iScrollY) / 8);
+                currentId = -1;
+                break;
+            case BW_BOX_CONTROL:
+                DrawControl(aGc, b, r, focused);
+                currentId = -1;
+                break;
+            case BW_BOX_RULE:
+                aGc.SetPenStyle(CGraphicsContext::ENullPen);
+                aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+                aGc.SetBrushColor(Rgb(b.color));
+                aGc.DrawRect(r);
+                aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+                break;
+            default:
+                break;
+            }
+        }
+    iImages.EndPass();
+    aGc.CancelClippingRect();
+    // the scroll bar
+    if (iLayout->height > h)
+        {
+        TInt th = h * h / iLayout->height;
+        if (th < 10) th = 10;
+        TInt ty = top + (h - th) * iScrollY / Max(1, iLayout->height - h);
+        aGc.SetPenStyle(CGraphicsContext::ENullPen);
+        aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+        aGc.SetBrushColor(TRgb(0xDD, 0xDD, 0xDD));
+        aGc.DrawRect(TRect(TPoint(w - KScrollBarW, top), TSize(KScrollBarW, h)));
+        aGc.SetBrushColor(TRgb(0x60, 0x70, 0x90));
+        aGc.DrawRect(TRect(TPoint(w - KScrollBarW, ty), TSize(KScrollBarW, th)));
+        }
+    }
+
+void CBrView::RenderList(CFbsBitGc& aGc)
+    {
+    const CFont* f = iEikonEnv->NormalFont();
+    TInt lh = f->HeightInPixels() + 4;
+    TInt rows = iListItems.Count();
+    TInt maxRows = (Rect().Height() - 24) / lh;
+    if (maxRows > KListMaxRows) maxRows = KListMaxRows;
+    if (rows > maxRows) rows = maxRows;
+    if (rows < 1) rows = 1;
+    TInt w = Rect().Width() * 4 / 5;
+    TInt hgt = rows * lh + lh + 6;
+    TPoint tl((Rect().Width() - w) / 2, (Rect().Height() - hgt) / 2);
+    TRect box(tl, TSize(w, hgt));
+    aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+    aGc.SetPenColor(TRgb(0x30, 0x30, 0x30));
+    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+    aGc.SetBrushColor(TRgb(0xF4, 0xF4, 0xF4));
+    aGc.DrawRect(box);
+    aGc.SetBrushColor(TRgb(0x1C, 0x3A, 0x6E));
+    aGc.DrawRect(TRect(tl, TSize(w, lh + 2)));
+    aGc.UseFont(f);
+    aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+    aGc.SetPenColor(KRgbWhite);
+    TBuf<100> title(iListTitle);
+    if (iListItems.Count() > rows) { title.AppendFormat(_L("  (%d/%d)"), iListSel + 1, iListItems.Count()); }
+    aGc.DrawText(title.Left(f->TextCount(title, w - 8)), TPoint(tl.iX + 4, tl.iY + 2 + f->AscentInPixels()));
+    if (iListSel < iListFirst) iListFirst = iListSel;
+    if (iListSel >= iListFirst + rows) iListFirst = iListSel - rows + 1;
+    for (TInt i = 0; i < rows && iListFirst + i < iListItems.Count(); i++)
+        {
+        TInt idx = iListFirst + i;
+        TRect row(TPoint(tl.iX + 2, tl.iY + lh + 4 + i * lh), TSize(w - 4, lh));
+        if (idx == iListSel)
+            {
+            aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+            aGc.SetBrushColor(TRgb(0x30, 0x60, 0xC0));
+            aGc.SetPenStyle(CGraphicsContext::ENullPen);
+            aGc.DrawRect(row);
+            aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+            aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+            aGc.SetPenColor(KRgbWhite);
+            }
+        else aGc.SetPenColor(KRgbBlack);
+        const TDesC& t = *iListItems[idx];
+        aGc.DrawText(t.Left(f->TextCount(t, w - 12)), TPoint(row.iTl.iX + 4, row.iTl.iY + 2 + f->AscentInPixels()));
+        }
+    }
+
+// ------------------------------------------------------------------ the list
+
+void CBrView::ShowListL(TInt aId, const TDesC& aTitle, const RPointerArray<HBufC>& aItems, TInt aSelected, MListObserver& aObserver)
+    {
+    iListItems.ResetAndDestroy();
+    for (TInt i = 0; i < aItems.Count(); i++)
+        {
+        HBufC* c = aItems[i]->AllocLC();
+        User::LeaveIfError(iListItems.Append(c));
+        CleanupStack::Pop(c);
+        }
+    iListId = aId;
+    iListTitle.Copy(aTitle.Left(iListTitle.MaxLength()));
+    iListSel = aSelected >= 0 && aSelected < iListItems.Count() ? aSelected : 0;
+    iListFirst = 0;
+    iListObserver = &aObserver;
+    iListOpen = ETrue;
+    Render();
+    }
+
+TKeyResponse CBrView::ListKeyL(const TKeyEvent& aKeyEvent)
+    {
+    TInt n = iListItems.Count();
+    TBool shift = (aKeyEvent.iModifiers & EModifierShift) != 0;
+    switch (aKeyEvent.iCode)
+        {
+        case EKeyUpArrow: iListSel -= shift ? KListMaxRows : 1; if (iListSel < 0) iListSel = shift ? 0 : n - 1; break;
+        case EKeyDownArrow: iListSel += shift ? KListMaxRows : 1; if (iListSel >= n) iListSel = shift ? n - 1 : 0; break;
+        case EKeyEnter: case EKeyDevice3: case ' ':
+            {
+            iListOpen = EFalse;
+            Render();
+            MListObserver* o = iListObserver;
+            if (o) o->ListChosen(iListId, n ? iListSel : -1);
+            return EKeyWasConsumed;
+            }
+        case EKeyEscape: case EKeyBackspace: case EKeyLeftArrow:
+            {
+            iListOpen = EFalse;
+            Render();
+            MListObserver* o = iListObserver;
+            if (o) o->ListChosen(iListId, -1);
+            return EKeyWasConsumed;
+            }
+        default:
+            return EKeyWasConsumed;
+        }
+    Render();
+    return EKeyWasConsumed;
+    }
+
+// ------------------------------------------------------------------ focus and scrolling
+
+TBool CBrView::TargetVisible(TInt aTarget, TBool aFully) const
+    {
+    if (!iLayout || aTarget < 0 || !iDoc || (TUint)aTarget >= iDoc->targetCount) return EFalse;
+    const BwTargetPos& p = iLayout->targets[aTarget];
+    if (p.y0 < 0) return EFalse;
+    TInt h = PageHeightOnScreen();
+    if (aFully) return p.y0 >= iScrollY && p.y1 <= iScrollY + h;
+    return p.y1 > iScrollY && p.y0 < iScrollY + h;
+    }
+
+void CBrView::SetFocusTarget(TInt aTarget)
+    {
+    iFocus = aTarget;
+    iAppUi.LinkFocused(aTarget);
+    }
+
+void CBrView::EnsureFocusVisible()
+    {
+    if (iFocus < 0 || !iLayout) return;
+    const BwTargetPos& p = iLayout->targets[iFocus];
+    if (p.y0 < 0) return;
+    TInt h = PageHeightOnScreen();
+    if (p.y0 < iScrollY) iScrollY = p.y0 - 8;
+    else if (p.y1 > iScrollY + h)
+        {
+        iScrollY = p.y1 - h + 8;
+        if (iScrollY > p.y0 - 8) iScrollY = p.y0 - 8;
+        }
+    ClampScroll();
+    }
+
+void CBrView::MoveFocus(TInt aDir)
+    {
+    if (!iDoc || !iLayout) return;
+    TInt h = PageHeightOnScreen();
+    TInt n = (TInt)iDoc->targetCount;
+    if (iFocus >= 0 && !TargetVisible(iFocus, EFalse)) iFocus = -1;
+    TInt cand = -1;
+    if (iFocus < 0)
+        {
+        // the first (last) link that is fully on the screen
+        if (aDir > 0) { for (TInt t = 0; t < n; t++) if (TargetVisible(t, ETrue)) { cand = t; break; } }
+        else { for (TInt t = n - 1; t >= 0; t--) if (TargetVisible(t, ETrue)) { cand = t; break; } }
+        }
+    else
+        {
+        for (TInt t = iFocus + aDir; t >= 0 && t < n; t += aDir)
+            {
+            const BwTargetPos& p = iLayout->targets[t];
+            if (p.y0 < 0) continue;
+            // the next one counts if its top (bottom) is on the screen
+            if (aDir > 0 && p.y0 >= iScrollY && p.y0 < iScrollY + h - 4) cand = t;
+            if (aDir < 0 && p.y1 > iScrollY + 4 && p.y1 <= iScrollY + h) cand = t;
+            break;
+            }
+        }
+    if (cand >= 0)
+        {
+        SetFocusTarget(cand);
+        // if it reaches past the edge, bring it in, but not more than one step
+        const BwTargetPos& p = iLayout->targets[cand];
+        if (aDir > 0 && p.y1 > iScrollY + h) iScrollY += Min(KScrollStep, p.y1 - (iScrollY + h) + 4);
+        if (aDir < 0 && p.y0 < iScrollY) iScrollY -= Min(KScrollStep, iScrollY - p.y0 + 4);
+        ClampScroll();
+        Render();
+        return;
+        }
+    TInt before = iScrollY;
+    iScrollY += aDir * KScrollStep;
+    ClampScroll();
+    if (iFocus >= 0 && !TargetVisible(iFocus, EFalse)) SetFocusTarget(-1);
+    if (iScrollY != before || cand < 0) Render();
+    }
+
+void CBrView::JumpFocus(TInt aDir)
+    {
+    if (!iDoc || !iLayout || !iDoc->targetCount) return;
+    TInt n = (TInt)iDoc->targetCount;
+    TInt start = iFocus;
+    if (start < 0 || !TargetVisible(start, EFalse))
+        {
+        // from the screen: the first link below its top (above its bottom)
+        TInt h = PageHeightOnScreen();
+        start = -1;
+        if (aDir > 0)
+            {
+            for (TInt t = 0; t < n; t++) { const BwTargetPos& p = iLayout->targets[t]; if (p.y0 >= iScrollY) { SetFocusTarget(t); EnsureFocusVisible(); Render(); return; } }
+            return;
+            }
+        for (TInt t = n - 1; t >= 0; t--) { const BwTargetPos& p = iLayout->targets[t]; if (p.y0 >= 0 && p.y1 <= iScrollY + h) { SetFocusTarget(t); EnsureFocusVisible(); Render(); return; } }
+        return;
+        }
+    for (TInt t = start + aDir; t >= 0 && t < n; t += aDir)
+        {
+        if (iLayout->targets[t].y0 < 0) continue;
+        SetFocusTarget(t);
+        EnsureFocusVisible();
+        Render();
+        return;
+        }
+    }
+
+// ------------------------------------------------------------------ input
+
+TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType)
+    {
+    if (aType != EEventKey) return EKeyWasNotConsumed;
+    if (iListOpen) return ListKeyL(aKeyEvent);
+    TBool shift = (aKeyEvent.iModifiers & EModifierShift) != 0;
+    TBool ctrl = (aKeyEvent.iModifiers & EModifierCtrl) != 0;
+    TInt h = PageHeightOnScreen();
+    switch (aKeyEvent.iCode)
+        {
+        case EKeyDownArrow:
+            if (ctrl) { ScrollTo(iLayout ? iLayout->height : 0); SetFocusTarget(-1); }
+            else if (shift) { ScrollTo(iScrollY + h - 20); if (!TargetVisible(iFocus, EFalse)) SetFocusTarget(-1); Render(); }
+            else MoveFocus(1);
+            return EKeyWasConsumed;
+        case EKeyUpArrow:
+            if (ctrl) { ScrollTo(0); SetFocusTarget(-1); Render(); }
+            else if (shift) { ScrollTo(iScrollY - h + 20); if (!TargetVisible(iFocus, EFalse)) SetFocusTarget(-1); Render(); }
+            else MoveFocus(-1);
+            return EKeyWasConsumed;
+        case EKeyPageDown:
+            ScrollTo(iScrollY + h - 20);
+            return EKeyWasConsumed;
+        case EKeyPageUp:
+            ScrollTo(iScrollY - h + 20);
+            return EKeyWasConsumed;
+        case EKeyRightArrow:
+            JumpFocus(1);
+            return EKeyWasConsumed;
+        case EKeyLeftArrow:
+            JumpFocus(-1);
+            return EKeyWasConsumed;
+        case EKeyTab:
+            JumpFocus(shift ? -1 : 1);
+            return EKeyWasConsumed;
+        case ' ':
+            ScrollTo(iScrollY + (shift ? -(h - 20) : h - 20));
+            if (!TargetVisible(iFocus, EFalse)) SetFocusTarget(-1);
+            Render();
+            return EKeyWasConsumed;
+        case EKeyHome:
+            ScrollTo(0);
+            return EKeyWasConsumed;
+        case EKeyEnd:
+            ScrollTo(iLayout ? iLayout->height : 0);
+            return EKeyWasConsumed;
+        case EKeyEnter: case EKeyDevice3:
+            if (iFocus >= 0 && TargetVisible(iFocus, EFalse)) iAppUi.ActivateTargetL(iFocus);
+            return EKeyWasConsumed;
+        default:
+            break;
+        }
+    return EKeyWasNotConsumed;
+    }
+
+void CBrView::HandlePointerEventL(const TPointerEvent& aPointerEvent)
+    {
+    if (aPointerEvent.iType != TPointerEvent::EButton1Up) return;
+    TPoint p = aPointerEvent.iPosition - Rect().iTl;
+    TInt h = PageHeightOnScreen();
+    if (iListOpen) return;
+    if (p.iY < PageTop()) { ScrollTo(iScrollY - h + 20); return; }        // the header: page up
+    if (p.iX >= Rect().Width() - KScrollBarW - 4)
+        {
+        // the scroll bar: jump there
+        if (iLayout) ScrollTo((p.iY - PageTop()) * iLayout->height / Max(1, h) - h / 2);
+        return;
+        }
+    if (!iLayout) return;
+    TInt t = bw_layout_hit(iLayout, p.iX, p.iY - PageTop() + iScrollY);
+    if (t >= 0)
+        {
+        SetFocusTarget(t);
+        Render();
+        iAppUi.ActivateTargetL(t);
+        }
+    else if (p.iY > Rect().Height() - 14) ScrollTo(iScrollY + h - 20);   // the bottom strip: page down
+    }

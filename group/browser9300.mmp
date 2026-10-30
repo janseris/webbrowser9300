@@ -1,0 +1,28 @@
+// Browser 9300 - Series 80 2.0 (Nokia 9300 / 9500), Symbian OS 7.0s
+TARGET            browser9300.app
+TARGETTYPE        app
+UID               0x100039CE 0x0F5A9310
+TARGETPATH        \system\apps\browser9300
+LANG              SC
+EPOCHEAPSIZE      0x1000 0x1800000     // the heap may grow to 24 MB: pages, layouts, pictures
+EPOCSTACKSIZE     0x5000
+
+OPTION GCC        -O2
+
+SOURCEPATH        ..\src
+SOURCE            app.cpp view.cpp loader.cpp net.cpp images.cpp fonts.cpp settings.cpp util.cpp
+
+SOURCEPATH        ..\core
+SOURCE            igutil.c ighttp.c bwurl.c bwcharset.c bwhtml.c bwform.c bwlayout.c bwcookie.c
+
+SOURCEPATH        ..\group
+RESOURCE          browser9300.rss
+
+USERINCLUDE       ..\inc ..\core
+SYSTEMINCLUDE     \epoc32\include
+
+LIBRARY           euser.lib apparc.lib cone.lib eikcore.lib eikcoctl.lib eikdlg.lib eikctl.lib
+LIBRARY           bafl.lib efsrv.lib gdi.lib ws32.lib fbscli.lib bitgdi.lib imageconversion.lib apgrfx.lib
+LIBRARY           hal.lib esock.lib insock.lib commdb.lib securesocket.lib ezlib.lib
+
+AIF               browser9300.aif ..\aif browseraif.rss c16 icon25.bmp icon25_mask.bmp icon64.bmp icon64_mask.bmp

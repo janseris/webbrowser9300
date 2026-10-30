@@ -1,0 +1,1390 @@
+// Browser 9300 - the application: commands and menus, navigation with a history that keeps
+// the last pages in RAM (Back without the network), bookmarks, the internal about: pages,
+// forms, downloads, and the PC helpers (update from the PC, log and screenshot upload).
+
+#include <eikenv.h>
+#include <eikmenup.h>
+#include <eikmenub.h>
+#include <eikbtgpc.h>
+#include <eikedwin.h>
+#include <eikvcurs.h>
+#include <apgcli.h>
+#include <hal.h>
+#include <fbs.h>
+#include <browser9300.rsg>
+#include "browser.hrh"
+#include "browser.h"
+
+_LIT(KBookmarksFile, "C:\\System\\Data\\browser9300\\bookmarks.txt");
+_LIT(KCookiesFile, "C:\\System\\Data\\browser9300\\cookies.txt");
+_LIT(KUpdateFile, "C:\\System\\Temp\\browser9300_update.sis");
+_LIT8(KUpdatePath, "/browser9300/browser9300.sis");
+
+const TInt KHistoryMax = 40;
+const TInt KCacheBodies = 6;                    // pages kept in RAM for Back
+const TInt KCacheBytes = 1500 * 1024;
+const TInt KCacheOneMax = 500 * 1024;
+
+enum { EListSelect = 1, EListInfo = 2 };
+enum { EHelperNone = 0, EHelperUpdate, EHelperLog, EHelperShot };
+
+// ------------------------------------------------------------------ the text dialog
+
+void CTextDialog::PreLayoutDynInitL()
+    {
+    SetTitleL(iTitle);
+    CEikEdwin* ed = (CEikEdwin*)Control(EBrTextField);
+    ed->SetTextL(&iText);
+    ed->SetCursorPosL(iText.Length(), EFalse);
+    }
+
+TBool CTextDialog::OkToExitL(TInt aButtonId)
+    {
+    if (aButtonId == EEikBidOk)
+        {
+        CEikEdwin* ed = (CEikEdwin*)Control(EBrTextField);
+        ed->GetText(iText);
+        }
+    return ETrue;
+    }
+
+TBool CBrAppUi::TextDialogL(const TDesC& aTitle, TDes& aText)
+    {
+    CTextDialog* d = new (ELeave) CTextDialog(aText, aTitle);
+    TInt res = aText.MaxLength() > 2000 || aText.Locate('\n') >= 0 ? R_BR_TEXT_DIALOG_MULTI : R_BR_TEXT_DIALOG;
+    return d->ExecuteLD(res) == EEikBidOk;
+    }
+
+// ------------------------------------------------------------------ a few helpers
+
+// (7.0s has no RPointerArray::AppendL nor CleanupResetAndDestroyPushL)
+template <class T> void PtrAppendL(RPointerArray<T>& aArr, T* aPtr)
+    {
+    User::LeaveIfError(aArr.Append(aPtr));
+    }
+
+static void DestroyTextArray(TAny* aArr)
+    {
+    ((RPointerArray<HBufC>*)aArr)->ResetAndDestroy();
+    }
+
+static void AddItemL(RPointerArray<HBufC>& aItems, const TDesC& aText)
+    {
+    HBufC* c = aText.AllocLC();
+    User::LeaveIfError(aItems.Append(c));
+    CleanupStack::Pop(c);
+    }
+
+// a descriptor as a NUL-terminated copy for the core
+static HBufC8* ZeroTermLC(const TDesC8& aText)
+    {
+    HBufC8* z = HBufC8::NewLC(aText.Length() + 1);
+    z->Des().Copy(aText);
+    z->Des().ZeroTerminate();
+    return z;
+    }
+
+static void AppendHtmlEscaped(TDes8& aOut, const TDesC8& aText)
+    {
+    for (TInt i = 0; i < aText.Length() && aOut.Length() + 6 < aOut.MaxLength(); i++)
+        {
+        TUint8 c = aText[i];
+        if (c == '<') aOut.Append(_L8("&lt;"));
+        else if (c == '>') aOut.Append(_L8("&gt;"));
+        else if (c == '&') aOut.Append(_L8("&amp;"));
+        else if (c == '"') aOut.Append(_L8("&quot;"));
+        else aOut.Append(c);
+        }
+    }
+
+static void AppendHtmlEscaped(TDes8& aOut, const TDesC& aText)
+    {
+    HBufC8* u = NULL;
+    TRAPD(err, u = UnicodeToUtf8L(aText));
+    if (err == KErrNone && u) { AppendHtmlEscaped(aOut, *u); delete u; }
+    }
+
+// a 24-bit .bmp of a bitmap (from Instagram 9300's helper)
+static HBufC8* BitmapToBmpLC(CFbsBitmap& aBitmap)
+    {
+    TSize s = aBitmap.SizeInPixels();
+    TInt rowBytes = (s.iWidth * 3 + 3) & ~3;
+    TInt dataSize = rowBytes * s.iHeight;
+    HBufC8* out = HBufC8::NewLC(54 + dataSize);
+    TPtr8 p = out->Des();
+    TUint8 hdr[54];
+    Mem::FillZ(hdr, 54);
+    hdr[0] = 'B'; hdr[1] = 'M';
+    TUint32 fileSize = 54 + dataSize;
+    hdr[2] = (TUint8)fileSize; hdr[3] = (TUint8)(fileSize >> 8); hdr[4] = (TUint8)(fileSize >> 16); hdr[5] = (TUint8)(fileSize >> 24);
+    hdr[10] = 54;
+    hdr[14] = 40;
+    hdr[18] = (TUint8)s.iWidth; hdr[19] = (TUint8)(s.iWidth >> 8);
+    hdr[22] = (TUint8)s.iHeight; hdr[23] = (TUint8)(s.iHeight >> 8);
+    hdr[26] = 1;
+    hdr[28] = 24;
+    hdr[34] = (TUint8)dataSize; hdr[35] = (TUint8)(dataSize >> 8); hdr[36] = (TUint8)(dataSize >> 16);
+    p.Append(hdr, 54);
+    HBufC8* row = HBufC8::NewLC(rowBytes);
+    for (TInt y = s.iHeight - 1; y >= 0; y--)
+        {
+        TPtr8 rp = row->Des();
+        rp.Zero();
+        aBitmap.GetScanLine(rp, TPoint(0, y), s.iWidth, EColor16M);
+        rp.SetLength(s.iWidth * 3);
+        while (rp.Length() < rowBytes) rp.Append((TUint8)0);
+        p.Append(rp);
+        }
+    CleanupStack::PopAndDestroy(row);
+    return out;
+    }
+
+// ------------------------------------------------------------------ start and end
+
+void CBrAppUi::ConstructL()
+    {
+    BaseConstructL();
+    RFs& fs = iCoeEnv->FsSession();
+    fs.MkDirAll(KBrDataDir);
+    iSettings = CBrSettings::NewL(fs);
+    TRAPD(err, iSettings->LoadL());
+    (void)err;
+    IgLogRotate();
+    IgLogEnable(iSettings->iLogOn);
+    {
+    TBuf<80> t;
+    t.Format(_L("Browser 9300 %S starting"), &KBrVersion);
+    IgLog(t);
+    TInt freeRam = 0;
+    HAL::Get(HALData::EMemoryRAMFree, freeRam);
+    IgLogF(_L("RAM free: %d KB"), freeRam / 1024);
+    }
+    bw_cookies_init(&iCookies);
+    LoadCookies();
+    TRAP(err, LoadBookmarksL());
+    iFonts = CBrFonts::NewL(iSettings->iTextSize);
+    iImages = CImageLoader::NewL(*this, iCookies);
+    iImages->SetEnabled(iSettings->iImages);
+    iLoader = CPageLoader::NewL(*this, iCookies);
+    iLoader->Http().SetPromptForAccessPoint(iSettings->iPromptAccessPoint);
+    iHelperHttp = CHttpClient::NewL();
+    iRefreshTimer = CPeriodic::NewL(CActive::EPriorityStandard);
+    iCurrentUrl = HBufC8::NewL(1);
+    iView = CBrView::NewL(ClientRect(), *this, *iImages, *iFonts);
+    AddToStackL(iView);
+    iHistoryPos = -1;
+    iSelectControl = -1;
+    ApplySettingsL();
+    IgLogFlush();
+    HomeL();
+    }
+
+CBrAppUi::~CBrAppUi()
+    {
+    if (iSettings) iSettings->Save();
+    SaveCookies();
+    if (iView) RemoveFromStack(iView);
+    delete iView;
+    if (iRefreshTimer) iRefreshTimer->Cancel();
+    delete iRefreshTimer;
+    delete iRefreshUrl;
+    delete iExitCallback;
+    delete iLoader;
+    delete iImages;
+    delete iHelperHttp;
+    delete iFonts;
+    delete iSettings;
+    delete iCurrentUrl;
+    for (TInt i = 0; i < iHistory.Count(); i++) FreeHistoryEntry(iHistory[i]);
+    iHistory.Close();
+    iBookmarkUrls.ResetAndDestroy();
+    iBookmarkTitles.ResetAndDestroy();
+    bw_cookies_free(&iCookies);
+    IgLog(_L("exit"));
+    IgLogClose();
+    }
+
+void CBrAppUi::HandleForegroundEventL(TBool aForeground)
+    {
+    CEikAppUi::HandleForegroundEventL(aForeground);
+    if (!aForeground) { IgLogFlush(); SaveCookies(); }
+    }
+
+void CBrAppUi::ApplySettingsL()
+    {
+    ApplyFullScreenL();
+    TRAPD(err, iEikonEnv->VirtualCursor().SetCursorStateL(iSettings->iMouseOn ? TEikVirtualCursor::EOn : TEikVirtualCursor::EOff, *iEikonEnv));
+    (void)err;
+    iView->SetPointerOn(iSettings->iMouseOn);
+    }
+
+void CBrAppUi::ApplyFullScreenL()
+    {
+    CEikButtonGroupContainer* cba = CEikButtonGroupContainer::Current();
+    if (iSettings->iFullScreen)
+        {
+        if (cba) cba->MakeVisible(EFalse);
+        iView->SetRect(ApplicationRect());
+        }
+    else
+        {
+        if (cba) cba->MakeVisible(ETrue);
+        iView->SetRect(ClientRect());
+        }
+    }
+
+void CBrAppUi::Say(const TDesC& aText)
+    {
+    iView->SetStatus(aText);
+    iEikonEnv->InfoMsg(aText);
+    IgLog(aText);
+    }
+
+void CBrAppUi::UpdateTitle()
+    {
+    BwDoc* d = iView->Doc();
+    if (d && d->titleLen)
+        {
+        TPtrC t((const TUint16*)d->title, d->titleLen);
+        iView->SetTitle(t);
+        }
+    else
+        {
+        TBuf<160> t;
+        t.Copy(iCurrentUrl->Left(160));
+        iView->SetTitle(t);
+        }
+    }
+
+// ------------------------------------------------------------------ commands
+
+void CBrAppUi::HandleCommandL(TInt aCommand)
+    {
+    switch (aCommand)
+        {
+        case EEikCmdExit:
+        case EEikCmdCanceled:
+            if (aCommand == EEikCmdExit) Exit();
+            break;
+        case EBrCmdGoTo: GoToDialogL(); break;
+        case EBrCmdBack: BackL(); break;
+        case EBrCmdForward: ForwardL(); break;
+        case EBrCmdReload: ReloadL(); break;
+        case EBrCmdStop: StopL(); break;
+        case EBrCmdHome: HomeL(); break;
+        case EBrCmdStartPage: OpenUrlL(_L8("about:start")); break;
+        case EBrCmdBookmarks: OpenUrlL(_L8("about:bookmarks")); break;
+        case EBrCmdHistory: OpenUrlL(_L8("about:history")); break;
+        case EBrCmdAddBookmark: AddBookmarkL(); break;
+        case EBrCmdPageInfo: PageInfoL(); break;
+        case EBrCmdSetHome: HomeDialogL(); break;
+        case EBrCmdImages:
+            iSettings->iImages = !iSettings->iImages;
+            iImages->SetEnabled(iSettings->iImages);
+            iSettings->Save();
+            Say(iSettings->iImages ? _L("Pictures on") : _L("Pictures off"));
+            iView->ScrollTo(iView->ScrollY());
+            break;
+        case EBrCmdFullScreen:
+            iSettings->iFullScreen = !iSettings->iFullScreen;
+            iSettings->Save();
+            ApplyFullScreenL();
+            break;
+        case EBrCmdMouse:
+            iSettings->iMouseOn = !iSettings->iMouseOn;
+            iSettings->Save();
+            ApplySettingsL();
+            break;
+        case EBrCmdTextSmaller: case EBrCmdTextNormal: case EBrCmdTextBigger:
+            {
+            TInt step = aCommand == EBrCmdTextSmaller ? -1 : aCommand == EBrCmdTextBigger ? 1 : 0;
+            if (step == iSettings->iTextSize) break;
+            iSettings->iTextSize = step;
+            iSettings->Save();
+            CBrFonts* f = CBrFonts::NewL(step);
+            iView->SetFonts(*f);
+            delete iFonts;
+            iFonts = f;
+            }
+            break;
+        case EBrCmdTop: iView->ScrollTo(0); break;
+        case EBrCmdBottom: iView->ScrollTo(iView->PageHeight()); break;
+        case EBrCmdUpdate: UpdateFromPcL(); break;
+        case EBrCmdSendLog: SendLogL(); break;
+        case EBrCmdSendPrevLog:
+            {
+            iHelperOp = EHelperLog;
+            // (SendLogL with the previous file)
+            RFs& fs = iCoeEnv->FsSession();
+            RFile f;
+            if (f.Open(fs, LogPrevFileName(), EFileRead | EFileShareAny) != KErrNone) { Say(_L("There is no previous log")); iHelperOp = EHelperNone; break; }
+            TInt size = 0;
+            f.Size(size);
+            if (size > 200 * 1024) size = 200 * 1024;
+            HBufC8* d = HBufC8::NewLC(size);
+            TPtr8 dp = d->Des();
+            f.Read(dp);
+            f.Close();
+            TBuf8<120> path;
+            path.Copy(_L8("/results?name=browser9300_log_prev&ext=txt"));
+            iHelperHttp->RequestL(iSettings->iServerHost, _L8("POST"), path, _L8("Content-Type: application/octet-stream\r\n"), *d, *this, EFalse, iSettings->iServerPort);
+            CleanupStack::PopAndDestroy(d);
+            Say(_L("Sending the previous log..."));
+            }
+            break;
+        case EBrCmdScreenshot: SendScreenshotL(); break;
+        case EBrCmdServer: ServerDialogL(); break;
+        case EBrCmdLogging:
+            iSettings->iLogOn = !iSettings->iLogOn;
+            IgLogEnable(iSettings->iLogOn);
+            iSettings->Save();
+            Say(iSettings->iLogOn ? _L("Logging on") : _L("Logging off"));
+            break;
+        case EBrCmdPromptAp:
+            iSettings->iPromptAccessPoint = !iSettings->iPromptAccessPoint;
+            iLoader->Http().SetPromptForAccessPoint(iSettings->iPromptAccessPoint);
+            iSettings->Save();
+            break;
+        case EBrCmdDropConnection:
+            iLoader->Stop();
+            iLoader->Http().CloseConnection();
+            iImages->ClearAll();
+            Say(_L("Connection dropped"));
+            break;
+        case EBrCmdClearCookies:
+            bw_cookies_free(&iCookies);
+            bw_cookies_init(&iCookies);
+            iCoeEnv->FsSession().Delete(KCookiesFile);
+            Say(_L("Cookies deleted"));
+            break;
+        case EBrCmdAbout:
+            {
+            TBuf<80> t;
+            t.Format(_L("Browser 9300 %S"), &KBrVersion);
+            iEikonEnv->InfoWinL(t, _L("HTML + CSS on the phone, no JavaScript"));
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
+    {
+    if (aResourceId == R_BR_MENU_VIEW)
+        {
+        aMenuPane->SetItemButtonState(EBrCmdImages, iSettings->iImages ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdFullScreen, iSettings->iFullScreen ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdMouse, iSettings->iMouseOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdTextSmaller, iSettings->iTextSize < 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdTextNormal, iSettings->iTextSize == 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdTextBigger, iSettings->iTextSize > 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        }
+    else if (aResourceId == R_BR_MENU_TOOLS)
+        {
+        aMenuPane->SetItemButtonState(EBrCmdLogging, iSettings->iLogOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdPromptAp, iSettings->iPromptAccessPoint ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        }
+    else if (aResourceId == R_BR_MENU_PAGE)
+        {
+        aMenuPane->SetItemDimmed(EBrCmdBack, iHistoryPos <= 0 && !iLoader->Busy());
+        aMenuPane->SetItemDimmed(EBrCmdForward, iHistoryPos + 1 >= iHistory.Count());
+        aMenuPane->SetItemDimmed(EBrCmdStop, !iLoader->Busy());
+        }
+    }
+
+TKeyResponse CBrAppUi::HandleKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType)
+    {
+    if (aType != EEventKey) return EKeyWasNotConsumed;
+    if (aKeyEvent.iCode == EKeyEscape || aKeyEvent.iCode == EKeyBackspace)
+        {
+        if (iLoader->Busy()) StopL();
+        else BackL();
+        return EKeyWasConsumed;
+        }
+    return EKeyWasNotConsumed;
+    }
+
+// ------------------------------------------------------------------ navigation
+
+void CBrAppUi::GoToDialogL()
+    {
+    HBufC* buf = HBufC::NewLC(1000);
+    TPtr t = buf->Des();
+    if (iCurrentUrl->Left(6) != _L8("about:")) t.Copy(iCurrentUrl->Left(1000));
+    if (TextDialogL(_L("Go to address"), t) && t.Length())
+        {
+        HBufC8* u8 = UnicodeToUtf8L(t);
+        CleanupStack::PushL(u8);
+        HBufC8* z = ZeroTermLC(*u8);
+        char* url = bw_url_from_input((const char*)z->Ptr());
+        CleanupStack::PopAndDestroy(2);
+        if (url)
+            {
+            TPtrC8 u((const TUint8*)url);
+            TRAPD(err, OpenUrlL(u));
+            ig_free(url);
+            User::LeaveIfError(err);
+            }
+        }
+    CleanupStack::PopAndDestroy(buf);
+    }
+
+void CBrAppUi::SaveHistoryPosition()
+    {
+    if (iHistoryPos >= 0 && iHistoryPos < iHistory.Count())
+        {
+        iHistory[iHistoryPos].iScrollY = iView->ScrollY();
+        iHistory[iHistoryPos].iFocus = iView->Focus();
+        }
+    }
+
+void CBrAppUi::OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost, TBool aAddHistory)
+    {
+    iRefreshTimer->Cancel();
+    if (aUrl.Left(11).CompareF(_L8("javascript:")) == 0) { Say(_L("JavaScript links do not work here")); return; }
+    if (aUrl.Left(7).CompareF(_L8("mailto:")) == 0 || aUrl.Left(4).CompareF(_L8("tel:")) == 0)
+        {
+        Say(_L("This kind of link cannot be opened"));
+        return;
+        }
+    // a jump inside this page
+    if (!aPost && iView->Doc())
+        {
+        HBufC8* a = ZeroTermLC(*iCurrentUrl);
+        HBufC8* b = ZeroTermLC(aUrl);
+        TBool same = bw_url_same_page((const char*)a->Ptr(), (const char*)b->Ptr());
+        CleanupStack::PopAndDestroy(2);
+        if (same)
+            {
+            TInt h = aUrl.Locate('#');
+            iView->ScrollToAnchor(aUrl.Mid(h + 1));
+            return;
+            }
+        }
+    SaveHistoryPosition();
+    iNavigatingHistory = !aAddHistory;
+    iRestoreScroll = 0;
+    iRestoreFocus = -1;
+    if (aUrl.Left(6).CompareF(_L8("about:")) == 0)
+        {
+        iLoader->Stop();
+        ShowInternalL(aUrl);
+        return;
+        }
+    iLoadStartMs = (TInt)TickMs();
+    HBufC8* referer = iCurrentUrl->AllocLC();
+    if (referer->Left(6) == _L8("about:")) referer->Des().Zero();
+    iLoader->LoadL(aUrl, aPost, *referer);
+    CleanupStack::PopAndDestroy(referer);
+    iView->SetLoading(ETrue);
+    TBuf<160> t;
+    t.Copy(aUrl.Left(160));
+    iView->SetTitle(t);
+    iView->SetStatus(_L("Loading..."));
+    }
+
+void CBrAppUi::HomeL()
+    {
+    HBufC8* h = UnicodeToUtf8L(iSettings->iHome);
+    CleanupStack::PushL(h);
+    if (h->Length()) OpenUrlL(*h);
+    else OpenUrlL(_L8("about:start"));
+    CleanupStack::PopAndDestroy(h);
+    }
+
+void CBrAppUi::StopL()
+    {
+    iRefreshTimer->Cancel();
+    if (!iLoader->Busy()) return;
+    iLoader->Stop();
+    iView->SetLoading(EFalse);
+    iView->SetStatus(_L("Stopped"));
+    UpdateTitle();
+    }
+
+void CBrAppUi::ReloadL()
+    {
+    if (iHistoryPos < 0 || iHistoryPos >= iHistory.Count()) return;
+    SaveHistoryPosition();
+    THistoryEntry& e = iHistory[iHistoryPos];
+    delete e.iBody; e.iBody = NULL;
+    TInt scroll = e.iScrollY, focus = e.iFocus;
+    HBufC8* url = e.iUrl->AllocLC();
+    OpenUrlL(*url, NULL, EFalse);
+    CleanupStack::PopAndDestroy(url);
+    iRestoreScroll = scroll;
+    iRestoreFocus = focus;
+    }
+
+// Back and Forward show the kept copy of the page when there is one
+
+void CBrAppUi::BackL()
+    {
+    if (iLoader->Busy()) { StopL(); return; }
+    if (iView->ListOpen()) return;
+    if (iHistoryPos <= 0) { Say(_L("No earlier page")); return; }
+    SaveHistoryPosition();
+    iHistoryPos--;
+    THistoryEntry& e = iHistory[iHistoryPos];
+    if (e.iUrl->Left(6) == _L8("about:")) { iNavigatingHistory = ETrue; ShowInternalL(*e.iUrl); iView->ScrollTo(e.iScrollY); return; }
+    if (e.iBody)
+        {
+        HBufC8* ct = e.iContentType ? e.iContentType->AllocLC() : KNullDesC8().AllocLC();
+        ShowPageL(*e.iUrl, *ct, *e.iBody, e.iScrollY, e.iFocus);
+        CleanupStack::PopAndDestroy(ct);
+        return;
+        }
+    TInt scroll = e.iScrollY, focus = e.iFocus;
+    HBufC8* url = e.iUrl->AllocLC();
+    OpenUrlL(*url, NULL, EFalse);
+    CleanupStack::PopAndDestroy(url);
+    iRestoreScroll = scroll;
+    iRestoreFocus = focus;
+    }
+
+void CBrAppUi::ForwardL()
+    {
+    if (iLoader->Busy()) return;
+    if (iHistoryPos + 1 >= iHistory.Count()) { Say(_L("No later page")); return; }
+    SaveHistoryPosition();
+    iHistoryPos++;
+    THistoryEntry& e = iHistory[iHistoryPos];
+    if (e.iUrl->Left(6) == _L8("about:")) { iNavigatingHistory = ETrue; ShowInternalL(*e.iUrl); iView->ScrollTo(e.iScrollY); return; }
+    if (e.iBody)
+        {
+        HBufC8* ct = e.iContentType ? e.iContentType->AllocLC() : KNullDesC8().AllocLC();
+        ShowPageL(*e.iUrl, *ct, *e.iBody, e.iScrollY, e.iFocus);
+        CleanupStack::PopAndDestroy(ct);
+        return;
+        }
+    TInt scroll = e.iScrollY, focus = e.iFocus;
+    HBufC8* url = e.iUrl->AllocLC();
+    OpenUrlL(*url, NULL, EFalse);
+    CleanupStack::PopAndDestroy(url);
+    iRestoreScroll = scroll;
+    iRestoreFocus = focus;
+    }
+
+void CBrAppUi::FreeHistoryEntry(THistoryEntry& aEntry)
+    {
+    delete aEntry.iUrl; aEntry.iUrl = NULL;
+    delete aEntry.iTitle; aEntry.iTitle = NULL;
+    delete aEntry.iBody; aEntry.iBody = NULL;
+    delete aEntry.iContentType; aEntry.iContentType = NULL;
+    }
+
+// a new page: the entries after the current one go, the new one is appended
+void CBrAppUi::AddHistoryL(const TDesC8& aUrl)
+    {
+    if (iNavigatingHistory && iHistoryPos >= 0 && iHistoryPos < iHistory.Count())
+        {
+        // replace the current entry (reload, back/forward without a copy, meta refresh)
+        THistoryEntry& e = iHistory[iHistoryPos];
+        HBufC8* u = aUrl.AllocL();
+        delete e.iUrl;
+        e.iUrl = u;
+        return;
+        }
+    while (iHistory.Count() > iHistoryPos + 1)
+        {
+        FreeHistoryEntry(iHistory[iHistory.Count() - 1]);
+        iHistory.Remove(iHistory.Count() - 1);
+        }
+    THistoryEntry e;
+    Mem::FillZ(&e, sizeof(e));
+    e.iUrl = aUrl.AllocL();
+    e.iFocus = -1;
+    TInt err = iHistory.Append(e);
+    if (err != KErrNone) { delete e.iUrl; User::Leave(err); }
+    while (iHistory.Count() > KHistoryMax)
+        {
+        FreeHistoryEntry(iHistory[0]);
+        iHistory.Remove(0);
+        }
+    iHistoryPos = iHistory.Count() - 1;
+    }
+
+void CBrAppUi::TrimHistoryCache()
+    {
+    // newest first: keep up to KCacheBodies bodies and KCacheBytes in total
+    TInt kept = 0, bytes = 0;
+    for (TInt i = iHistory.Count() - 1; i >= 0; i--)
+        {
+        THistoryEntry& e = iHistory[i];
+        if (!e.iBody) continue;
+        if (kept >= KCacheBodies || bytes + e.iBody->Length() > KCacheBytes) { delete e.iBody; e.iBody = NULL; continue; }
+        kept++;
+        bytes += e.iBody->Length();
+        }
+    }
+
+// ------------------------------------------------------------------ pages
+
+void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus)
+    {
+    TUint32 t0 = TickMs();
+    HBufC8* zurl = ZeroTermLC(aUrl);
+    HBufC8* zct = ZeroTermLC(aContentType);
+    BwDoc* doc = NULL;
+    if (aContentType.Left(6).CompareF(_L8("image/")) == 0)
+        {
+        HBufC8* html = HBufC8::NewLC(aUrl.Length() * 2 + 100);
+        TPtr8 h = html->Des();
+        h.Append(_L8("<html><body style='text-align:center'><img src=\""));
+        AppendHtmlEscaped(h, aUrl);
+        h.Append(_L8("\"></body></html>"));
+        doc = bw_doc_parse((const char*)html->Ptr(), html->Length(), (const char*)zurl->Ptr(), "text/html; charset=utf-8", -1);
+        CleanupStack::PopAndDestroy(html);
+        }
+    else if (aContentType.Left(10).CompareF(_L8("text/plain")) == 0 || aContentType.Left(8).CompareF(_L8("text/css")) == 0 ||
+             aContentType.FindF(_L8("javascript")) >= 0)
+        doc = bw_doc_plain((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), bw_charset_sniff((const char*)zct->Ptr(), "", 0));
+    else
+        doc = bw_doc_parse((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), -1);
+    CleanupStack::PopAndDestroy(2);
+    if (!doc) { Say(_L("Out of memory: the page cannot be shown")); return; }
+    iParseMs = (TInt)(TickMs() - t0);
+    if (IgLogEnabled())
+        {
+        _LIT(KOom, " (out of memory)");
+        TBuf<160> l;
+        l.Format(_L("parsed %d KB in %d ms: %d ops, %d links, %d images, %d css rules"), aBody.Length() / 1024, iParseMs,
+                 doc->opCount, doc->linkCount, doc->imageCount, doc->cssRules);
+        if (doc->failed) l.Append(KOom);
+        IgLog(l);
+        }
+    iImages->ClearAll();
+    HBufC8* cur = aUrl.AllocL();
+    delete iCurrentUrl;
+    iCurrentUrl = cur;
+    iView->SetLoading(EFalse);
+    iView->SetDocumentL(doc, aScrollY, aFocus);
+    IgLogF2(_L("layout %d ms, %d boxes"), iView->LayoutMs(), iView->BoxCount());
+    UpdateTitle();
+    // a #fragment
+    if (aScrollY == 0)
+        {
+        TInt h = aUrl.Locate('#');
+        if (h >= 0) iView->ScrollToAnchor(aUrl.Mid(h + 1));
+        }
+    // <meta http-equiv=refresh>
+    if (doc->refreshUrl && doc->refreshDelay <= 15)
+        {
+        TPtrC8 r((const TUint8*)doc->refreshUrl);
+        if (r != aUrl)
+            {
+            delete iRefreshUrl;
+            iRefreshUrl = r.AllocL();
+            TInt ms = doc->refreshDelay * 1000;
+            if (ms < 300) ms = 300;
+            iRefreshTimer->Cancel();
+            iRefreshTimer->Start(ms * 1000, ms * 1000, TCallBack(RefreshCallback, this));
+            }
+        }
+    IgLogFlush();
+    }
+
+TInt CBrAppUi::RefreshCallback(TAny* aSelf)
+    {
+    CBrAppUi* self = (CBrAppUi*)aSelf;
+    self->iRefreshTimer->Cancel();
+    if (!self->iRefreshUrl) return 0;
+    HBufC8* u = self->iRefreshUrl;
+    self->iRefreshUrl = NULL;
+    TRAPD(err, self->OpenUrlL(*u, NULL, EFalse));
+    delete u;
+    (void)err;
+    return 0;
+    }
+
+// the received page into the history (its copy kept for Back) and on the screen; takes aBody
+// (sets it to NULL when the history keeps it)
+void CBrAppUi::ShowLoadedL(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8*& aBody)
+    {
+    AddHistoryL(aUrl);
+    TInt scroll = iRestoreScroll, focus = iRestoreFocus;
+    iRestoreScroll = 0;
+    iRestoreFocus = -1;
+    iNavigatingHistory = EFalse;
+    ShowPageL(aUrl, aContentType, *aBody, scroll, focus);
+    THistoryEntry& e = iHistory[iHistoryPos];
+    delete e.iContentType;
+    e.iContentType = aContentType.Alloc();
+    delete e.iBody;
+    e.iBody = NULL;
+    if (aBody->Length() <= KCacheOneMax) { e.iBody = aBody; aBody = NULL; }
+    delete e.iTitle;
+    e.iTitle = NULL;
+    BwDoc* d = iView->Doc();
+    if (d && d->titleLen) e.iTitle = TPtrC((const TUint16*)d->title, d->titleLen).Alloc();
+    TrimHistoryCache();
+    }
+
+void CBrAppUi::PageLoaded(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8* aBody, TInt aStatus)
+    {
+    iDownloadMs = (TInt)TickMs() - iLoadStartMs;
+    iPageBytes = aBody->Length();
+    IgLogF2(_L("page: HTTP %d, %d bytes"), aStatus, aBody->Length());
+    TRAPD(err, ShowLoadedL(aUrl, aContentType, aBody));
+    delete aBody;
+    if (err != KErrNone)
+        {
+        TBuf<60> t;
+        t.Format(_L("Cannot show the page (%d)"), err);
+        Say(t);
+        return;
+        }
+    TBuf<80> t;
+    if (aStatus != 200) t.Format(_L("HTTP %d, "), aStatus);
+    t.AppendFormat(_L("%d KB, %d.%d s"), iPageBytes / 1024, iDownloadMs / 1000, (iDownloadMs % 1000) / 100);
+    iView->SetStatus(t);
+    }
+
+void CBrAppUi::PageDownloaded(const TDesC& aFile, const TDesC8& aContentType)
+    {
+    iView->SetLoading(EFalse);
+    UpdateTitle();
+    IgLog(_L("download saved"));
+    TBuf<200> q;
+    q.Copy(aFile.Left(150));
+    TBuf<40> ct;
+    ct.Copy(aContentType.Left(40));
+    if (!iEikonEnv->QueryWinL(_L("Open the downloaded file?"), q)) { Say(_L("Saved in C:\\System\\Temp")); return; }
+    RApaLsSession ls;
+    TInt err = ls.Connect();
+    if (err == KErrNone)
+        {
+        TThreadId tid;
+        err = ls.StartDocument(aFile, tid);
+        ls.Close();
+        }
+    if (err != KErrNone)
+        {
+        TBuf<80> t;
+        t.Format(_L("No app opens it (%d): "), err);
+        t.Append(ct);
+        Say(t);
+        }
+    }
+
+void CBrAppUi::PageFailed(const TDesC& aText)
+    {
+    iView->SetLoading(EFalse);
+    iNavigatingHistory = EFalse;
+    UpdateTitle();
+    Say(aText);
+    IgLogFlush();
+    }
+
+void CBrAppUi::PageProgress(const TDesC& aText)
+    {
+    iView->SetStatus(aText);
+    }
+
+void CBrAppUi::ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize)
+    {
+    iView->ImageArrived(aUrl, aOk, aFullSize);
+    }
+
+void CBrAppUi::ImageProgress(const TDesC& aText)
+    {
+    if (!iLoader->Busy() && aText.Length()) iView->SetStatus(aText);
+    }
+
+void CBrAppUi::LinkFocused(TInt /*aTarget*/)
+    {
+    }
+
+// ------------------------------------------------------------------ links and form fields
+
+void CBrAppUi::ActivateTargetL(TInt aTarget)
+    {
+    BwDoc* d = iView->Doc();
+    if (!d || aTarget < 0 || (TUint)aTarget >= d->targetCount) return;
+    const BwTarget& t = d->targets[aTarget];
+    if (t.kind == BW_TGT_LINK)
+        {
+        TPtrC8 href((const TUint8*)d->links[t.index].href);
+        HBufC8* h = href.AllocLC();
+        OpenUrlL(*h);
+        CleanupStack::PopAndDestroy(h);
+        return;
+        }
+    BwControl& c = d->controls[t.index];
+    switch (c.type)
+        {
+        case BW_CTL_TEXT: case BW_CTL_PASSWORD: case BW_CTL_TEXTAREA:
+            EditControlL(t.index);
+            break;
+        case BW_CTL_CHECKBOX: case BW_CTL_RADIO: case BW_CTL_RESET:
+            bw_control_click(d, t.index);
+            iView->ScrollTo(iView->ScrollY());
+            break;
+        case BW_CTL_SUBMIT: case BW_CTL_IMAGE:
+            SubmitL(c.form, t.index);
+            break;
+        case BW_CTL_SELECT:
+            SelectOptionL(t.index);
+            break;
+        case BW_CTL_BUTTON:
+            Say(_L("This button needs JavaScript"));
+            break;
+        case BW_CTL_FILE:
+            Say(_L("Sending files is not supported"));
+            break;
+        default:
+            break;
+        }
+    }
+
+void CBrAppUi::EditControlL(TInt aControl)
+    {
+    BwDoc* d = iView->Doc();
+    BwControl& c = d->controls[aControl];
+    TInt max = c.type == BW_CTL_TEXTAREA ? 4000 : 2000;
+    HBufC* buf = HBufC::NewLC(max);
+    TPtr t = buf->Des();
+    if (c.value) t.Copy(TPtrC((const TUint16*)c.value, Min((TInt)c.valueLen, max)));
+    if (c.type == BW_CTL_TEXTAREA && !t.Length()) { }
+    TBuf<60> title;
+    if (c.labelLen) title.Copy(TPtrC((const TUint16*)c.label, Min((TInt)c.labelLen, 60)));
+    else if (c.name) title.Copy(TPtrC8((const TUint8*)c.name).Left(60));
+    else title.Copy(_L("Text"));
+    // a textarea gets the multi-line dialog
+    TBool ok;
+    {
+    CTextDialog* dlg = new (ELeave) CTextDialog(t, title);
+    ok = dlg->ExecuteLD(c.type == BW_CTL_TEXTAREA ? R_BR_TEXT_DIALOG_MULTI : R_BR_TEXT_DIALOG) == EEikBidOk;
+    }
+    if (ok)
+        {
+        if (c.type != BW_CTL_TEXTAREA)
+            {
+            // one line: the edit field's line breaks are paragraph separators
+            for (TInt i = 0; i < t.Length(); i++) if (t[i] == 0x2029 || t[i] == '\n' || t[i] == '\r') t[i] = ' ';
+            }
+        else
+            for (TInt i = 0; i < t.Length(); i++) if (t[i] == 0x2029) t[i] = '\n';
+        if (c.maxLength > 0 && t.Length() > c.maxLength) t.SetLength(c.maxLength);
+        bw_control_set_value(&c, (const unsigned short*)t.Ptr(), t.Length());
+        iView->ScrollTo(iView->ScrollY());
+        // a form with just this one text field (a search box) goes off right away, as Enter would
+        if (c.type == BW_CTL_TEXT && c.form >= 0)
+            {
+            TInt fields = 0;
+            for (TUint i = 0; i < d->controlCount; i++)
+                {
+                const BwControl& o = d->controls[i];
+                if (o.form == c.form && o.target >= 0 && (o.type == BW_CTL_TEXT || o.type == BW_CTL_PASSWORD || o.type == BW_CTL_TEXTAREA)) fields++;
+                }
+            if (fields == 1)
+                {
+                // with its first submit button, as browsers do
+                TInt submitter = -1;
+                for (TUint i = 0; i < d->controlCount; i++)
+                    if (d->controls[i].form == c.form && (d->controls[i].type == BW_CTL_SUBMIT || d->controls[i].type == BW_CTL_IMAGE)) { submitter = (TInt)i; break; }
+                CleanupStack::PopAndDestroy(buf);
+                SubmitL(c.form, submitter);
+                return;
+                }
+            }
+        }
+    CleanupStack::PopAndDestroy(buf);
+    }
+
+void CBrAppUi::SubmitL(TInt aForm, TInt aSubmitter)
+    {
+    BwDoc* d = iView->Doc();
+    if (!d || aForm < 0) { Say(_L("This button is not in a form")); return; }
+    char* url = NULL;
+    char* body = NULL;
+    unsigned int bodyLen = 0;
+    int post = 0;
+    if (!bw_form_submit(d, aForm, aSubmitter, &url, &body, &bodyLen, &post)) { Say(_L("The form cannot be sent")); return; }
+    TPtrC8 u((const TUint8*)url);
+    HBufC8* uu = u.Alloc();
+    HBufC8* bb = post ? TPtrC8((const TUint8*)(body ? body : ""), bodyLen).Alloc() : NULL;
+    ig_free(url);
+    ig_free(body);
+    if (!uu || (post && !bb)) { delete uu; delete bb; User::Leave(KErrNoMemory); }
+    CleanupStack::PushL(uu);
+    CleanupStack::PushL(bb);
+    if (uu->Left(6) == _L8("about:")) { CleanupStack::PopAndDestroy(2); return; }
+    OpenUrlL(*uu, bb);
+    CleanupStack::PopAndDestroy(2);
+    }
+
+void CBrAppUi::SelectOptionL(TInt aControl)
+    {
+    BwDoc* d = iView->Doc();
+    BwControl& c = d->controls[aControl];
+    if (!c.optionCount) return;
+    RPointerArray<HBufC> items;
+    CleanupStack::PushL(TCleanupItem(DestroyTextArray, &items));
+    for (TUint i = 0; i < c.optionCount; i++)
+        {
+        HBufC* s = TPtrC((const TUint16*)c.options[i].label, c.options[i].labelLen).AllocLC();
+        User::LeaveIfError(items.Append(s));
+        CleanupStack::Pop(s);
+        }
+    TBuf<60> title;
+    if (c.name) title.Copy(TPtrC8((const TUint8*)c.name).Left(60)); else title.Copy(_L("Choose"));
+    iSelectControl = aControl;
+    iView->ShowListL(EListSelect, title, items, c.selected, *this);
+    CleanupStack::PopAndDestroy(&items);
+    }
+
+void CBrAppUi::ListChosen(TInt aListId, TInt aIndex)
+    {
+    if (aListId == EListSelect && aIndex >= 0 && iView->Doc() && iSelectControl >= 0 &&
+        (TUint)iSelectControl < iView->Doc()->controlCount)
+        {
+        BwControl& c = iView->Doc()->controls[iSelectControl];
+        if ((TUint)aIndex < c.optionCount) c.selected = aIndex;
+        iView->Relayout();
+        }
+    iSelectControl = -1;
+    }
+
+void CBrAppUi::PageInfoL()
+    {
+    RPointerArray<HBufC> items;
+    CleanupStack::PushL(TCleanupItem(DestroyTextArray, &items));
+    BwDoc* d = iView->Doc();
+    TBuf<200> t;
+    t.Copy(_L("Address: "));
+    {
+    TBuf<180> u; u.Copy(iCurrentUrl->Left(180)); t.Append(u);
+    }
+    AddItemL(items, t);
+    if (d)
+        {
+        if (d->titleLen) { t.Copy(_L("Title: ")); t.Append(TPtrC((const TUint16*)d->title, Min((TInt)d->titleLen, 180))); AddItemL(items, t); }
+        t.Format(_L("Size %d KB, download %d ms, parse %d ms, layout %d ms"), iPageBytes / 1024, iDownloadMs, iParseMs, iView->LayoutMs());
+        AddItemL(items, t);
+        static const char* const kCs[] = { "UTF-8", "windows-1252", "windows-1250", "ISO-8859-2", "ISO-8859-1" };
+        TPtrC8 cs((const TUint8*)(d->charset >= 0 && d->charset <= 4 ? kCs[d->charset] : "?"));
+        TBuf<20> cs16; cs16.Copy(cs);
+        t.Format(_L("Charset %S, %d links, %d pictures, %d form fields, %d CSS rules"), &cs16, d->linkCount, d->imageCount, d->controlCount, d->cssRules);
+        AddItemL(items, t);
+        t.Format(_L("Page %d px high, %d boxes, %d ops, %d KB of text"), iView->PageHeight(), iView->BoxCount(), d->opCount, d->poolLen * 2 / 1024);
+        AddItemL(items, t);
+        if (d->failed) AddItemL(items, _L("Out of memory while reading: the page is incomplete"));
+        }
+    TInt freeRam = 0;
+    HAL::Get(HALData::EMemoryRAMFree, freeRam);
+    t.Format(_L("RAM free %d KB, pictures in RAM %d KB, %d waiting"), freeRam / 1024, iImages->CachedKb(), iImages->Pending());
+    AddItemL(items, t);
+    t.Format(_L("Cookies %d, history %d pages"), iCookies.count, iHistory.Count());
+    AddItemL(items, t);
+    iView->ShowListL(EListInfo, _L("Page info"), items, 0, *this);
+    CleanupStack::PopAndDestroy(&items);
+    }
+
+// ------------------------------------------------------------------ internal pages
+
+_LIT8(KPageHead, "<html><head><meta charset=utf-8><title>");
+_LIT8(KPageStyle, "</title><style>body{background:#f4f6fa} h1{color:#1c3a6e} .s{color:#777}</style></head><body>");
+
+HBufC8* CBrAppUi::StartPageLC()
+    {
+    TInt size = 3000;
+    for (TInt i = 0; i < iBookmarkUrls.Count(); i++) size += iBookmarkUrls[i]->Length() * 2 + iBookmarkTitles[i]->Length() * 6 + 40;
+    HBufC8* b = HBufC8::NewLC(size);
+    TPtr8 p = b->Des();
+    p.Append(KPageHead);
+    p.Append(_L8("Browser 9300"));
+    p.Append(KPageStyle);
+    p.Append(_L8("<h1>Browser 9300</h1>"
+                 "<form action='https://lite.duckduckgo.com/lite/' method=post>Search the web: <input name=q size=30> <input type=submit value=Search></form>"
+                 "<form action='https://en.m.wikipedia.org/w/index.php'>Wikipedia: <input name=search size=30> <input type=submit value=Go></form>"
+                 "<form action='https://cs.m.wikipedia.org/w/index.php'>Wikipedie: <input name=search size=30> <input type=submit value=Hledat></form>"
+                 "<h2>Bookmarks</h2><ul>"));
+    for (TInt i = 0; i < iBookmarkUrls.Count(); i++)
+        {
+        p.Append(_L8("<li><a href=\""));
+        AppendHtmlEscaped(p, *iBookmarkUrls[i]);
+        p.Append(_L8("\">"));
+        if (iBookmarkTitles[i]->Length()) AppendHtmlEscaped(p, *iBookmarkTitles[i]);
+        else AppendHtmlEscaped(p, *iBookmarkUrls[i]);
+        p.Append(_L8("</a>"));
+        }
+    p.Append(_L8("</ul><p><a href='about:bookmarks'>Edit bookmarks</a> | <a href='about:history'>History</a></p>"
+                 "<p class=s>Ctrl+L address, Ctrl+B bookmarks, Ctrl+D add bookmark, Esc back, Ctrl+R reload, Ctrl+I page info. "
+                 "Up/Down: links and scrolling, Left/Right: previous/next link, Shift+Up/Down or Space: page.</p></body></html>"));
+    return b;
+    }
+
+HBufC8* CBrAppUi::BookmarksPageLC(TBool aHistory)
+    {
+    TInt size = 2000;
+    if (aHistory)
+        for (TInt i = 0; i < iHistory.Count(); i++) size += iHistory[i].iUrl->Length() * 2 + (iHistory[i].iTitle ? iHistory[i].iTitle->Length() * 6 : 0) + 60;
+    else
+        for (TInt i = 0; i < iBookmarkUrls.Count(); i++) size += iBookmarkUrls[i]->Length() * 3 + iBookmarkTitles[i]->Length() * 6 + 80;
+    HBufC8* b = HBufC8::NewLC(size);
+    TPtr8 p = b->Des();
+    p.Append(KPageHead);
+    p.Append(aHistory ? _L8("History") : _L8("Bookmarks"));
+    p.Append(KPageStyle);
+    if (aHistory)
+        {
+        p.Append(_L8("<h1>History</h1><ol>"));
+        for (TInt i = iHistory.Count() - 1; i >= 0; i--)
+            {
+            const THistoryEntry& e = iHistory[i];
+            if (e.iUrl->Left(6) == _L8("about:")) continue;
+            p.Append(_L8("<li><a href=\""));
+            AppendHtmlEscaped(p, *e.iUrl);
+            p.Append(_L8("\">"));
+            if (e.iTitle && e.iTitle->Length()) AppendHtmlEscaped(p, *e.iTitle); else AppendHtmlEscaped(p, *e.iUrl);
+            p.Append(_L8("</a>"));
+            if (e.iBody) p.Append(_L8(" <span class=s>(kept)</span>"));
+            }
+        p.Append(_L8("</ol>"));
+        }
+    else
+        {
+        p.Append(_L8("<h1>Bookmarks</h1><p>Add the page you are on with Ctrl+D (Bookmarks &gt; Add this page).</p><ul>"));
+        for (TInt i = 0; i < iBookmarkUrls.Count(); i++)
+            {
+            p.Append(_L8("<li><a href=\""));
+            AppendHtmlEscaped(p, *iBookmarkUrls[i]);
+            p.Append(_L8("\">"));
+            if (iBookmarkTitles[i]->Length()) AppendHtmlEscaped(p, *iBookmarkTitles[i]); else AppendHtmlEscaped(p, *iBookmarkUrls[i]);
+            p.Append(_L8("</a> <a href='about:delbm?"));
+            p.AppendNum(i);
+            p.Append(_L8("'>[delete]</a>"));
+            if (i > 0) { p.Append(_L8(" <a href='about:upbm?")); p.AppendNum(i); p.Append(_L8("'>[up]</a>")); }
+            }
+        p.Append(_L8("</ul><p><a href='about:start'>Start page</a></p>"));
+        }
+    p.Append(_L8("</body></html>"));
+    return b;
+    }
+
+void CBrAppUi::ShowInternalL(const TDesC8& aUrl)
+    {
+    HBufC8* url = aUrl.AllocLC();
+    HBufC8* body = NULL;
+    TPtrC8 u(*url);
+    if (u.Left(12).CompareF(_L8("about:delbm?")) == 0 || u.Left(11).CompareF(_L8("about:upbm?")) == 0)
+        {
+        TBool del = u.Left(12).CompareF(_L8("about:delbm?")) == 0;
+        TLex8 l(u.Mid(del ? 12 : 11));
+        TInt n = -1;
+        if (l.Val(n) == KErrNone && n >= 0 && n < iBookmarkUrls.Count())
+            {
+            if (del) DeleteBookmark(n);
+            else if (n > 0)
+                {
+                HBufC8* bu = iBookmarkUrls[n]; HBufC* bt = iBookmarkTitles[n];
+                iBookmarkUrls.Remove(n); iBookmarkTitles.Remove(n);
+                iBookmarkUrls.Insert(bu, n - 1); iBookmarkTitles.Insert(bt, n - 1);
+                SaveBookmarks();
+                }
+            }
+        // stay on the bookmarks page (the entry on screen is about:bookmarks)
+        iNavigatingHistory = ETrue;
+        TInt keep = iView->ScrollY();
+        CleanupStack::PopAndDestroy(url);
+        ShowInternalL(_L8("about:bookmarks"));
+        iView->ScrollTo(keep);
+        return;
+        }
+    if (u.CompareF(_L8("about:bookmarks")) == 0) body = BookmarksPageLC(EFalse);
+    else if (u.CompareF(_L8("about:history")) == 0) body = BookmarksPageLC(ETrue);
+    else if (u.CompareF(_L8("about:blank")) == 0) { body = HBufC8::NewLC(1); }
+    else body = StartPageLC();
+    iNavigatingHistory = iNavigatingHistory && iHistoryPos >= 0;
+    AddHistoryL(u);
+    iNavigatingHistory = EFalse;
+    iPageBytes = body->Length();
+    iDownloadMs = 0;
+    ShowPageL(u, _L8("text/html; charset=utf-8"), *body, 0, -1);
+    iView->SetStatus(KNullDesC);
+    BwDoc* d = iView->Doc();
+    if (d && d->titleLen && iHistoryPos >= 0)
+        {
+        delete iHistory[iHistoryPos].iTitle;
+        iHistory[iHistoryPos].iTitle = TPtrC((const TUint16*)d->title, d->titleLen).Alloc();
+        }
+    CleanupStack::PopAndDestroy(2);     // body, url
+    }
+
+// ------------------------------------------------------------------ bookmarks
+
+void CBrAppUi::LoadBookmarksL()
+    {
+    RFs& fs = iCoeEnv->FsSession();
+    RFile f;
+    if (f.Open(fs, KBookmarksFile, EFileRead) != KErrNone)
+        {
+        // the first start: pages that work without JavaScript
+        static const char* const kDefaults[] = {
+            "https://lite.duckduckgo.com/lite/", "DuckDuckGo Lite (search)",
+            "https://en.m.wikipedia.org/", "Wikipedia (mobile)",
+            "https://cs.m.wikipedia.org/", "Wikipedie (mobilni)",
+            "https://lite.cnn.com/", "CNN Lite",
+            "https://text.npr.org/", "NPR Text",
+            "https://news.ycombinator.com/", "Hacker News",
+            "http://info.cern.ch/", "The first web page (CERN)",
+            "http://192.168.137.1:8000/", "The PC server (USB link)"
+            };
+        for (TUint i = 0; i < sizeof(kDefaults) / sizeof(kDefaults[0]); i += 2)
+            {
+            HBufC8* u = TPtrC8((const TUint8*)kDefaults[i]).AllocLC();
+            HBufC* t = Utf8ToUnicodeL(kDefaults[i + 1]);
+            CleanupStack::PushL(t);
+            PtrAppendL(iBookmarkUrls, u);
+            PtrAppendL(iBookmarkTitles, t);
+            CleanupStack::Pop(2);
+            }
+        return;
+        }
+    CleanupClosePushL(f);
+    TInt size = 0;
+    f.Size(size);
+    if (size > 64 * 1024) size = 64 * 1024;
+    HBufC8* buf = HBufC8::NewLC(size);
+    TPtr8 p = buf->Des();
+    User::LeaveIfError(f.Read(p));
+    TInt i = 0;
+    while (i < p.Length())
+        {
+        TInt e = i;
+        while (e < p.Length() && p[e] != '\n') e++;
+        TPtrC8 line = p.Mid(i, e - i);
+        if (line.Length() && line[line.Length() - 1] == '\r') line.Set(line.Left(line.Length() - 1));
+        i = e + 1;
+        TInt tab = line.Locate('\t');
+        TPtrC8 url = tab >= 0 ? line.Left(tab) : line;
+        TPtrC8 title = tab >= 0 ? line.Mid(tab + 1) : TPtrC8();
+        if (!url.Length()) continue;
+        HBufC8* u = url.AllocLC();
+        HBufC* t = Utf8ToUnicodeL(title);
+        CleanupStack::PushL(t);
+        PtrAppendL(iBookmarkUrls, u);
+        PtrAppendL(iBookmarkTitles, t);
+        CleanupStack::Pop(2);
+        }
+    CleanupStack::PopAndDestroy(2);
+    }
+
+void CBrAppUi::SaveBookmarks()
+    {
+    RFs& fs = iCoeEnv->FsSession();
+    RFile f;
+    if (f.Replace(fs, KBookmarksFile, EFileWrite) != KErrNone) { IgLog(_L("bookmarks: cannot write")); return; }
+    for (TInt i = 0; i < iBookmarkUrls.Count(); i++)
+        {
+        f.Write(*iBookmarkUrls[i]);
+        f.Write(_L8("\t"));
+        HBufC8* t = NULL;
+        TRAPD(err, t = UnicodeToUtf8L(*iBookmarkTitles[i]));
+        if (err == KErrNone && t) { f.Write(*t); delete t; }
+        f.Write(_L8("\r\n"));
+        }
+    f.Close();
+    }
+
+void CBrAppUi::AddBookmarkL()
+    {
+    if (!iCurrentUrl->Length() || iCurrentUrl->Left(6) == _L8("about:")) { Say(_L("Open a page first")); return; }
+    for (TInt i = 0; i < iBookmarkUrls.Count(); i++)
+        if (*iBookmarkUrls[i] == *iCurrentUrl) { Say(_L("Already in the bookmarks")); return; }
+    HBufC* title = HBufC::NewLC(200);
+    TPtr t = title->Des();
+    BwDoc* d = iView->Doc();
+    if (d && d->titleLen) t.Copy(TPtrC((const TUint16*)d->title, Min((TInt)d->titleLen, 200)));
+    else t.Copy(iCurrentUrl->Left(200));
+    if (!TextDialogL(_L("Bookmark name"), t)) { CleanupStack::PopAndDestroy(title); return; }
+    HBufC8* u = iCurrentUrl->AllocLC();
+    PtrAppendL(iBookmarkUrls, u);
+    CleanupStack::Pop(u);
+    PtrAppendL(iBookmarkTitles, title);
+    CleanupStack::Pop(title);
+    SaveBookmarks();
+    Say(_L("Bookmark added"));
+    }
+
+void CBrAppUi::DeleteBookmark(TInt aIndex)
+    {
+    delete iBookmarkUrls[aIndex];
+    delete iBookmarkTitles[aIndex];
+    iBookmarkUrls.Remove(aIndex);
+    iBookmarkTitles.Remove(aIndex);
+    SaveBookmarks();
+    }
+
+void CBrAppUi::HomeDialogL()
+    {
+    TBuf<256> t(iSettings->iHome);
+    if (iCurrentUrl->Length() && iCurrentUrl->Left(6) != _L8("about:")) t.Copy(iCurrentUrl->Left(256));
+    if (!TextDialogL(_L("Home page (about:start = the start page)"), t)) return;
+    iSettings->iHome.Copy(t);
+    iSettings->Save();
+    Say(_L("Home page set"));
+    }
+
+// ------------------------------------------------------------------ cookies
+
+void CBrAppUi::LoadCookies()
+    {
+    RFile f;
+    if (f.Open(iCoeEnv->FsSession(), KCookiesFile, EFileRead) != KErrNone) return;
+    TInt size = 0;
+    f.Size(size);
+    if (size > 0 && size < 256 * 1024)
+        {
+        HBufC8* b = HBufC8::New(size);
+        if (b)
+            {
+            TPtr8 p = b->Des();
+            if (f.Read(p) == KErrNone) bw_cookies_load(&iCookies, (const char*)p.Ptr(), p.Length(), NowUnixSeconds());
+            delete b;
+            }
+        }
+    f.Close();
+    IgLogF(_L("cookies loaded: %d"), iCookies.count);
+    }
+
+void CBrAppUi::SaveCookies()
+    {
+    char* t = bw_cookies_save(&iCookies, NowUnixSeconds());
+    if (!t) return;
+    RFile f;
+    if (f.Replace(iCoeEnv->FsSession(), KCookiesFile, EFileWrite) == KErrNone)
+        {
+        f.Write(TPtrC8((const TUint8*)t));
+        f.Close();
+        }
+    ig_free(t);
+    }
+
+// ------------------------------------------------------------------ the PC: update, log, screenshot
+
+void CBrAppUi::ServerDialogL()
+    {
+    TBuf<80> t;
+    iSettings->ServerText(t);
+    if (!TextDialogL(_L("PC server (host:port)"), t)) return;
+    iSettings->SetServer(t);
+    iSettings->Save();
+    iSettings->ServerText(t);
+    Say(t);
+    }
+
+void CBrAppUi::UpdateFromPcL()
+    {
+    if (iHelperHttp->Busy()) { Say(_L("Busy with the PC...")); return; }
+    iHelperOp = EHelperUpdate;
+    iHelperHttp->SetSinkFile(KUpdateFile);
+    TBuf8<200> h;
+    h.Append(_L8("User-Agent: "));
+    h.Append(KBrUserAgent);
+    h.Append(_L8("\r\nAccept: */*\r\n"));
+    iHelperHttp->RequestL(iSettings->iServerHost, _L8("GET"), KUpdatePath, h, KNullDesC8, *this, EFalse, iSettings->iServerPort);
+    Say(_L("Downloading the update from the PC..."));
+    }
+
+void CBrAppUi::SendLogL()
+    {
+    if (iHelperHttp->Busy()) { Say(_L("Busy with the PC...")); return; }
+    IgLog(_L("sending the log"));
+    IgLogFlush();
+    RFile f;
+    if (f.Open(iCoeEnv->FsSession(), LogFileName(), EFileRead | EFileShareAny) != KErrNone) { Say(_L("No log yet (Tools > Logging)")); return; }
+    TInt size = 0;
+    f.Size(size);
+    if (size > 200 * 1024) size = 200 * 1024;
+    HBufC8* d = HBufC8::NewLC(size);
+    TPtr8 dp = d->Des();
+    f.Read(dp);
+    f.Close();
+    iHelperOp = EHelperLog;
+    iHelperHttp->RequestL(iSettings->iServerHost, _L8("POST"), _L8("/results?name=browser9300_log&ext=txt"),
+                          _L8("Content-Type: application/octet-stream\r\n"), *d, *this, EFalse, iSettings->iServerPort);
+    CleanupStack::PopAndDestroy(d);
+    Say(_L("Sending the log..."));
+    }
+
+void CBrAppUi::SendScreenshotL()
+    {
+    if (iHelperHttp->Busy()) { Say(_L("Busy with the PC...")); return; }
+    CFbsBitmap* b = iView->Buffer();
+    if (!b) return;
+    HBufC8* bmp = BitmapToBmpLC(*b);
+    iHelperOp = EHelperShot;
+    iHelperHttp->RequestL(iSettings->iServerHost, _L8("POST"), _L8("/results?name=browser9300_screen&ext=bmp"),
+                          _L8("Content-Type: application/octet-stream\r\n"), *bmp, *this, EFalse, iSettings->iServerPort);
+    CleanupStack::PopAndDestroy(bmp);
+    Say(_L("Sending a screenshot..."));
+    }
+
+void CBrAppUi::HttpProgress(const TDesC& aText)
+    {
+    if (iHelperOp == EHelperUpdate) iView->SetStatus(aText);
+    }
+
+void CBrAppUi::HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& /*aHeaders*/, const TDesC8& /*aBody*/)
+    {
+    TInt op = iHelperOp;
+    iHelperOp = EHelperNone;
+    if (aError != KErrNone || aHttpStatus != 200)
+        {
+        TBuf<100> t;
+        if (aError != KErrNone) t.Format(_L("The PC did not answer (%d): is ota_server.js running?"), aError);
+        else t.Format(_L("The PC answered HTTP %d"), aHttpStatus);
+        Say(t);
+        return;
+        }
+    if (op == EHelperUpdate)
+        {
+        IgLog(_L("update downloaded: starting the installer"));
+        if (iSettings) iSettings->Save();
+        SaveCookies();
+        IgLogFlush();
+        RApaLsSession ls;
+        TInt err = ls.Connect();
+        if (err == KErrNone)
+            {
+            TThreadId tid;
+            err = ls.StartDocument(KUpdateFile, tid);
+            ls.Close();
+            }
+        if (err != KErrNone)
+            {
+            TBuf<100> t;
+            t.Format(_L("Saved as %S; the installer did not start (%d)"), &KUpdateFile, err);
+            Say(t);
+            return;
+            }
+        // not from here: this runs inside the HTTP client's RunL, whose RunError would swallow
+        // the exit leave; a callback of its own leaves to the scheduler, which exits
+        if (!iExitCallback) iExitCallback = new CAsyncCallBack(TCallBack(ExitCallback, this), CActive::EPriorityHigh);
+        if (iExitCallback) iExitCallback->CallBack();
+        else Exit();
+        return;
+        }
+    Say(op == EHelperShot ? _L("Screenshot sent to the PC") : _L("Log sent to the PC"));
+    }
+
+TInt CBrAppUi::ExitCallback(TAny* aSelf)
+    {
+    ((CBrAppUi*)aSelf)->Exit();
+    return 0;
+    }
+
+// ------------------------------------------------------------------ entry points
+
+EXPORT_C CApaApplication* NewApplication()
+    {
+    return new CBrApplication;
+    }
+
+GLDEF_C TInt E32Dll(TDllReason)
+    {
+    return KErrNone;
+    }
