@@ -19,6 +19,22 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.19** (not yet run on the phone): asks before downloading a file.
+  - When a reply turns out to be a file (not HTML / text / XML / a picture, or sent as
+    `Content-Disposition: attachment`, or a `.jad`), the transfer **pauses at its headers**
+    (`MHttpObserver::HttpHeadersArrived` returns EFalse; nothing more is read and the
+    watchdog waits). A dialog shows:
+    - **File**: its type and size ("application/zip, 1.2 MB", or "size unknown");
+    - **From**: the site;
+    - **Name**: editable (from `Content-Disposition` or the URL);
+    - **Save to**: Phone: My files (or Documents, whichever exists), Memory card (E:) when
+      one is in, or Temporary (to open / install). `.sis`, `.sisx`, `.jar` and `.jad` default
+      to Temporary.
+  - **OK** (or Enter) resumes the transfer straight into that file (`CHttpClient::ResumeL`; the
+    body is written as it arrives, not held in RAM). An existing file isn't overwritten: it
+    becomes "name (2).ext". **Cancel** drops the transfer.
+  - When it's done: "Downloaded. Open it?" (a `.sis` goes to the installer, as before);
+    otherwise "Saved: path".
 - **0.18** (not yet run on the phone): the address bar is a combo box.
   - Its list holds the pages visited (newest first, each once, up to 40; no `about:` pages),
     using Series 80's own `CEikComboBox` with its history popout. **Down** opens the list; pick

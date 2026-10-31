@@ -169,6 +169,21 @@ RESOURCE DIALOG r_br_address_dialog
         };
     }
 
+// before a file is downloaded: what it is, its name, where it goes
+RESOURCE DIALOG r_br_download_dialog
+    {
+    title = "Download this file?";
+    flags = EEikDialogFlagWait;
+    buttons = R_EIK_BUTTONS_CANCEL_OK;
+    items =
+        {
+        DLG_LINE { type = EEikCtLabel; id = EBrDlFile; prompt = "File"; control = LABEL { horiz_align = EEikLabelAlignHLeft; reserve_length = 60; txt = ""; }; },
+        DLG_LINE { type = EEikCtLabel; id = EBrDlFrom; prompt = "From"; control = LABEL { horiz_align = EEikLabelAlignHLeft; reserve_length = 60; txt = ""; }; },
+        DLG_LINE { type = EEikCtEdwin; id = EBrDlName; prompt = "Name"; control = EDWIN { width = 30; lines = 1; maxlength = 100; flags = EEikEdwinNoLineOrParaBreaks; }; },
+        DLG_LINE { type = EEikCtChoiceList; id = EBrDlWhere; prompt = "Save to"; control = CHOICELIST { }; }
+        };
+    }
+
 RESOURCE DIALOG r_br_text_dialog_multi
     {
     title = "Text";

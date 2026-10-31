@@ -58,6 +58,8 @@ void CPageLoader::LoadL(const TDesC8& aUrl, const TDesC8* aPostBody, const TDesC
 
 void CPageLoader::Stop()
     {
+    iOffered = EFalse;
+    iDownloadPath.Zero();
     if (iBusy) iHttp->Abort();
     iBusy = EFalse;
     iWatchdog->Cancel();
@@ -133,6 +135,7 @@ TInt CPageLoader::WatchdogTick(TAny* aSelf)
     {
     CPageLoader* self = (CPageLoader*)aSelf;
     if (!self->iBusy) { self->iWatchdog->Cancel(); return 0; }
+    if (self->iOffered) { self->iIdleTicks = 0; return 0; }          // the user is deciding
     TInt now = self->iHttp->BytesReceived();
     if (now != self->iLastBytes) { self->iLastBytes = now; self->iIdleTicks = 0; return 0; }
     if (++self->iIdleTicks >= KStallTicks)
@@ -178,6 +181,54 @@ void CPageLoader::StoreCookies(const TDesC8& aHeaders)
 void CPageLoader::HttpProgress(const TDesC& aText)
     {
     iObserver.PageProgress(aText);
+    }
+
+static void DownloadName(const TDesC8& aUrl, const TDesC8& aDisposition, TDes& aName);
+
+// a page to show (else a file to download): HTML, text, XML, pictures; not a .jad, not an attachment
+TBool CPageLoader::IsPageType(const TDesC8& aCt, const TDesC8& aDisposition)
+    {
+    if (aDisposition.Length() && aDisposition.Left(10).CompareF(_L8("attachment")) == 0) return EFalse;
+    if (aCt.FindF(_L8("text/vnd.sun.j2me.app-descriptor")) == 0) return EFalse;
+    return aCt.Length() == 0 || aCt.FindF(_L8("html")) >= 0 || aCt.FindF(_L8("text/")) == 0 ||
+           aCt.FindF(_L8("image/")) == 0 || aCt.FindF(_L8("xml")) >= 0;
+    }
+
+// The headers are in: a file (not a page, a 200) pauses the transfer and is offered to the user
+TBool CPageLoader::HttpHeadersArrived(const TDesC8& aHeaders, TInt aStatus)
+    {
+    if (aStatus != 200) return ETrue;
+    const char* hd = (const char*)aHeaders.Ptr();
+    TInt hl = aHeaders.Length();
+    char* ct = ig_http_header_dup(hd, hl, "Content-Type", 0);
+    char* disp = ig_http_header_dup(hd, hl, "Content-Disposition", 0);
+    char* len = ig_http_header_dup(hd, hl, "Content-Length", 0);
+    TPtrC8 ctype(ct ? (const TUint8*)ct : (const TUint8*)"");
+    TPtrC8 dispo(disp ? (const TUint8*)disp : (const TUint8*)"");
+    TBool page = IsPageType(ctype, dispo);
+    if (!page)
+        {
+        TBuf<64> name;
+        DownloadName(*iUrl, dispo, name);
+        TInt length = len ? ig_atoi(len) : -1;
+        HBufC8* ctCopy = ctype.Left(80).Alloc();
+        iOffered = ETrue;
+        iDownloadPath.Zero();
+        iObserver.DownloadOffered(name, ctCopy ? *ctCopy : KNullDesC8(), length);
+        delete ctCopy;
+        }
+    ig_free(ct); ig_free(disp); ig_free(len);
+    return page;
+    }
+
+void CPageLoader::AcceptDownloadL(const TDesC& aPath)
+    {
+    if (!iOffered || !iBusy) return;
+    iOffered = EFalse;
+    iDownloadPath.Copy(aPath);
+    iLastBytes = iHttp->BytesReceived();
+    iIdleTicks = 0;
+    iHttp->ResumeL(aPath);
     }
 
 // the file name for a download: the last part of the path, else "download"
@@ -272,9 +323,9 @@ void CPageLoader::HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders
     iBusy = EFalse;
     char* ct = ig_http_header_dup(hd, hl, "Content-Type", 0);
     TPtrC8 ctype(ct ? (const TUint8*)ct : (const TUint8*)"");
-    TBool page = ctype.Length() == 0 || ctype.FindF(_L8("html")) >= 0 || ctype.FindF(_L8("text/")) == 0 ||
-                 ctype.FindF(_L8("image/")) == 0 || ctype.FindF(_L8("xml")) >= 0;
-    if (ctype.FindF(_L8("text/vnd.sun.j2me.app-descriptor")) == 0) page = EFalse;        // .jad
+    char* dispo0 = ig_http_header_dup(hd, hl, "Content-Disposition", 0);
+    TBool page = IsPageType(ctype, dispo0 ? TPtrC8((const TUint8*)dispo0) : TPtrC8());
+    ig_free(dispo0);
     if (page)
         {
         HBufC8* body = aBody.Alloc();
@@ -287,17 +338,23 @@ void CPageLoader::HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders
         CleanupStack::PopAndDestroy(ctCopy);
         return;
         }
-    // a file: save it and hand it to whatever opens it (.sis -> the installer)
+    // a file: save it (where the user chose; it may be written already) and offer to open it
     char* disp = ig_http_header_dup(hd, hl, "Content-Disposition", 0);
     TFileName name;
-    name.Copy(_L("C:\\System\\Temp\\"));
-    TBuf<64> fn;
-    DownloadName(*iUrl, disp ? TPtrC8((const TUint8*)disp) : TPtrC8(), fn);
+    if (iDownloadPath.Length()) name.Copy(iDownloadPath);
+    else
+        {
+        name.Copy(_L("C:\\System\\Temp\\"));
+        TBuf<64> fn;
+        DownloadName(*iUrl, disp ? TPtrC8((const TUint8*)disp) : TPtrC8(), fn);
+        name.Append(fn);
+        }
     ig_free(disp);
-    name.Append(fn);
+    iDownloadPath.Zero();
+    TBool written = iHttp->SinkUsed();
     RFs fs;
-    TInt err = fs.Connect();
-    if (err == KErrNone)
+    TInt err = written ? KErrNone : fs.Connect();
+    if (err == KErrNone && !written)
         {
         fs.MkDirAll(name);
         RFile f;

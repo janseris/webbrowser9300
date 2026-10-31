@@ -107,6 +107,8 @@ void CHttpClient::RequestL(const TDesC8& aHost, const TDesC8& aMethod, const TDe
     iRespLen = 0;
     iHeadersDone = EFalse;
     iSinkBytes = 0;
+    iSinkUsed = EFalse;
+    iPaused = EFalse;
     iFramed = EFalse;
     iReused = EFalse;
     iLastProgressKb = 0;
@@ -214,8 +216,44 @@ void CHttpClient::CloseSink()
     delete iSinkBuf; iSinkBuf = NULL;           // the RAM goes back after each download
     }
 
+// a file sink: the body so far goes to the file, the memory keeps the headers
+void CHttpClient::TryOpenSink()
+    {
+    if (!iSinkName.Length() || iInfo.chunked || iInfo.status != 200) return;
+    if (!iSinkFsOpen) { if (iSinkFs.Connect() == KErrNone) iSinkFsOpen = ETrue; }
+    if (!iSinkFsOpen) return;
+    iSinkFs.MkDirAll(iSinkName);
+    if (iSink.Replace(iSinkFs, iSinkName, EFileWrite | EFileShareAny) != KErrNone) return;
+    iSinkOpen = ETrue;
+    iSinkUsed = ETrue;
+    TPtrC8 rest(iResponse->Ptr() + iInfo.headerLen, iRespLen - iInfo.headerLen);
+    if (rest.Length()) { SinkWrite(rest); iSinkBytes = rest.Length(); }
+    iResponse->Des().SetLength(iInfo.headerLen);
+    iRespLen = iInfo.headerLen;
+    }
+
+void CHttpClient::ResumeL(const TDesC& aFile)
+    {
+    if (!iPaused) return;
+    iPaused = EFalse;
+    iSinkName.Copy(aFile);
+    TryOpenSink();
+    ReceivedSoFarL();
+    }
+
+// what arrived with the headers may be all of it
+void CHttpClient::ReceivedSoFarL()
+    {
+    TBool complete;
+    if (iSinkOpen) complete = iInfo.contentLength >= 0 && iSinkBytes >= iInfo.contentLength;
+    else complete = ig_http_body_complete((const char*)iResponse->Ptr(), iRespLen, &iInfo);
+    if (complete) { iFramed = ETrue; FinishL(KErrNone); return; }
+    ReceiveNext();
+    }
+
 void CHttpClient::Abort()
     {
+    iPaused = EFalse;
     Cancel();
     CloseSocket();
     if (iSinkOpen) CloseSink();
@@ -408,23 +446,13 @@ void CHttpClient::RunL()
                         {
                         iHeadersDone = ETrue;
                         Progress(_L("Receiving..."));
-                        // a file sink: the body so far goes to the file, the memory keeps the headers
-                        if (iSinkName.Length() && !iInfo.chunked && iInfo.status == 200)
+                        // the observer may want to ask first (a file to download): pause here
+                        if (iObserver && !iObserver->HttpHeadersArrived(TPtrC8(iResponse->Ptr(), iInfo.headerLen), iInfo.status))
                             {
-                            if (!iSinkFsOpen) { if (iSinkFs.Connect() == KErrNone) iSinkFsOpen = ETrue; }
-                            if (iSinkFsOpen)
-                                {
-                                iSinkFs.MkDirAll(iSinkName);
-                                if (iSink.Replace(iSinkFs, iSinkName, EFileWrite | EFileShareAny) == KErrNone)
-                                    {
-                                    iSinkOpen = ETrue;
-                                    TPtrC8 rest(iResponse->Ptr() + iInfo.headerLen, iRespLen - iInfo.headerLen);
-                                    if (rest.Length()) { SinkWrite(rest); iSinkBytes = rest.Length(); }
-                                    iResponse->Des().SetLength(iInfo.headerLen);
-                                    iRespLen = iInfo.headerLen;
-                                    }
-                                }
+                            iPaused = ETrue;
+                            return;
                             }
+                        TryOpenSink();
                         }
                     }
                 else if (iSinkOpen)

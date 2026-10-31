@@ -9,6 +9,8 @@
 #include <eikedwin.h>
 #include <eikseced.h>
 #include <eikcmbox.h>
+#include <eikchlst.h>
+#include <eiklabel.h>
 #include <badesca.h>
 #include <baclipb.h>
 #include <txtetext.h>
@@ -132,6 +134,46 @@ TBool CAddressDialog::OkToExitL(TInt aButtonId)
         {
         CEikComboBox* cb = (CEikComboBox*)Control(EBrTextField);
         cb->GetText(iText);
+        }
+    return ETrue;
+    }
+
+// ------------------------------------------------------------------ the download prompt
+
+CDownloadDialog::~CDownloadDialog()
+    {
+    delete iPlaces;
+    }
+
+void CDownloadDialog::PreLayoutDynInitL()
+    {
+    ((CEikLabel*)Control(EBrDlFile))->SetTextL(iFile);
+    ((CEikLabel*)Control(EBrDlFrom))->SetTextL(iFrom);
+    CEikEdwin* ed = (CEikEdwin*)Control(EBrDlName);
+    ed->SetTextL(&iName);
+    ed->SetCursorPosL(iName.Length(), EFalse);
+    CEikChoiceList* cl = (CEikChoiceList*)Control(EBrDlWhere);
+    cl->SetArrayL(iPlaces);        // (the choice list owns it now)
+    iPlaces = NULL;
+    cl->SetCurrentItem(iPlace);
+    }
+
+TKeyResponse CDownloadDialog::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType)
+    {
+    if (aType == EEventKey && (aKeyEvent.iCode == EKeyEnter || aKeyEvent.iCode == EKeyLineFeed))
+        {
+        TryExitL(EEikBidOk);
+        return EKeyWasConsumed;
+        }
+    return CEikDialog::OfferKeyEventL(aKeyEvent, aType);
+    }
+
+TBool CDownloadDialog::OkToExitL(TInt aButtonId)
+    {
+    if (aButtonId == EEikBidOk)
+        {
+        ((CEikEdwin*)Control(EBrDlName))->GetText(iName);
+        iPlace = ((CEikChoiceList*)Control(EBrDlWhere))->CurrentItem();
         }
     return ETrue;
     }
@@ -279,6 +321,7 @@ void CBrAppUi::ConstructL()
     iStyles = CStyleFetcher::NewL(*this, iCookies);
     iRefreshTimer = CPeriodic::NewL(CActive::EPriorityStandard);
     iShowCallback = new (ELeave) CAsyncCallBack(TCallBack(ShowCallback, this), CActive::EPriorityHigh);
+    iOfferCallback = new (ELeave) CAsyncCallBack(TCallBack(OfferCallback, this), CActive::EPriorityStandard);
     iStylesCallback = new (ELeave) CAsyncCallBack(TCallBack(StylesCallback, this), CActive::EPriorityStandard);
     iStatsTimer = CPeriodic::NewL(CActive::EPriorityLow);
     {
@@ -316,6 +359,7 @@ CBrAppUi::~CBrAppUi()
     delete iStatsTimer;
     DropPendingPage();
     delete iShowCallback;
+    delete iOfferCallback;
     delete iStylesCallback;
     if (iNullOpen) iNullThread.Close();
     if (iProbeOn)
@@ -1374,6 +1418,135 @@ void CBrAppUi::ShowPendingPage()
     UpdateStatus();
     }
 
+// A file is about to come (the transfer waits): the prompt, from its own callback
+void CBrAppUi::DownloadOffered(const TDesC& aName, const TDesC8& aContentType, TInt aLength)
+    {
+    iOfferName.Copy(aName.Left(iOfferName.MaxLength()));
+    iOfferCt.Copy(aContentType.Left(iOfferCt.MaxLength()));
+    iOfferLength = aLength;
+    iPageStatus.Copy(_L("A file: download it?"));
+    UpdateStatus();
+    iOfferCallback->CallBack();
+    }
+
+TInt CBrAppUi::OfferCallback(TAny* aSelf)
+    {
+    CBrAppUi* self = (CBrAppUi*)aSelf;
+    TRAPD(err, self->AskDownloadL());
+    if (err != KErrNone)
+        {
+        self->iLoader->Stop();
+        self->iView->SetLoading(EFalse);
+        self->UpdateTitle();
+        TBuf<60> t;
+        t.Format(_L("Download failed (%d)"), err);
+        self->Say(t);
+        }
+    return 0;
+    }
+
+static TBool DirExists(RFs& aFs, const TDesC& aDir)
+    {
+    TEntry e;
+    return aFs.Entry(aDir.Left(aDir.Length() - 1), e) == KErrNone && e.IsDir();
+    }
+
+void CBrAppUi::AskDownloadL()
+    {
+    if (!iLoader->Busy()) return;
+    RFs& fs = iCoeEnv->FsSession();
+    // the places: the phone's documents, the memory card if there is one, temporary (to install /
+    // open, as before)
+    CDesCArrayFlat* labels = new (ELeave) CDesCArrayFlat(4);
+    CleanupStack::PushL(labels);
+    CDesCArrayFlat* dirs = new (ELeave) CDesCArrayFlat(4);
+    CleanupStack::PushL(dirs);
+    _LIT(KMyFiles, "C:\\My files\\");
+    _LIT(KDocuments, "C:\\Documents\\");
+    if (DirExists(fs, KMyFiles) || !DirExists(fs, KDocuments)) { labels->AppendL(_L("Phone: My files")); dirs->AppendL(KMyFiles); }
+    else { labels->AppendL(_L("Phone: Documents")); dirs->AppendL(KDocuments); }
+    TDriveInfo di;
+    if (fs.Drive(di, EDriveE) == KErrNone && di.iType != EMediaNotPresent && di.iType != EMediaUnknown)
+        {
+        labels->AppendL(_L("Memory card (E:)"));
+        dirs->AppendL(_L("E:\\"));
+        }
+    labels->AppendL(_L("Temporary: open / install"));
+    dirs->AppendL(_L("C:\\System\\Temp\\"));
+    // installers and apps go to the temporary place by default (they are opened at once)
+    TInt place = 0;
+    TParsePtrC np(iOfferName);
+    TPtrC ext = np.Ext();
+    if (ext.CompareF(_L(".sis")) == 0 || ext.CompareF(_L(".sisx")) == 0 || ext.CompareF(_L(".jar")) == 0 || ext.CompareF(_L(".jad")) == 0)
+        place = dirs->Count() - 1;
+    // "application/zip, 1.2 MB"
+    TBuf<120> file;
+    file.Copy(iOfferCt.Length() ? iOfferCt.Left(60) : _L8("unknown type"));
+    if (iOfferLength >= 0)
+        {
+        file.Append(_L(", "));
+        if (iOfferLength >= 1024 * 1024) file.AppendFormat(_L("%d.%d MB"), iOfferLength / (1024 * 1024), (iOfferLength % (1024 * 1024)) * 10 / (1024 * 1024));
+        else if (iOfferLength >= 1024) file.AppendFormat(_L("%d KB"), iOfferLength / 1024);
+        else file.AppendFormat(_L("%d bytes"), iOfferLength);
+        }
+    else file.Append(_L(", size unknown"));
+    TBuf<80> from;
+    {
+    TPtrC8 u(iLoader->Url());
+    TInt s = u.Find(_L8("//"));
+    TPtrC8 rest = s >= 0 ? u.Mid(s + 2) : u;
+    TInt e = 0;
+    while (e < rest.Length() && rest[e] != '/' && rest[e] != '?' && rest[e] != '#') e++;
+    from.Copy(rest.Left(Min(e, 80)));
+    }
+    TBuf<100> name(iOfferName);
+    CleanupStack::Pop(dirs);
+    CleanupStack::Pop(labels);
+    CleanupStack::PushL(dirs);
+    CDownloadDialog* d = new CDownloadDialog(name, file, from, labels, place);
+    if (!d) { delete labels; User::Leave(KErrNoMemory); }
+    TBool ok = d->ExecuteLD(R_BR_DOWNLOAD_DIALOG) == EEikBidOk;
+    if (!ok || !iLoader->Busy())
+        {
+        CleanupStack::PopAndDestroy(dirs);
+        iLoader->Stop();
+        iView->SetLoading(EFalse);
+        UpdateTitle();
+        iPageStatus.Copy(_L("Download cancelled"));
+        UpdateStatus();
+        return;
+        }
+    // a safe name; an existing file is kept: "name (2).ext"
+    for (TInt i = 0; i < name.Length(); i++)
+        {
+        TChar c = name[i];
+        if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '<' || c == '>' || c == '|' || c == '"' || c < 32) name[i] = '_';
+        }
+    name.Trim();
+    if (!name.Length()) name.Copy(_L("download"));
+    if (place < 0 || place >= dirs->Count()) place = 0;
+    TFileName path((*dirs)[place]);
+    CleanupStack::PopAndDestroy(dirs);
+    TFileName full(path);
+    full.Append(name);
+    TEntry ent;
+    {
+    TParsePtrC pp(name);
+    for (TInt n = 2; n < 100 && fs.Entry(full, ent) == KErrNone; n++)
+        {
+        full.Copy(path);
+        full.Append(pp.Name());
+        full.AppendFormat(_L(" (%d)"), n);
+        full.Append(pp.Ext());
+        }
+    }
+    fs.MkDirAll(full);
+    IgLog(full);
+    iPageStatus.Copy(_L("Downloading..."));
+    UpdateStatus();
+    iLoader->AcceptDownloadL(full);
+    }
+
 void CBrAppUi::PageDownloaded(const TDesC& aFile, const TDesC8& aContentType)
     {
     iView->SetLoading(EFalse);
@@ -1383,7 +1556,13 @@ void CBrAppUi::PageDownloaded(const TDesC& aFile, const TDesC8& aContentType)
     q.Copy(aFile.Left(150));
     TBuf<40> ct;
     ct.Copy(aContentType.Left(40));
-    if (!iEikonEnv->QueryWinL(_L("Open the downloaded file?"), q)) { Say(_L("Saved in C:\\System\\Temp")); return; }
+    if (!iEikonEnv->QueryWinL(_L("Downloaded. Open it?"), q))
+        {
+        TBuf<200> t(_L("Saved: "));
+        t.Append(aFile.Left(180));
+        Say(t);
+        return;
+        }
     RApaLsSession ls;
     TInt err = ls.Connect();
     if (err == KErrNone)

@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.18");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.18");
+_LIT(KBrVersion, "0.19");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.19");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -63,6 +63,8 @@ class MHttpObserver
 public:
     virtual void HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders, const TDesC8& aBody) = 0;
     virtual void HttpProgress(const TDesC& aText) = 0;
+    // the reply's headers are in: EFalse pauses the transfer (Resume / Abort it later)
+    virtual TBool HttpHeadersArrived(const TDesC8& /*aHeaders*/, TInt /*aStatus*/) { return ETrue; }
     };
 
 class CHttpClient : public CActive
@@ -78,6 +80,10 @@ public:
     TBool Busy() const { return iState != EIdle; }
     void SetPromptForAccessPoint(TBool aPrompt) { iPrompt = aPrompt; }
     void SetSinkFile(const TDesC& aFileName) { iSinkName.Copy(aFileName); }
+    // a transfer paused at its headers goes on: into aFile (written as it arrives; empty: RAM)
+    void ResumeL(const TDesC& aFile);
+    TBool Paused() const { return iPaused; }
+    TBool SinkUsed() const { return iSinkUsed; }       // the last reply went to the sink file
     TInt SinkBytes() const { return iSinkBytes; }
     TInt ContentLength() const { return iInfo.contentLength; }
     void CloseConnection();
@@ -104,6 +110,9 @@ private:
     HBufC8* DecodeBodyL(const TDesC8& aBody, TBool aChunked, TBool aGzip);
     void Progress(const TDesC& aText);
     TBool SinkWrite(const TDesC8& aData);
+    void TryOpenSink();
+    void ReceivedSoFarL();                 // after the headers: done, or receive more
+    TBool iPaused, iSinkUsed;
     TBool SinkFlush();
     void CloseSink();
 
@@ -163,6 +172,8 @@ public:
     virtual void PageLoaded(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8* aBody, TInt aStatus) = 0;
     // a file that is not a page was saved (aFile): offer to open it
     virtual void PageDownloaded(const TDesC& aFile, const TDesC8& aContentType) = 0;
+    // a file (not a page) is about to come: the transfer waits for AcceptDownloadL / Stop
+    virtual void DownloadOffered(const TDesC& aName, const TDesC8& aContentType, TInt aLength) = 0;
     virtual void PageFailed(const TDesC& aText) = 0;
     virtual void PageProgress(const TDesC& aText) = 0;
     };
@@ -182,8 +193,12 @@ public:
     // MHttpObserver
     void HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders, const TDesC8& aBody);
     void HttpProgress(const TDesC& aText);
+    TBool HttpHeadersArrived(const TDesC8& aHeaders, TInt aStatus);
+    // the offered file is wanted: it goes to aPath as it arrives
+    void AcceptDownloadL(const TDesC& aPath);
 private:
     CPageLoader(MPageObserver& aObserver, BwCookieJar& aCookies);
+    static TBool IsPageType(const TDesC8& aContentType, const TDesC8& aDisposition);
     void ConstructL();
     void SendL();
     void StoreCookies(const TDesC8& aHeaders);
@@ -201,6 +216,8 @@ private:
     TInt iLastBytes;
     TInt iIdleTicks;
     TBuf8<128> iHost;
+    TFileName iDownloadPath;               // where the accepted file goes (empty: no offer accepted)
+    TBool iOffered;                        // paused at a file's headers, waiting for the user
     };
 
 class MStyleObserver
@@ -551,6 +568,25 @@ private:
     TBool iSelectAll;
     };
 
+// before a download: the file's type and size, where it is from, its name (editable) and where to
+// save it (a choice of folders)
+class CDownloadDialog : public CEikDialog
+    {
+public:
+    CDownloadDialog(TDes& aName, const TDesC& aFile, const TDesC& aFrom, CDesCArray* aPlaces, TInt& aPlace)
+        : iName(aName), iFile(aFile), iFrom(aFrom), iPlaces(aPlaces), iPlace(aPlace) {}
+    ~CDownloadDialog();
+    void PreLayoutDynInitL();
+    TBool OkToExitL(TInt aButtonId);
+    TKeyResponse OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType);
+private:
+    TDes& iName;
+    const TDesC& iFile;
+    const TDesC& iFrom;
+    CDesCArray* iPlaces;           // ours until the choice list takes it
+    TInt& iPlace;
+    };
+
 struct THistoryEntry
     {
     HBufC8* iUrl;
@@ -603,6 +639,9 @@ public:
     void ShowPendingPage();               // the page that arrived, from a shallow stack
     void DropPendingPage();
     void PageDownloaded(const TDesC& aFile, const TDesC8& aContentType);
+    void DownloadOffered(const TDesC& aName, const TDesC8& aContentType, TInt aLength);
+    static TInt OfferCallback(TAny* aSelf);
+    void AskDownloadL();
     void PageFailed(const TDesC& aText);
     void PageProgress(const TDesC& aText);
     void UpdateStatus();                  // the status from its parts: the page, stylesheets, pictures
@@ -678,6 +717,10 @@ private:
     TInt iSelectControl;           // the <select> whose list is open
     CPeriodic* iRefreshTimer;
     CAsyncCallBack* iShowCallback;
+    CAsyncCallBack* iOfferCallback;     // the download prompt, from a shallow stack
+    TBuf<64> iOfferName;
+    TBuf8<80> iOfferCt;
+    TInt iOfferLength;
     CAsyncCallBack* iStylesCallback;
     static TInt StylesCallback(TAny* aSelf);
     void ApplyArrivedStyles();
