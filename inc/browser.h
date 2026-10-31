@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.9");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.9");
+_LIT(KBrVersion, "0.10");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.10");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -502,13 +502,17 @@ private:
 class CTextDialog : public CEikDialog
     {
 public:
-    CTextDialog(TDes& aText, const TDesC& aTitle, TBool aSelectAll = EFalse) : iText(aText), iTitle(aTitle), iSelectAll(aSelectAll) {}
+    // aMulti: Enter makes a new line (a textarea); otherwise Enter is OK
+    CTextDialog(TDes& aText, const TDesC& aTitle, TBool aSelectAll = EFalse, TBool aMulti = EFalse)
+        : iText(aText), iTitle(aTitle), iSelectAll(aSelectAll), iMulti(aMulti) {}
     void PreLayoutDynInitL();
     TBool OkToExitL(TInt aButtonId);
+    TKeyResponse OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType);
 private:
     TDes& iText;
     const TDesC& iTitle;
     TBool iSelectAll;
+    TBool iMulti;
     };
 
 struct THistoryEntry

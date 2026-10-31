@@ -15,6 +15,8 @@ const TInt KScrollStep = 36;
 const TInt KScrollBarW = 4;
 const TInt KFullWidth = 1024;              // the original size: a desktop window's width
 const TInt KScrollBarH = 3;                // the sideways bar at the bottom
+const TInt KEdgeTop = 12;                  // the pointer resting this near the top scrolls up
+const TInt KEdgeSide = 8;                  // the left edge (sideways at the original size)
 const TInt KSideW = 100;                   // the bar at the right: title, link, status
 const TInt KListMaxRows = 10;
 
@@ -361,16 +363,18 @@ void CBrView::HoverAt(TPoint aPos, TBool aTick)
     if (aTick && iLayout)
         {
         TInt dir = 0;
-        if (aPos.iX >= 0 && aPos.iX < w)
+        // the cursor stops a few pixels short of the screen's top, so the top strip is 12 px (the
+        // side bar's top included); the bottom one is reached
+        if (aPos.iX >= 0 && aPos.iX < Rect().Width())
             {
-            if (aPos.iY < PageTop() + 3) dir = -1;
-            else if (aPos.iY >= hgt - 3) dir = 1;
+            if (aPos.iY < PageTop() + KEdgeTop) dir = -1;
+            else if (aPos.iY >= hgt - 3 && aPos.iX < w) dir = 1;
             }
         // sideways at the original size: the left and right edges
         TInt dirX = 0;
-        if (iLayoutW > PageWidthOnScreen() && aPos.iY >= PageTop() && aPos.iY < hgt - 3)
+        if (iLayoutW > PageWidthOnScreen() && aPos.iY >= PageTop() + KEdgeTop && aPos.iY < hgt - 3)
             {
-            if (aPos.iX < 3 && iScrollX > 0) dirX = -1;
+            if (aPos.iX < KEdgeSide && iScrollX > 0) dirX = -1;
             else if (aPos.iX >= w - 3 && iScrollX + PageWidthOnScreen() < iLayoutW) dirX = 1;
             }
         if (dirX)

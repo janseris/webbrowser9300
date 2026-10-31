@@ -76,6 +76,19 @@ static void test_urls(void)
         CHECK(u && strcmp(u, "http://192.168.137.1:8000/x") == 0);
         free(u);
     }
+    {
+        const char* yes[] = { "seznam.cz", " idnes.cz/zpravy ", "http://x", "https://a.b/c d", "about:start",
+                              "localhost:8000", "192.168.137.1:8000/x", "www.example.co.uk", "my-site.org?q=1", 0 };
+        const char* no[] = { "nokia 9300", "seznam", "3.14", "note: buy milk", "what is c.org", "a.b", ".cz",
+                             "seznam.", "1.2.3", "", 0 };
+        unsigned int i;
+        char* u;
+        for (i = 0; yes[i]; i++) { if (!bw_input_is_address(yes[i])) printf("not an address: %s\n", yes[i]); CHECK(bw_input_is_address(yes[i])); }
+        for (i = 0; no[i]; i++) { if (bw_input_is_address(no[i])) printf("an address: %s\n", no[i]); CHECK(!bw_input_is_address(no[i])); }
+        u = bw_search_url("  nokia 9300 & čeština");
+        CHECK(u && strcmp(u, "https://lite.duckduckgo.com/lite/?q=nokia+9300+%26+%C4%8De%C5%A1tina") == 0);
+        free(u);
+    }
     CHECK(bw_url_same_page("http://a/b", "http://a/b#x"));
     CHECK(!bw_url_same_page("http://a/b", "http://a/c#x"));
     CHECK(!bw_url_same_page("http://a/b", "http://a/b"));

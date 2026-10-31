@@ -19,6 +19,17 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.10** (not yet run on the phone): search from the address bar; Enter goes.
+  - **What isn't an address is searched for** on DuckDuckGo Lite, which works without JavaScript
+    (`https://lite.duckduckgo.com/lite/?q=...`, UTF-8, percent-encoded). An address is
+    something with a scheme and `//` (or `about:`, `file:`, `data:`, `mailto:`, `tel:`),
+    `localhost`, an IPv4 address, or a host with a dot and a top-level part of 2+ letters
+    (`seznam.cz`, `idnes.cz/zpravy`). Words with spaces, a single word (`seznam`), `3.14` and
+    `note: buy milk` are searched for (`bw_input_is_address`, `bw_search_url`, unit-tested).
+  - **Enter is OK** in the address bar, Find and one-line form fields: the field takes no line
+    breaks any more. A textarea still takes Enter as a new line.
+  - **Edge scrolling up works**: the cursor stops a few pixels short of the top of the screen,
+    so the strip that scrolls up is now 12 px tall (including the side bar's top) instead of 3.
 - **0.9** (not yet run on the phone): full screen with a side bar.
   - **Full screen is the default.** The side buttons are hidden (the Menu key still works).
     The bar that was across the top is now a 100 px column at the right, where the buttons

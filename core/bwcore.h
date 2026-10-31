@@ -33,6 +33,10 @@ int bw_url_same_page(const char* a, const char* b);
 const char* bw_url_fragment(const char* url);
 /* Turns what the user typed into a URL: adds http:// when no scheme is given. */
 char* bw_url_from_input(const char* typed);
+/* 1 if what was typed is an address (else it is searched for) */
+int bw_input_is_address(const char* typed);
+/* the search page URL for the typed words (UTF-8) */
+char* bw_search_url(const char* typed);
 
 /* ---------------------------------------------------------------- charsets */
 enum { BW_CS_UTF8 = 0, BW_CS_1252, BW_CS_1250, BW_CS_8859_2, BW_CS_8859_1 };

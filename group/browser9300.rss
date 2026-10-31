@@ -140,7 +140,7 @@ RESOURCE DIALOG r_br_text_dialog
             {
             type = EEikCtEdwin;
             id = EBrTextField;
-            control = EDWIN { width = 50; lines = 3; maxlength = 2000; flags = EEikEdwinNoHorizScrolling; };
+            control = EDWIN { width = 50; lines = 3; maxlength = 2000; flags = EEikEdwinNoHorizScrolling | EEikEdwinNoLineOrParaBreaks; };
             }
         };
     }

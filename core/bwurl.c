@@ -271,3 +271,57 @@ char* bw_url_from_input(const char* typed)
         return u;
     }
 }
+
+/* 1 if what was typed is an address, 0 if it should be searched for: a scheme with "//" (or
+ * about: / file: / data: / mailto: / tel: / javascript:), "localhost", an IPv4 address, or a host
+ * with a dot and a top-level part of 2+ letters; nothing with a space in it before the path. */
+int bw_input_is_address(const char* typed)
+{
+    unsigned int n = ig_strlen(typed), s, i, hostEnd, dots = 0, lastDot = 0, digitsOnly = 1, tld;
+    while (n && is_space((unsigned char)typed[0])) { typed++; n--; }
+    while (n && is_space((unsigned char)typed[n - 1])) n--;
+    if (!n) return 0;
+    s = scheme_len(typed, n);
+    if (s && s < n && typed[s] >= '0' && typed[s] <= '9') s = 0;      /* host:port */
+    if (s) {
+        if (s + 1 < n && typed[s] == '/' && typed[s + 1] == '/') return 1;
+        if ((s == 6 && ig_strieq_n(typed, "about:", 6)) || (s == 5 && ig_strieq_n(typed, "file:", 5)) ||
+            (s == 5 && ig_strieq_n(typed, "data:", 5)) || (s == 7 && ig_strieq_n(typed, "mailto:", 7)) ||
+            (s == 4 && ig_strieq_n(typed, "tel:", 4)) || (s == 11 && ig_strieq_n(typed, "javascript:", 11)))
+            return 1;
+        return 0;                                                      /* "note: buy milk" */
+    }
+    for (hostEnd = 0; hostEnd < n; hostEnd++) {
+        char c = typed[hostEnd];
+        if (c == '/' || c == ':' || c == '?' || c == '#') break;
+        if (is_space((unsigned char)c)) return 0;
+        if (c == '.') { dots++; lastDot = hostEnd; }
+        else if (!(c >= '0' && c <= '9')) digitsOnly = 0;
+    }
+    if (hostEnd == 9 && ig_strieq_n(typed, "localhost", 9)) return 1;
+    if (!dots) return 0;
+    if (digitsOnly) return dots == 3;                                  /* 192.168.1.1, not 3.14 */
+    if (lastDot == 0 || lastDot + 1 >= hostEnd) return 0;              /* ".cz", "seznam." */
+    tld = hostEnd - lastDot - 1;
+    if (tld < 2) return 0;
+    for (i = lastDot + 1; i < hostEnd; i++) if (!is_alpha((unsigned char)typed[i]) && typed[i] != '-') return 0;
+    return 1;
+}
+
+/* the search page for what was typed (UTF-8): DuckDuckGo Lite, which works without JavaScript */
+char* bw_search_url(const char* typed)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    IgBuf b;
+    const unsigned char* p = (const unsigned char*)typed;
+    while (*p && is_space(*p)) p++;
+    ig_buf_init(&b);
+    ig_buf_puts(&b, "https://lite.duckduckgo.com/lite/?q=");
+    for (; *p; p++) {
+        char e[3];
+        if (is_alpha(*p) || (*p >= '0' && *p <= '9') || *p == '-' || *p == '_' || *p == '.' || *p == '~') ig_buf_append(&b, p, 1);
+        else if (*p == ' ') ig_buf_append(&b, "+", 1);
+        else { e[0] = '%'; e[1] = hex[*p >> 4]; e[2] = hex[*p & 15]; ig_buf_append(&b, e, 3); }
+    }
+    return ig_buf_detach(&b);
+}

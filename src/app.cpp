@@ -44,6 +44,17 @@ void CTextDialog::PreLayoutDynInitL()
     else ed->SetCursorPosL(iText.Length(), EFalse);
     }
 
+TKeyResponse CTextDialog::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType)
+    {
+    // one line (the address, a text field, Find): Enter is OK, as in a desktop browser
+    if (!iMulti && aType == EEventKey && (aKeyEvent.iCode == EKeyEnter || aKeyEvent.iCode == EKeyLineFeed))
+        {
+        TryExitL(EEikBidOk);
+        return EKeyWasConsumed;
+        }
+    return CEikDialog::OfferKeyEventL(aKeyEvent, aType);
+    }
+
 TBool CTextDialog::OkToExitL(TInt aButtonId)
     {
     if (aButtonId == EEikBidOk)
@@ -506,7 +517,9 @@ void CBrAppUi::GoToDialogL(TUint aFirstChar)
         HBufC8* u8 = UnicodeToUtf8L(t);
         CleanupStack::PushL(u8);
         HBufC8* z = ZeroTermLC(*u8);
-        char* url = bw_url_from_input((const char*)z->Ptr());
+        // an address goes there; anything else (words, a single name) is searched for
+        const char* typed = (const char*)z->Ptr();
+        char* url = bw_input_is_address(typed) ? bw_url_from_input(typed) : bw_search_url(typed);
         CleanupStack::PopAndDestroy(2);
         if (url)
             {
@@ -1115,7 +1128,7 @@ void CBrAppUi::EditControlL(TInt aControl, TUint aFirstChar)
         }
     else
         {
-        CTextDialog* dlg = new (ELeave) CTextDialog(t, title);
+        CTextDialog* dlg = new (ELeave) CTextDialog(t, title, EFalse, c.type == BW_CTL_TEXTAREA);
         ok = dlg->ExecuteLD(c.type == BW_CTL_TEXTAREA ? R_BR_TEXT_DIALOG_MULTI : R_BR_TEXT_DIALOG) == EEikBidOk;
         }
     }
@@ -1309,7 +1322,7 @@ HBufC8* CBrAppUi::StartPageLC()
     p.Append(_L8("Browser 9300"));
     p.Append(KPageStyle);
     p.Append(_L8("<h1>Browser 9300</h1>"
-                 "<p>Ctrl+L or the Go to button opens the address bar. + / - zoom, Up / Down move between links.</p>"
+                 "<p>Ctrl+L or the Go to button opens the address bar: type an address, or words to search for (DuckDuckGo). + / - zoom, Up / Down move between links.</p>"
                  "<h2>Bookmarks</h2><ul>"));
     for (TInt i = 0; i < iBookmarkUrls.Count(); i++)
         {
