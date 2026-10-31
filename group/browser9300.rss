@@ -152,6 +152,23 @@ RESOURCE DIALOG r_br_text_dialog
         };
     }
 
+// the address bar: a combo box whose list is the pages visited, newest first (Down opens it)
+RESOURCE DIALOG r_br_address_dialog
+    {
+    title = "Address";
+    flags = EEikDialogFlagWait;
+    buttons = R_EIK_BUTTONS_CANCEL_OK;
+    items =
+        {
+        DLG_LINE
+            {
+            type = EEikCtComboBox;
+            id = EBrTextField;
+            control = COMBOBOX { width = 50; maxlength = 1000; maxarraysize = 40; };
+            }
+        };
+    }
+
 RESOURCE DIALOG r_br_text_dialog_multi
     {
     title = "Text";

@@ -8,6 +8,8 @@
 #include <eikbtgpc.h>
 #include <eikedwin.h>
 #include <eikseced.h>
+#include <eikcmbox.h>
+#include <badesca.h>
 #include <baclipb.h>
 #include <txtetext.h>
 #include <eikvcurs.h>
@@ -68,6 +70,68 @@ TBool CTextDialog::OkToExitL(TInt aButtonId)
         {
         CEikEdwin* ed = (CEikEdwin*)Control(EBrTextField);
         ed->GetText(iText);
+        }
+    return ETrue;
+    }
+
+// ------------------------------------------------------------------ the address bar
+
+// (the combo box's list opening and state are protected: reached through this, which adds nothing)
+class CBrCombo : public CEikComboBox
+    {
+public:
+    TBool ListShown() { return PopupDisplayed(); }
+    void OpenListL() { HandleChangeButtonL(); }
+    };
+
+CAddressDialog::~CAddressDialog()
+    {
+    delete iHistory;               // (NULL once the combo box owns it)
+    }
+
+void CAddressDialog::PreLayoutDynInitL()
+    {
+    CEikComboBox* cb = (CEikComboBox*)Control(EBrTextField);
+    if (iHistory)
+        {
+        cb->SetArray(iHistory, CEikComboBoxBC::EArrayInternalOwner);
+        iHistory = NULL;
+        }
+    cb->SetTextL(&iText);
+    CEikEdwin* ed = cb->Edwin();
+    if (ed)
+        {
+        if (iSelectAll && iText.Length()) ed->SelectAllL();
+        else ed->SetCursorPosL(iText.Length(), EFalse);
+        }
+    }
+
+TKeyResponse CAddressDialog::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType)
+    {
+    CBrCombo* cb = (CBrCombo*)Control(EBrTextField);
+    if (aType == EEventKey && cb && !cb->ListShown())
+        {
+        // Down: the list of the pages visited; Enter: go
+        if (aKeyEvent.iCode == EKeyDownArrow && cb->Array() && cb->Array()->MdcaCount() > 0)
+            {
+            cb->OpenListL();
+            return EKeyWasConsumed;
+            }
+        if (aKeyEvent.iCode == EKeyEnter || aKeyEvent.iCode == EKeyLineFeed)
+            {
+            TryExitL(EEikBidOk);
+            return EKeyWasConsumed;
+            }
+        }
+    return CEikDialog::OfferKeyEventL(aKeyEvent, aType);
+    }
+
+TBool CAddressDialog::OkToExitL(TInt aButtonId)
+    {
+    if (aButtonId == EEikBidOk)
+        {
+        CEikComboBox* cb = (CEikComboBox*)Control(EBrTextField);
+        cb->GetText(iText);
         }
     return ETrue;
     }
@@ -787,8 +851,24 @@ void CBrAppUi::GoToDialogL(TUint aFirstChar)
     else if (iCurrentUrl->Left(6) != _L8("about:")) t.Copy(iCurrentUrl->Left(1000));
     TBool ok;
     {
-    CTextDialog* d = new (ELeave) CTextDialog(t, _L("Address"), aFirstChar == 0);
-    ok = d->ExecuteLD(R_BR_TEXT_DIALOG) == EEikBidOk;
+    // the addresses visited, newest first, each once (not the internal about: pages)
+    CDesCArrayFlat* hist = new (ELeave) CDesCArrayFlat(16);
+    CleanupStack::PushL(hist);
+    for (TInt i = iHistory.Count() - 1; i >= 0; i--)
+        {
+        const TDesC8& u = *iHistory[i].iUrl;
+        if (u.Left(6) == _L8("about:")) continue;
+        HBufC* u16 = Utf8ToUnicodeL(u.Left(1000));
+        CleanupStack::PushL(u16);
+        TInt pos;
+        if (hist->Find(*u16, pos) != 0) hist->AppendL(*u16);
+        CleanupStack::PopAndDestroy(u16);
+        if (hist->Count() >= 40) break;
+        }
+    CleanupStack::Pop(hist);
+    CAddressDialog* d = new CAddressDialog(t, hist, aFirstChar == 0);
+    if (!d) { delete hist; User::Leave(KErrNoMemory); }
+    ok = d->ExecuteLD(R_BR_ADDRESS_DIALOG) == EEikBidOk;
     }
     for (TInt i = 0; i < t.Length(); i++) if (t[i] == 0x2029) t[i] = ' ';
     t.Trim();

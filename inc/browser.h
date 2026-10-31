@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.17");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.17");
+_LIT(KBrVersion, "0.18");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.18");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -534,6 +534,21 @@ private:
     const TDesC& iTitle;
     TBool iSelectAll;
     TBool iMulti;
+    };
+
+// the address bar: the text, and the addresses visited (newest first) in the combo box's list
+class CAddressDialog : public CEikDialog
+    {
+public:
+    CAddressDialog(TDes& aText, CDesCArray* aHistory, TBool aSelectAll) : iText(aText), iHistory(aHistory), iSelectAll(aSelectAll) {}
+    ~CAddressDialog();
+    void PreLayoutDynInitL();
+    TBool OkToExitL(TInt aButtonId);
+    TKeyResponse OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType);
+private:
+    TDes& iText;
+    CDesCArray* iHistory;          // ours until the combo box takes it
+    TBool iSelectAll;
     };
 
 struct THistoryEntry

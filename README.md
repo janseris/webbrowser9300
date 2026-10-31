@@ -19,6 +19,11 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.18** (not yet run on the phone): the address bar is a combo box.
+  - Its list holds the pages visited (newest first, each once, up to 40; no `about:` pages),
+    using Series 80's own `CEikComboBox` with its history popout. **Down** opens the list; pick
+    with Up/Down and Enter, which puts the address in the field; **Enter** again goes there.
+    Typing, select-all of the current address and search for non-addresses work as before.
 - **0.17** (not yet run on the phone): .ico files are never given to the phone's ICO decoder.
   - **The likely crash**: since 0.14 every web page fetched its site's `/favicon.ico` right
     after the download, and handed it to Symbian's own ICO decoder. Modern favicons often hold
