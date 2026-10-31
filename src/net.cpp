@@ -181,8 +181,8 @@ TBool CHttpClient::SinkWrite(const TDesC8& aData)
         {
         TInt freeRam = 0;
         HAL::Get(HALData::EMemoryRAMFree, freeRam);
-        TInt want = freeRam - 3 * 1024 * 1024;
-        if (want > 12 * 1024 * 1024) want = 12 * 1024 * 1024;
+        TInt want = freeRam - 2560 * 1024;
+        if (want > 24 * 1024 * 1024) want = 24 * 1024 * 1024;
         if (want < 32768) want = 32768;
         while (want >= 32768 && !(iSinkBuf = HBufC8::New(want))) want /= 2;
         IgLogF2(_L("file sink: %d KB free RAM, %d KB buffer"), freeRam / 1024, iSinkBuf ? want / 1024 : 0);

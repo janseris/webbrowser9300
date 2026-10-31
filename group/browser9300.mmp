@@ -4,7 +4,7 @@ TARGETTYPE        app
 UID               0x100039CE 0x0F5A9310
 TARGETPATH        \system\apps\browser9300
 LANG              SC
-EPOCHEAPSIZE      0x1000 0x1800000     // the heap may grow to 24 MB: pages, layouts, pictures
+EPOCHEAPSIZE      0x1000 0x2000000     // the heap may grow to 32 MB: kept pages, stylesheets, layouts
 EPOCSTACKSIZE     0x5000
 
 OPTION GCC        -O2

@@ -19,6 +19,25 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.12** (not yet run on the phone): CPU and RAM shown, and more RAM used.
+  - **View > CPU and RAM** (on by default): three lines at the bottom of the side bar (or in
+    the top bar's row), updated once a second while the browser is in front. Only the bar is
+    redrawn, not the page.
+    - "CPU 35%, app 20%": the whole phone (100% less the kernel idle thread's share of the
+      last second) and the browser's own thread (`RThread::GetCpuTime`). If the kernel keeps
+      no CPU times, it shows "?"; the log records the errors.
+    - "RAM free 18.2 MB".
+    - "App 6.1 MB of 80": the browser's heap allocations plus its pictures, of the phone's
+      total RAM.
+  - **Caches grow with the free RAM** instead of fixed sizes.
+    - Pages kept for Back / Forward: was 6 pages / 1.5 MB, now as many as fit, up to 16 MB
+      (4 MB per page).
+    - Stylesheets: was 900 KB, now up to 4 MB.
+    - The receive buffer for big downloads: up to 24 MB (was 12).
+
+    Each leaves 2.5 MB free for the phone. Pictures keep their 3 MB reserve, so they give way
+    first. The heap may grow to 32 MB (was 24). After pages are dropped, the heap is
+    compressed, so the RAM goes back to the phone.
 - **0.11** (not yet run on the phone): progress in more detail.
   - **The status has a line for each part:**
     - the page: its stage ("Connecting to the server...", "TLS handshake..."), then
@@ -217,8 +236,8 @@ receives logs (`localserver\ota_server.js`).
     first (up to a screen above and two below), decoded at the ICL 1/2..1/8 reduction that
     covers the page width, transparency on white, kept while 3 MB of RAM stays free.
     `data:` pictures and WebP/AVIF/SVG show their alt text.
-  - Navigation: history of 40 pages; the last 6 pages (up to 1.5 MB) are kept in RAM, so Back
-    and Forward show them at once at the same scroll position. Bookmarks (file), start page
+  - Navigation: history of 40 pages; as many of them as the free RAM allows (up to 16 MB, 0.12)
+    are kept in RAM, so Back and Forward show them at once at the same scroll position. Bookmarks (file), start page
     with search boxes (DuckDuckGo Lite, Wikipedia), history page, cookies (persistent ones
     kept in a file), downloads of other files saved to `C:\System\Temp` and opened (a `.sis`
     goes to the installer).

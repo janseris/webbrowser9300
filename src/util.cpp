@@ -39,6 +39,13 @@ HBufC8* UnicodeToUtf8L(const TDesC& aText)
 const TDesC& LogFileName() { return KLogFile; }
 const TDesC& LogPrevFileName() { return KLogPrev; }
 
+TInt BrFreeRam()
+    {
+    TInt freeRam = 0;
+    HAL::Get(HALData::EMemoryRAMFree, freeRam);
+    return freeRam;
+    }
+
 TUint32 TickMs()
     {
     TInt period = 1000;

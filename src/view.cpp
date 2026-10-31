@@ -246,6 +246,18 @@ void CBrView::ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize)
     else if (!iRelayoutPending) Render();
     }
 
+void CBrView::SetStats(const TDesC& aText)
+    {
+    if (iStats == aText.Left(iStats.MaxLength())) return;
+    iStats.Copy(aText.Left(iStats.MaxLength()));
+    // only the bar: the page stays as it is in the buffer
+    if (!iBufferGc || iListOpen) return;
+    iBufferGc->Reset();
+    if (iSideBar) RenderSide(*iBufferGc); else RenderHeader(*iBufferGc);
+    iBufferGc->DiscardFont();
+    DrawDeferred();
+    }
+
 void CBrView::SetStatus(const TDesC& aText)
     {
     if (iStatusText == aText.Left(iStatusText.MaxLength())) return;
@@ -468,6 +480,11 @@ void CBrView::RenderHeader(CFbsBitGc& aGc)
         if (iStatusText[i] == '\n') status.Append(_L(" \x00B7 "));
         else status.Append(iStatusText[i]);
         }
+    if (iStats.Length() && status.Length() < 150)
+        {
+        if (status.Length()) status.Append(_L(" \x00B7 "));
+        for (TInt i = 0; i < iStats.Length() && status.Length() < 236; i++) status.Append(iStats[i] == '\n' ? (TText)' ' : iStats[i]);
+        }
     TInt statusW = status.Length() ? f->TextWidthInPixels(status) + 8 : 0;
     if (statusW > r.Width() / 2) statusW = r.Width() / 2;
     // left: the address of the link under the pointer (or the focused one), else the title
@@ -530,7 +547,11 @@ void CBrView::RenderSide(CFbsBitGc& aGc)
             statusLines++;
             }
         }
-    TInt bottomY = r.iBr.iY - 2 - statusLines * lh;
+    // CPU and RAM at the very bottom
+    TInt statsLines = 0;
+    if (iStats.Length()) { statsLines = 1; for (TInt i = 0; i < iStats.Length(); i++) if (iStats[i] == '\n') statsLines++; }
+    TInt statsY = r.iBr.iY - 2 - statsLines * lh;
+    TInt bottomY = statsY - (statsLines ? 3 : 0) - statusLines * lh;
     // the link's address
     TBuf<200> link;
     TInt shown = iHoverTarget >= 0 ? iHoverTarget : iFocus;
@@ -539,7 +560,7 @@ void CBrView::RenderSide(CFbsBitGc& aGc)
         TPtrC8 h((const TUint8*)iDoc->links[iDoc->targets[shown].index].href);
         link.Copy(h.Left(link.MaxLength()));
         }
-    TInt free = maxLines - statusLines;
+    TInt free = maxLines - statusLines - statsLines;
     TInt linkLines = link.Length() ? Min(4, free / 2) : 0;
     TInt titleLines = free - linkLines;
     if (link.Length() && titleLines > 3) titleLines = 3;
@@ -559,6 +580,13 @@ void CBrView::RenderSide(CFbsBitGc& aGc)
         {
         aGc.SetPenColor(TRgb(0xFF, 0xE0, 0x80));
         DrawWrapped(aGc, f, iStatusText, x, bottomY, w, statusLines);
+        }
+    if (statsLines)
+        {
+        aGc.SetPenColor(TRgb(0x50, 0x68, 0x98));
+        aGc.DrawLine(TPoint(x, statsY - 2), TPoint(x + w - 2, statsY - 2));
+        aGc.SetPenColor(TRgb(0xB0, 0xBC, 0xD8));
+        DrawWrapped(aGc, f, iStats, x, statsY, w, statsLines);
         }
     }
 

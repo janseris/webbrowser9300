@@ -43,7 +43,8 @@ enum TBrCommands
     EBrCmdCs1250,
     EBrCmdCs88592,
     EBrCmdCs1252,
-    EBrCmdFullSize
+    EBrCmdFullSize,
+    EBrCmdStats
     };
 
 enum TBrControls

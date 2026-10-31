@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.11");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.11");
+_LIT(KBrVersion, "0.12");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.12");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -40,6 +40,7 @@ char* UnicodeToUtf8(const TDesC& aText);          // ig_malloc'ed, NULL on failu
 HBufC8* UnicodeToUtf8L(const TDesC& aText);
 TUint NowUnixSeconds();
 TUint32 TickMs();                                  // milliseconds (for timings)
+TInt BrFreeRam();                                  // the system's free RAM in bytes (HAL)
 
 void IgLogEnable(TBool aOn);
 TBool IgLogEnabled();
@@ -355,6 +356,7 @@ public:
     TBool iFullScreen;              // on by default ("full="; "fullscreen", off before 0.9, is ignored)
     TInt iTextSize;                 // -1, 0, 1
     TBool iFullSize;                // View > Original size: laid out 1024 px wide, scrolls sideways
+    TBool iStatsOn;                 // View > CPU and RAM (on by default)
     TBool iPromptAccessPoint;
     TBuf<256> iHome;
     TBuf8<64> iServerHost;
@@ -393,6 +395,7 @@ public:
     void Relayout();                       // widths, fonts or image sizes changed
     void ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize);
     void SetStatus(const TDesC& aText);    // the header's right part
+    void SetStats(const TDesC& aText);     // CPU and RAM (lines separated by '\n'); redraws only the bar
     void SetTitle(const TDesC& aText);     // the header's left part (title or address)
     void SetLoading(TBool aLoading);
     TInt ScrollY() const { return iScrollY; }
@@ -461,6 +464,7 @@ private:
     TBool iSideBar;                        // full screen: the bar at the side, the page the whole height
     TBuf<160> iTitle;
     TBuf<200> iStatusText;                 // lines separated by '\n'
+    TBuf<80> iStats;
     TBool iLoading;
     CFbsBitmap* iBuffer;
     CFbsBitmapDevice* iBufferDev;
@@ -549,6 +553,9 @@ public:
     void OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost = NULL, TBool aAddHistory = ETrue);
     void GoToDialogL(TUint aFirstChar = 0);
     void ZoomL(TInt aDir);                // Ctrl+Plus / Minus (+1 / -1) / 0: the text size
+    static TInt StatsCallback(TAny* aSelf);
+    void StatsTick();
+    void UpdateStatsTimer(TBool aForeground);
     void ApplyCursor();                   // the phone's virtual cursor on / off as set (logged)
     void ReparseCurrentL();               // the page on the screen parsed again (hover, original size)
     void EditControlL(TInt aControl, TUint aFirstChar = 0);
@@ -636,6 +643,11 @@ private:
     HBufC8* iCurrentUrl;
     TInt iSelectControl;           // the <select> whose list is open
     CPeriodic* iRefreshTimer;
+    CPeriodic* iStatsTimer;             // CPU and RAM, once a second while in front
+    TInt64 iStatsWall, iStatsApp, iStatsIdle;
+    RThread iNullThread;                // the kernel's idle thread: its CPU time is the idle time
+    TBool iNullOpen;
+    TBool iStatsStarted;
     HBufC8* iRefreshUrl;
     TInt iLoadStartMs, iParseMs, iDownloadMs, iPageBytes;
     TBool iSubmitAfterEdit;

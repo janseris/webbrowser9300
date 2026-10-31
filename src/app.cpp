@@ -24,10 +24,14 @@ _LIT(KUpdateFile, "C:\\System\\Temp\\browser9300_update.sis");
 _LIT8(KUpdatePath, "/browser9300/browser9300.sis");
 
 const TInt KHistoryMax = 40;
-const TInt KCacheBodies = 6;                    // pages kept in RAM for Back
-const TInt KCacheBytes = 1500 * 1024;
-const TInt KCacheOneMax = 500 * 1024;
-const TInt KCssCacheBytes = 900 * 1024;           // stylesheets kept for the next pages of a site
+// Pages kept in RAM for Back / Forward and stylesheets for the next pages of a site: as much as
+// the free RAM allows (pictures, which keep 3 MB free, give way first), up to these caps.
+const TInt KCacheMaxBytes = 16 * 1024 * 1024;
+const TInt KCacheOneMax = 4 * 1024 * 1024;
+const TInt KCssCacheMax = 4 * 1024 * 1024;
+const TInt KCssCacheMin = 900 * 1024;             // kept even when RAM is short (as before 0.12)
+const TInt KCacheRamReserve = 2560 * 1024;        // the free RAM the caches leave for the system
+const TInt KStatsTickUs = 1000000;
 
 enum { EListSelect = 1, EListInfo = 2 };
 enum { EHelperNone = 0, EHelperUpdate, EHelperLog, EHelperShot };
@@ -207,6 +211,19 @@ void CBrAppUi::ConstructL()
     iHelperHttp = CHttpClient::NewL();
     iStyles = CStyleFetcher::NewL(*this, iCookies);
     iRefreshTimer = CPeriodic::NewL(CActive::EPriorityStandard);
+    iStatsTimer = CPeriodic::NewL(CActive::EPriorityLow);
+    {
+    // the idle thread's CPU time is the idle time (if this kernel keeps CPU times)
+    TFullName name;
+    TFindThread ft(_L("*Null*"));
+    if (ft.Next(name) == KErrNone && iNullThread.Open(ft) == KErrNone) iNullOpen = ETrue;
+    else
+        {
+        TFindThread ft2(_L("*NULL*"));
+        if (ft2.Next(name) == KErrNone && iNullThread.Open(ft2) == KErrNone) iNullOpen = ETrue;
+        }
+    if (iNullOpen) IgLog(name); else IgLog(_L("stats: no idle thread found"));
+    }
     iCurrentUrl = HBufC8::NewL(1);
     iView = CBrView::NewL(ClientRect(), *this, *iImages, *iFonts);
     AddToStackL(iView);
@@ -226,6 +243,9 @@ CBrAppUi::~CBrAppUi()
     delete iView;
     if (iRefreshTimer) iRefreshTimer->Cancel();
     delete iRefreshTimer;
+    if (iStatsTimer) iStatsTimer->Cancel();
+    delete iStatsTimer;
+    if (iNullOpen) iNullThread.Close();
     delete iRefreshUrl;
     delete iExitCallback;
     delete iStyles;
@@ -252,8 +272,96 @@ void CBrAppUi::HandleForegroundEventL(TBool aForeground)
     CEikAppUi::HandleForegroundEventL(aForeground);
     if (!aForeground) { IgLogFlush(); SaveCookies(); }
     if (iView) iView->SetForeground(aForeground);
+    UpdateStatsTimer(aForeground);
     // the cursor's state is the window group's: switch it on again whenever we are in front
     if (aForeground && iSettings && iSettings->iMouseOn) ApplyCursor();
+    }
+
+// ------------------------------------------------------------------ CPU and RAM
+
+void CBrAppUi::UpdateStatsTimer(TBool aForeground)
+    {
+    if (!iStatsTimer || !iView) return;
+    if (aForeground && iSettings->iStatsOn)
+        {
+        if (!iStatsTimer->IsActive())
+            {
+            iStatsStarted = EFalse;
+            iStatsTimer->Start(0, KStatsTickUs, TCallBack(StatsCallback, this));
+            }
+        }
+    else
+        {
+        iStatsTimer->Cancel();
+        iView->SetStats(KNullDesC);
+        }
+    }
+
+TInt CBrAppUi::StatsCallback(TAny* aSelf)
+    {
+    ((CBrAppUi*)aSelf)->StatsTick();
+    return 1;
+    }
+
+static void AppendMb(TDes& aT, TInt aBytes)
+    {
+    TInt kb = aBytes / 1024;
+    aT.AppendFormat(_L("%d.%d MB"), kb / 1024, (kb % 1024) * 10 / 1024);
+    }
+
+// CPU: the whole phone (100% less the idle thread's share of the time) and this app's thread,
+// over the last second; RAM: free of total, and what the browser holds (its heap's allocations,
+// the pictures in the bitmap server).
+void CBrAppUi::StatsTick()
+    {
+    TTime now;
+    now.UniversalTime();
+    TInt64 wall = now.Int64();
+    TTimeIntervalMicroSeconds appT(0), idleT(0);
+    TInt appErr = RThread().GetCpuTime(appT);
+    TInt idleErr = iNullOpen ? iNullThread.GetCpuTime(idleT) : KErrNotFound;
+    TBuf<80> t;
+    if (iStatsStarted)
+        {
+        TInt64 dWall = wall - iStatsWall;
+        if (dWall < TInt64(1)) dWall = TInt64(1);
+        t.Append(_L("CPU "));
+        if (idleErr == KErrNone)
+            {
+            TInt idlePct = ((idleT.Int64() - iStatsIdle) * TInt64(100) / dWall).GetTInt();
+            if (idlePct > 100) idlePct = 100;
+            if (idlePct < 0) idlePct = 0;
+            t.AppendFormat(_L("%d%%"), 100 - idlePct);
+            }
+        else t.Append(_L("?"));
+        if (appErr == KErrNone)
+            {
+            TInt appPct = ((appT.Int64() - iStatsApp) * TInt64(100) / dWall).GetTInt();
+            if (appPct > 100) appPct = 100;
+            if (appPct < 0) appPct = 0;
+            t.AppendFormat(_L(", app %d%%"), appPct);
+            }
+        }
+    else
+        {
+        t.Append(_L("CPU ..."));
+        IgLogF2(_L("stats: cpu time errors app %d, idle %d"), appErr, idleErr);
+        }
+    iStatsStarted = ETrue;
+    iStatsWall = wall;
+    iStatsApp = appT.Int64();
+    iStatsIdle = idleT.Int64();
+    // RAM
+    TInt freeRam = BrFreeRam(), total = 0;
+    HAL::Get(HALData::EMemoryRAM, total);
+    t.Append(_L("\nRAM free "));
+    AppendMb(t, freeRam);
+    t.Append(_L("\nApp "));
+    TInt heapAlloc = 0;
+    User::AllocSize(heapAlloc);
+    AppendMb(t, heapAlloc + iImages->CachedKb() * 1024);
+    t.AppendFormat(_L(" of %d"), total / (1024 * 1024));
+    iView->SetStats(t);
     }
 
 void CBrAppUi::ApplyCursor()
@@ -268,6 +376,7 @@ void CBrAppUi::ApplySettingsL()
     {
     ApplyFullScreenL();
     ApplyCursor();
+    UpdateStatsTimer(ETrue);
     iView->SetPointerOn(iSettings->iMouseOn);
     }
 
@@ -374,6 +483,11 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
             ReparseCurrentL();
             Say(iSettings->iFullSize ? _L("Original size: Left / Right scroll sideways") : _L("Fitted to the screen"));
             break;
+        case EBrCmdStats:
+            iSettings->iStatsOn = !iSettings->iStatsOn;
+            iSettings->Save();
+            UpdateStatsTimer(ETrue);
+            break;
         case EBrCmdMouse:
             iSettings->iMouseOn = !iSettings->iMouseOn;
             iSettings->Save();
@@ -467,6 +581,7 @@ void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
         aMenuPane->SetItemButtonState(EBrCmdFullScreen, iSettings->iFullScreen ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdFullSize, iSettings->iFullSize ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdMouse, iSettings->iMouseOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdStats, iSettings->iStatsOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextSmaller, iSettings->iTextSize < 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextNormal, iSettings->iTextSize == 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextBigger, iSettings->iTextSize > 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
@@ -714,17 +829,21 @@ void CBrAppUi::AddHistoryL(const TDesC8& aUrl)
 
 void CBrAppUi::TrimHistoryCache()
     {
-    // newest first: keep up to KCacheBodies bodies and KCacheBytes in total
-    TInt kept = 0, bytes = 0;
+    // newest first, as many as the free RAM allows: what they hold now plus what is free, less
+    // the reserve, at most KCacheMaxBytes
+    TInt held = 0;
+    for (TInt i = 0; i < iHistory.Count(); i++) if (iHistory[i].iBody && i != iHistoryPos) held += iHistory[i].iBody->Length();
+    TInt budget = held + BrFreeRam() - KCacheRamReserve;
+    if (budget > KCacheMaxBytes) budget = KCacheMaxBytes;
+    TInt bytes = 0, dropped = 0;
     for (TInt i = iHistory.Count() - 1; i >= 0; i--)
         {
         THistoryEntry& e = iHistory[i];
         if (!e.iBody || i == iHistoryPos) continue;
-        if (e.iBody->Length() > KCacheOneMax) { delete e.iBody; e.iBody = NULL; continue; }
-        if (kept >= KCacheBodies || bytes + e.iBody->Length() > KCacheBytes) { delete e.iBody; e.iBody = NULL; continue; }
-        kept++;
+        if (e.iBody->Length() > KCacheOneMax || bytes + e.iBody->Length() > budget) { delete e.iBody; e.iBody = NULL; dropped++; continue; }
         bytes += e.iBody->Length();
         }
+    if (dropped) { User::Heap().Compress(); IgLogF2(_L("history: %d pages dropped, %d KB kept"), dropped, bytes / 1024); }
     }
 
 // ------------------------------------------------------------------ pages
@@ -789,7 +908,10 @@ void CBrAppUi::StyleArrived(const TDesC8& aUrl, const TDesC8* aCss)
     if (iCssTexts.Append(t) != KErrNone) { iCssUrls.Remove(iCssUrls.Count() - 1); delete u; delete t; return; }
     iCssBytes += t->Length();
     if (aCss) iStylesGot++;
-    while (iCssBytes > KCssCacheBytes && iCssUrls.Count() > 1)
+    TInt cssBudget = iCssBytes + BrFreeRam() - KCacheRamReserve;
+    if (cssBudget > KCssCacheMax) cssBudget = KCssCacheMax;
+    if (cssBudget < KCssCacheMin) cssBudget = KCssCacheMin;
+    while (iCssBytes > cssBudget && iCssUrls.Count() > 1)
         {
         iCssBytes -= iCssTexts[0]->Length();
         delete iCssUrls[0]; delete iCssTexts[0];
