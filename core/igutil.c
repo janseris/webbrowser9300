@@ -2,6 +2,7 @@
 
 #include "igcore.h"
 
+#ifndef IG_ASM
 void ig_memcpy(void* dst, const void* src, unsigned int n)
 {
     char* d = (char*)dst;
@@ -15,6 +16,8 @@ void ig_memset(void* dst, int c, unsigned int n)
     while (n--) *d++ = (char)c;
 }
 
+#endif
+
 int ig_memcmp(const void* a, const void* b, unsigned int n)
 {
     const unsigned char* x = (const unsigned char*)a;
@@ -26,6 +29,7 @@ int ig_memcmp(const void* a, const void* b, unsigned int n)
     return 0;
 }
 
+#ifndef IG_ASM
 unsigned int ig_strlen(const char* s)
 {
     unsigned int n = 0;
@@ -33,6 +37,8 @@ unsigned int ig_strlen(const char* s)
     while (s[n]) n++;
     return n;
 }
+
+#endif
 
 int ig_streq(const char* a, const char* b)
 {

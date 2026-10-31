@@ -195,7 +195,7 @@ typedef struct {
     /* every element by number (document order, the same in every parse of the same page) */
     int* elemParent;             /* its parent's number, -1 at the top */
     unsigned int* elemBloom;     /* bits of its tag / id / classes */
-    unsigned int elemCount, elemCap;
+    unsigned int elemCount, elemCap, elemBloomCap;
     /* the :hover compounds of the stylesheet (their blooms): is a re-style worth it? */
     unsigned int* hoverBlooms;
     unsigned int hoverCount, hoverCap;

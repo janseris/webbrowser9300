@@ -3125,15 +3125,11 @@ static void start_tag(P* p, int tag, int selfClose)
     p->curChildIndex = parent->childCount;
     /* its number: the same in every parse of the page, so a hover chain carries over */
     p->curElemNum = -1;
-    if (grow((void**)&d->elemParent, &d->elemCap, d->elemCount, sizeof(int))) {
-        unsigned int* nb = (unsigned int*)ig_malloc(d->elemCap * sizeof(unsigned int));
-        if (nb) {
-            if (d->elemBloom) { ig_memcpy(nb, d->elemBloom, d->elemCount * sizeof(unsigned int)); ig_free(d->elemBloom); }
-            d->elemBloom = nb;
-            d->elemParent[d->elemCount] = parent->num;
-            d->elemBloom[d->elemCount] = elem_bloom(tag, attr(p, "id"), attr(p, "class"));
-            p->curElemNum = (int)d->elemCount++;
-        }
+    if (grow((void**)&d->elemParent, &d->elemCap, d->elemCount, sizeof(int)) &&
+        grow((void**)&d->elemBloom, &d->elemBloomCap, d->elemCount, sizeof(unsigned int))) {
+        d->elemParent[d->elemCount] = parent->num;
+        d->elemBloom[d->elemCount] = elem_bloom(tag, attr(p, "id"), attr(p, "class"));
+        p->curElemNum = (int)d->elemCount++;
     }
 
     /* elements that are not pushed */

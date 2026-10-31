@@ -17,6 +17,10 @@ void* ig_malloc(unsigned int size);      /* NULL on failure */
 void  ig_free(void* p);
 
 /* ---------------------------------------------------------------- small libc replacements */
+/* On the phone (ARM state) ig_memcpy, ig_memset and ig_strlen are the assembly ones in igarm.c */
+#if defined(__MARM__) && !defined(__MARM_THUMB__) && !defined(IG_NO_ASM)
+#define IG_ASM
+#endif
 void  ig_memcpy(void* dst, const void* src, unsigned int n);
 void  ig_memset(void* dst, int c, unsigned int n);
 int   ig_memcmp(const void* a, const void* b, unsigned int n);

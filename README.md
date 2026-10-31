@@ -19,6 +19,20 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.6** (not yet run on the phone): speed.
+  - **A quadratic copy fixed**: the element numbering for `:hover` (0.5) copied a whole array on
+    every start tag. On the 490 KB test page it took 81 % of the work. The page now needs
+    336 M instructions instead of 1,665 M (5x fewer).
+  - **ARM assembly** (`core/igarm.c`, phone only) for `ig_memcpy`, `ig_memset` and `ig_strlen`,
+    which every buffer, array growth and string copy goes through:
+    - memcpy and memset do 32 bytes per LDM/STM, with a shift-merge path for unaligned sources;
+    - strlen checks a word at a time.
+    Instruction counts in the emulator, against GCC 2.9's build of the C loops: memcpy 4 KB
+    527 vs 20,484 (unaligned source 6,164), memset 4 KB 536 vs 16,388, strlen 200 bytes 269 vs
+    809. In cycles, expect roughly 10x for big aligned copies (LDM/STM take about a cycle a word).
+    `test/armtest.sh` runs the assembled code in the Unicorn ARM emulator against Python
+    references: 4,000 random sizes and alignments with guard bytes, overlaps, and register and
+    stack checks.
 - **0.5** (not yet run on the phone): the mouse pointer and desktop-style keys.
   - **Hover**: the joystick's pointer is on by default (View > Mouse pointer). The cursor is
     polled about 8 times a second, because move events don't always arrive. The link under it
@@ -205,13 +219,15 @@ bash s80-build-kit/install.sh            # once: the toolchain into ~/sym
 ./test/run.sh                            # host unit tests of core/ under ASan/UBSan
 ./test/run.sh test/pages/news.html       # a page laid out at 500 px, printed as text lines
 ./test/run.sh -fuzz test/pages/news.html # 3000 corrupted copies parsed and laid out
+./test/armtest.sh                        # core/igarm.c (ARM assembly) in the Unicorn emulator
+                                         # (needs `pip install unicorn`)
 ```
 
 App UID `0x0F5A9310`. The version is `KBrVersion` in `inc/browser.h` (the build puts it into the
 package; bump it and the user agent for every delivered build).
 
 `core/` is C89 with no libc and no writable static data; memory goes through
-`ig_malloc`/`ig_free` (`src/util.cpp` -> `User::Alloc`). `igutil.c` / `ighttp.c` are Instagram
+`ig_malloc`/`ig_free` (`src/util.cpp` -> `User::Alloc`). On the phone `ig_memcpy` / `ig_memset` / `ig_strlen` are the ARM assembly in `core/igarm.c` (`IG_ASM`, set in `igcore.h` for ARM builds; `-DIG_NO_ASM` turns it off). `igutil.c` / `ighttp.c` are Instagram
 9300's, `src/net.cpp` is its HTTP client (minus the video side file), `src/images.cpp` is derived
 from its image store.
 
