@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.7");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.7");
+_LIT(KBrVersion, "0.8");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.8");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -430,6 +430,7 @@ private:
     void ClampScroll();
     TInt PageWidthOnScreen() const;
     TBool TargetVisible(TInt aTarget, TBool aFully) const;
+    void MoveFocus(TInt aDir);             // Up/Down: the next link if it is on screen, else scroll
     void JumpFocus(TInt aDir);             // Tab: the next link wherever it is
     void EnsureFocusVisible();
     void SetFocusTarget(TInt aTarget);
@@ -535,6 +536,7 @@ public:
     void OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost = NULL, TBool aAddHistory = ETrue);
     void GoToDialogL(TUint aFirstChar = 0);
     void ZoomL(TInt aDir);                // Ctrl+Plus / Minus (+1 / -1) / 0: the text size
+    void ApplyCursor();                   // the phone's virtual cursor on / off as set (logged)
     void ReparseCurrentL();               // the page on the screen parsed again (hover, original size)
     void EditControlL(TInt aControl, TUint aFirstChar = 0);
     void HoverElementL(TInt aElem);       // the pointer rests on this element (-1 none)

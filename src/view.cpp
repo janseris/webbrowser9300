@@ -952,6 +952,49 @@ void CBrView::EnsureFocusVisible()
     ClampScroll();
     }
 
+void CBrView::MoveFocus(TInt aDir)
+    {
+    if (!iDoc || !iLayout) return;
+    TInt h = PageHeightOnScreen();
+    TInt n = (TInt)iDoc->targetCount;
+    if (iFocus >= 0 && !TargetVisible(iFocus, EFalse)) iFocus = -1;
+    TInt cand = -1;
+    if (iFocus < 0)
+        {
+        // the first (last) link that is fully on the screen
+        if (aDir > 0) { for (TInt t = 0; t < n; t++) if (TargetVisible(t, ETrue)) { cand = t; break; } }
+        else { for (TInt t = n - 1; t >= 0; t--) if (TargetVisible(t, ETrue)) { cand = t; break; } }
+        }
+    else
+        {
+        for (TInt t = iFocus + aDir; t >= 0 && t < n; t += aDir)
+            {
+            const BwTargetPos& p = iLayout->targets[t];
+            if (p.y0 < 0) continue;
+            // the next one counts if its top (bottom) is on the screen
+            if (aDir > 0 && p.y0 >= iScrollY && p.y0 < iScrollY + h - 4) cand = t;
+            if (aDir < 0 && p.y1 > iScrollY + 4 && p.y1 <= iScrollY + h) cand = t;
+            break;
+            }
+        }
+    if (cand >= 0)
+        {
+        SetFocusTarget(cand);
+        // if it reaches past the edge, bring it in, but not more than one step
+        const BwTargetPos& p = iLayout->targets[cand];
+        if (aDir > 0 && p.y1 > iScrollY + h) iScrollY += Min(KScrollStep, p.y1 - (iScrollY + h) + 4);
+        if (aDir < 0 && p.y0 < iScrollY) iScrollY -= Min(KScrollStep, iScrollY - p.y0 + 4);
+        EnsureFocusVisible();
+        Render();
+        return;
+        }
+    TInt before = iScrollY;
+    iScrollY += aDir * KScrollStep;
+    ClampScroll();
+    if (iFocus >= 0 && !TargetVisible(iFocus, EFalse)) SetFocusTarget(-1);
+    if (iScrollY != before || cand < 0) Render();
+    }
+
 void CBrView::JumpFocus(TInt aDir)
     {
     if (!iDoc || !iLayout || !iDoc->targetCount) return;
@@ -982,15 +1025,18 @@ void CBrView::JumpFocus(TInt aDir)
 
 // ------------------------------------------------------------------ input
 
-// Keys as in a desktop browser: Up/Down scroll a step, PgUp/PgDn and Space/Shift+Space a page,
-// Home/End and Ctrl+Home/End the top/end, Tab/Shift+Tab the next/previous link or field, Enter opens
-// it, Space ticks a focused box or presses a focused button, Ctrl+L the address. The 9300 has no
-// Home/End/PgUp/PgDn keys, so also: Shift+Up/Down page, Ctrl+Up/Down top/end; Left/Right step
-// through links (pages never scroll sideways); Ctrl+Left/Right back/forward (no Alt key); a letter
-// typed on the page opens the address bar with it, or the focused text field.
+// Keys: Up/Down go to the next / previous link or field when it is on the screen, else scroll a
+// step (as the 9300's own Opera does); Ctrl+Up/Down scroll a step; Shift+Up/Down, Space/Shift+Space
+// and PgUp/PgDn a page; Tab/Shift+Tab and Left/Right the next/previous link wherever it is
+// (Left/Right scroll sideways at the original size); Enter opens the focused one, Space ticks a
+// focused box or presses a focused button; Ctrl+Left/Right back/forward; Ctrl+L the address; a
+// letter typed with a text field focused goes into it; + / - zoom (Ctrl+0: normal size).
 TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType)
     {
     if (aType != EEventKey) return EKeyWasNotConsumed;
+    // which keys reach the page while the virtual cursor is on (the log, when it is on)
+    if (aKeyEvent.iCode >= EKeyLeftArrow && aKeyEvent.iCode <= EKeyDownArrow)
+        IgLogF2(_L("key %d mods %d"), (TInt)aKeyEvent.iCode, (TInt)aKeyEvent.iModifiers);
     if (iListOpen) return ListKeyL(aKeyEvent);
     TBool shift = (aKeyEvent.iModifiers & EModifierShift) != 0;
     TBool ctrl = (aKeyEvent.iModifiers & EModifierCtrl) != 0;
@@ -1007,10 +1053,14 @@ TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aTyp
     switch (aKeyEvent.iCode)
         {
         case EKeyDownArrow:
-            ScrollTo(ctrl ? end : iScrollY + (shift ? page : KScrollStep));
+            if (shift) ScrollTo(iScrollY + page);
+            else if (ctrl) ScrollTo(iScrollY + KScrollStep);
+            else MoveFocus(1);
             return EKeyWasConsumed;
         case EKeyUpArrow:
-            ScrollTo(ctrl ? 0 : iScrollY - (shift ? page : KScrollStep));
+            if (shift) ScrollTo(iScrollY - page);
+            else if (ctrl) ScrollTo(iScrollY - KScrollStep);
+            else MoveFocus(-1);
             return EKeyWasConsumed;
         case EKeyPageDown:
             ScrollTo(iScrollY + page);
@@ -1072,14 +1122,17 @@ TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aTyp
         }
     if (code >= ' ' && code < 0xF700 && code != 0x7F && !(aKeyEvent.iModifiers & EModifierFunc))
         {
-        // typed into the focused text field (if it is on the screen), else the address bar
+        // typed into the focused text field (if it is on the screen)
         if (fieldFocused && TargetVisible(iFocus, EFalse))
             {
             if (fc->disabled) iAppUi.ActivateTargetL(iFocus);    // says why not
             else iAppUi.EditControlL(iDoc->targets[iFocus].index, code);
+            return EKeyWasConsumed;
             }
-        else if (code > ' ') iAppUi.GoToDialogL(code);
-        return EKeyWasConsumed;
+        // + / - (Shift+plus on the 9300) zoom; other keys do nothing on the page
+        if (code == '+') { iAppUi.ZoomL(1); return EKeyWasConsumed; }
+        if (code == '-') { iAppUi.ZoomL(-1); return EKeyWasConsumed; }
+        return EKeyWasNotConsumed;
         }
     return EKeyWasNotConsumed;
     }

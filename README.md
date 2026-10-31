@@ -19,6 +19,21 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.8** (not yet run on the phone): Opera-style Up/Down, and the pointer fixed.
+  - **Up/Down move between links and fields** the way the 9300's built-in Opera does: the next
+    (previous) one if it is on the screen, otherwise the page scrolls a step. Long text between
+    links still reads by pressing Down. **Ctrl+Up/Down** scroll a step without moving the
+    focus; Shift+Up/Down still move a page. The Ctrl jump to the top / end is gone (Home/End,
+    if a keyboard sends them, and Page > Top / Bottom remain).
+  - **The pointer really starts on now.** Settings saved by 0.4 or earlier said `mouse=0`, so
+    the 0.5 default never took effect. The setting is now stored as `pointer=`, and the cursor
+    is switched on again whenever the browser comes to the front. The log records the cursor's
+    state ("cursor: ...") and the arrow keys that reach the page ("key ... mods ..."), to show
+    whether the cursor takes the arrows.
+  - **+ / − zoom** (− is Shift+plus on the 9300) through the text sizes; Ctrl+0 goes back to
+    normal. With a text field focused, they're typed into it.
+  - **Typing on the page no longer opens the address bar** (Ctrl+L, the Go to button or the
+    menu do). A letter goes into the focused text field, or does nothing.
 - **0.7** (not yet run on the phone): zoom and the original size.
   - **View > Original size** lays the page out 1024 px wide, as on a computer: CSS margins and
     paddings as given (not halved), list indents at 40 px, pictures and tables up to their real
@@ -190,15 +205,17 @@ receives logs (`localserver\ota_server.js`).
 
 | | |
 |---|---|
-| Up / Down | scroll a step |
+| Up / Down | next / previous link or field when it is on the screen, otherwise scroll a step |
+| Ctrl+Up / Ctrl+Down | scroll a step |
 | Shift+Up / Shift+Down, Space / Shift+Space, PgUp / PgDn | page up / down |
-| Ctrl+Up / Ctrl+Down, Home / End | top / end of the page |
+| Home / End (if the keyboard has them) | top / end of the page |
 | Tab / Shift+Tab, Right / Left | next / previous link or field (scrolls to it) |
 | Ctrl+Left / Ctrl+Right | back / forward |
 | Left / Right at View > Original size | scroll sideways (Shift: a screen) |
-| Ctrl+Plus / Ctrl+Minus / Ctrl+0 | zoom: bigger / smaller / normal text |
+| Ctrl+Plus / Ctrl+Minus / Ctrl+0 | zoom: bigger / smaller / normal text (also + / −) |
 | Space on a box or button | tick it / press it |
-| a letter | into the focused text field, else opens the address bar with it |
+| a letter | into the focused text field, else nothing |
+| + / − (Shift+plus) | zoom in / out (not in a text field) |
 | Enter | open the focused link; edit the field; tick the box; choose from the list |
 | Esc, Backspace | stop loading; otherwise back |
 | Ctrl+L | go to an address (side button **Go to**) |

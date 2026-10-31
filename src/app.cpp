@@ -241,13 +241,22 @@ void CBrAppUi::HandleForegroundEventL(TBool aForeground)
     CEikAppUi::HandleForegroundEventL(aForeground);
     if (!aForeground) { IgLogFlush(); SaveCookies(); }
     if (iView) iView->SetForeground(aForeground);
+    // the cursor's state is the window group's: switch it on again whenever we are in front
+    if (aForeground && iSettings && iSettings->iMouseOn) ApplyCursor();
+    }
+
+void CBrAppUi::ApplyCursor()
+    {
+    TEikVirtualCursor& vc = iEikonEnv->VirtualCursor();
+    TRAPD(err, vc.SetCursorStateL(iSettings->iMouseOn ? TEikVirtualCursor::EOn : TEikVirtualCursor::EOff, *iEikonEnv));
+    IgLogF2(_L("cursor: asked %d, error %d"), iSettings->iMouseOn ? 1 : 0, err);
+    IgLogF2(_L("cursor: state now %d, pointer cursor mode %d"), (TInt)vc.CursorState(*iEikonEnv), (TInt)iCoeEnv->WsSession().PointerCursorMode());
     }
 
 void CBrAppUi::ApplySettingsL()
     {
     ApplyFullScreenL();
-    TRAPD(err, iEikonEnv->VirtualCursor().SetCursorStateL(iSettings->iMouseOn ? TEikVirtualCursor::EOn : TEikVirtualCursor::EOff, *iEikonEnv));
-    (void)err;
+    ApplyCursor();
     iView->SetPointerOn(iSettings->iMouseOn);
     }
 
@@ -1298,7 +1307,7 @@ HBufC8* CBrAppUi::StartPageLC()
     p.Append(_L8("Browser 9300"));
     p.Append(KPageStyle);
     p.Append(_L8("<h1>Browser 9300</h1>"
-                 "<p>Type an address to go there (just start typing, or Ctrl+L / Go to).</p>"
+                 "<p>Ctrl+L or the Go to button opens the address bar. + / - zoom, Up / Down move between links.</p>"
                  "<h2>Bookmarks</h2><ul>"));
     for (TInt i = 0; i < iBookmarkUrls.Count(); i++)
         {
