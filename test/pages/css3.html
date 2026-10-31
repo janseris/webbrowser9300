@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset=utf-8><title>CSS3 test</title>
+<style>
+:root{--fg:#222;--accent:hsl(210,80%,40%);--pad:8px}
+body{color:var(--fg);margin:0;font:14px/1.4 Arial}
+header{background:var(--accent);color:#fff;padding:var(--pad) 12px;border-bottom:3px solid #0a3}
+nav ul{list-style:none;margin:0;padding:0}
+nav li{float:left;margin-right:10px}
+nav a{color:#fff;text-decoration:none;text-transform:uppercase}
+.card{border:1px solid #ccc;margin:12px auto;max-width:400px;padding:10px 14px;background:#fafafa}
+.card h2{margin:0 0 6px;font-size:1.2em}
+.badge{background:#c00;color:#fff;padding:0 4px}
+a[href$=".pdf"]::after{content:" (PDF)"}
+a[target=_blank]{color:green}
+tr:nth-child(even) td{background:#eef}
+.btn:not(.primary){border:1px solid #999}
+input[type="text"],input[type=email]{border:1px solid #888}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+@media (max-width:700px){.wide{display:none}}
+@media (prefers-color-scheme:dark){body{background:#000;color:#fff}}
+.x{display:none!important}
+</style></head><body>
+<header><nav><ul><li><a href=/>Home</a><li><a href=/news>News</a><li><a href=/about aria-label=About><svg><path d=M0/></svg></a></ul></nav></header>
+<main>
+<article class=card><h2>Title <span class=badge>NEW</span></h2><p>Text with <a href=/doc.pdf>a PDF</a> and <a href=//x.org target=_blank>outside</a>.</p>
+<picture><source type=image/avif srcset=a.avif><source srcset="b-480.jpg 480w, b-960.jpg 960w"><img src=b.jpg alt="A picture" width=480 height=270></picture></article>
+<section class=card><ol type=I><li>one<li>two<li>three</ol><table><tr><td>a<td>b<tr><td>c<td>d<tr><td>e<td>f</table></section>
+<p class="wide x">wide</p><span class=sr-only>skip</span>
+<form class=card><input type=email name=e placeholder=E-mail> <button class="btn primary">Send</button> <button class=btn aria-label=Close><i class=icon></i></button></form>
+<dialog>hidden</dialog><details><summary>More</summary>Details text</details>
+</main></body></html>

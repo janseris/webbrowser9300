@@ -18,6 +18,8 @@ typedef struct {
 
 typedef struct {
     int left, right, align, fill, bg;
+    int box;                     /* the doc's BwBlockBox, -1 none */
+    int oL, oR, top;             /* its border box: left, right, where its border starts */
 } Block;
 
 typedef struct {
@@ -43,6 +45,7 @@ typedef struct {
     unsigned char* asc;          /* per box: its ascent within the line (parallel to boxes) */
     unsigned int ascCap;
     int tableDepth;              /* tables laid out as columns around this point */
+    int measureDepth;            /* tables being measured inside each other (recursion) */
 } S;
 
 static int font_h(S* s, int f)
@@ -105,6 +108,7 @@ static BwBox* new_box(S* s, int kind, int asc)
     b->kind = (unsigned char)kind;
     b->target = -1;
     b->ref = -1;
+    b->bg = -1;
     b->y = s->y;
     s->asc[l->boxCount] = (unsigned char)(asc > 255 ? 255 : asc < 0 ? 0 : asc);
     l->boxCount++;
@@ -123,6 +127,16 @@ static int readable(S* s, int color)
     int diff = lb > lt ? lb - lt : lt - lb;
     if (diff >= 60) return color;
     return lb > 128 ? 0x000000 : 0xFFFFFF;
+}
+
+static int readable_on(S* s, int color, int bg)
+{
+    int saved = s->bg, c;
+    if (bg < 0) return readable(s, color);
+    s->bg = bg;
+    c = readable(s, color);
+    s->bg = saved;
+    return c;
 }
 
 static void finish_line(S* s, int force)
@@ -190,7 +204,10 @@ static void place_word(S* s, const BwOp* op, int opIndex, unsigned int ws, unsig
     int w = s->m->textWidth(s->m->ctx, f, pool + ws, (int)(we - ws));
     int sw = gap > 0 && (s->x > s->left || (op->flags & BW_OPF_PRE)) ? gap * space_w(s, f) : 0;
     int avail = s->right - s->left;
-    if (s->x + sw + w > s->right && s->x > s->left) {
+    /* nowrap: a run that fits a line was moved to a fresh line when needed (place_text) and is
+     * not broken; a longer one wraps as usual */
+    int keep = (op->flags & BW_OPF_NOWRAP) && s->lastOp == opIndex && s->x + sw + w <= s->right + 2;
+    if (s->x + sw + w > s->right && s->x > s->left && !keep) {
         finish_line(s, 0);
         sw = (op->flags & BW_OPF_PRE) && 0 ? sw : 0;
     }
@@ -211,7 +228,8 @@ static void place_word(S* s, const BwOp* op, int opIndex, unsigned int ws, unsig
             if (!b) return;
             b->font = (unsigned char)f;
             b->flags = op->flags & (BW_OPF_UNDERLINE | BW_OPF_STRIKE);
-            b->color = readable(s, op->color);
+            b->color = readable_on(s, op->color, op->bg);
+            b->bg = op->bg;
             b->target = op->target;
             b->x = s->x;
             b->w = pw;
@@ -240,7 +258,8 @@ static void place_word(S* s, const BwOp* op, int opIndex, unsigned int ws, unsig
         if (!b) return;
         b->font = (unsigned char)f;
         b->flags = op->flags & (BW_OPF_UNDERLINE | BW_OPF_STRIKE);
-        b->color = readable(s, op->color);
+        b->color = readable_on(s, op->color, op->bg);
+        b->bg = op->bg;
         b->target = op->target;
         b->x = s->x + sw;
         b->w = w;
@@ -258,6 +277,16 @@ static void place_text(S* s, const BwOp* op, int opIndex)
     const unsigned short* pool = s->d->pool;
     unsigned int i = op->off, end = op->off + op->len;
     int pre = (op->flags & BW_OPF_PRE) != 0;
+    if ((op->flags & BW_OPF_NOWRAP) && s->x > s->left) {
+        /* the whole run on a fresh line if it does not fit here but fits there */
+        unsigned int a = i, b = end;
+        int w, gap;
+        while (a < b && pool[a] == ' ') a++;
+        while (b > a && pool[b - 1] == ' ') b--;
+        w = b > a ? s->m->textWidth(s->m->ctx, op->font, pool + a, (int)(b - a)) : 0;
+        gap = (s->pendingSpace || a > i) ? space_w(s, op->font) : 0;
+        if (s->x + gap + w > s->right && w <= s->right - s->left) finish_line(s, 0);
+    }
     while (i < end) {
         unsigned short c = pool[i];
         if (c == ' ') {
@@ -431,10 +460,14 @@ static void place_control(S* s, const BwOp* op)
     if (b) { b->ref = op->ref; b->target = op->target; b->font = (unsigned char)f; b->color = readable(s, s->d->textColor); }
 }
 
+static int add_fill(S* s, int x, int y, int w, int h, int color, int outline);
+
 static void push_block(S* s, const BwOp* op)
 {
     BwLayout* l = &s->L->pub;
     Block* b;
+    const BwBlockBox* bx = op->type == BW_OP_BLOCK_START && op->ref >= 0 && (unsigned int)op->ref < s->d->blockCount ? &s->d->blocks[op->ref] : 0;
+    int oL, oR;
     finish_line(s, 0);
     if (op->a > s->pendingMargin) s->pendingMargin = op->a;
     if (s->depth >= MAX_BLOCKS) { s->skipDepth++; return; }
@@ -444,39 +477,68 @@ static void push_block(S* s, const BwOp* op)
     b->align = s->align;
     b->bg = s->bg;
     b->fill = -1;
-    if (op->color >= 0) {
-        if (grow((void**)&l->fills, &l->fillCap, l->fillCount, sizeof(BwFill))) {
-            BwFill* f = &l->fills[l->fillCount];
-            if (s->pendingMargin && s->y > 0) s->y += s->pendingMargin;
-            s->pendingMargin = 0;
-            f->x = s->left;
-            f->w = s->right - s->left;
-            f->y = s->y;
-            f->h = 0;
-            f->color = op->color;
-            b->fill = (int)l->fillCount++;
-            s->bg = op->color;
+    b->box = bx ? op->ref : -1;
+    /* the border box: the margins in, then a width / max-width, centred with margin: auto */
+    oL = s->left + (bx ? bx->ml : op->type == BW_OP_BLOCK_START ? op->b : 0);
+    oR = s->right - (bx ? bx->mr : 0);
+    if (bx) {
+        int avail = oR - oL, w = 0;
+        if (bx->width > 0) w = bx->width;
+        else if (bx->width < 0) w = avail * -bx->width / 100;
+        if (bx->maxw > 0 && (w == 0 || w > bx->maxw)) w = bx->maxw;
+        else if (bx->maxw < 0 && (w == 0 || w > avail * -bx->maxw / 100)) w = avail * -bx->maxw / 100;
+        if (w > 20 && w < avail) {
+            if (bx->center) oL += (avail - w) / 2;
+            oR = oL + w;
         }
     }
-    s->left += op->b;
+    b->oL = oL;
+    b->oR = oR;
+    if (op->color >= 0 || (bx && (bx->bt || bx->pt || bx->bl || bx->br || bx->bb))) {
+        if (s->pendingMargin && s->y > 0) s->y += s->pendingMargin;
+        s->pendingMargin = 0;
+    }
+    b->top = s->y;
+    if (op->color >= 0) {
+        b->fill = add_fill(s, oL, s->y, oR - oL, 0, op->color, 0);
+        if (b->fill >= 0) s->bg = op->color;
+    }
+    if (bx) {
+        if (bx->bt) { add_fill(s, oL, s->y, oR - oL, bx->bt, bx->bc, 0); s->y += bx->bt; }
+        s->y += bx->pt;
+        s->left = oL + bx->bl + bx->pl;
+        s->right = oR - bx->br - bx->pr;
+    } else {
+        s->left = oL;
+        s->right = oR;
+    }
     if (s->left > s->right - 40) s->left = s->right - 40;
     if (s->left < 0) s->left = 0;
     s->align = op->align;
     s->x = s->left;
+    (void)l;
 }
 
 static void pop_block(S* s, const BwOp* op)
 {
     BwLayout* l = &s->L->pub;
     Block* b;
+    const BwBlockBox* bx;
     finish_line(s, 0);
     if (s->skipDepth) { s->skipDepth--; return; }
     if (!s->depth) return;
     b = &s->blocks[--s->depth];
+    bx = b->box >= 0 ? &s->d->blocks[b->box] : 0;
+    if (bx) {
+        s->y += bx->pb;
+        if (bx->bl) add_fill(s, b->oL, b->top, bx->bl, s->y - b->top + bx->bb, bx->bc, 0);
+        if (bx->br) add_fill(s, b->oR - bx->br, b->top, bx->br, s->y - b->top + bx->bb, bx->bc, 0);
+        if (bx->bb) { add_fill(s, b->oL, s->y, b->oR - b->oL, bx->bb, bx->bc, 0); s->y += bx->bb; }
+    }
     if (b->fill >= 0) {
         BwFill* f = &l->fills[b->fill];
-        f->h = s->y - f->y + 2;
-        s->y += 2;
+        if (!bx || (!bx->pb && !bx->bb)) s->y += 2;      /* a little room under the text */
+        f->h = s->y - f->y;
     }
     s->left = b->left;
     s->right = b->right;
@@ -560,7 +622,7 @@ static void layout_ops(S* s, unsigned int from, unsigned int to)
         case BW_OP_TABLE_END: case BW_OP_ROW_END:
             pop_block(s, op);
             break;
-        case BW_OP_CELL_START:
+        case BW_OP_CELL_START: case BW_OP_GAP:
             if (s->x > s->left) {
                 s->x += CELL_GAP;
                 if (s->x >= s->right) finish_line(s, 0);
@@ -625,7 +687,7 @@ static void measure_range(S* s, unsigned int from, unsigned int to, int* pmn, in
 {
     const BwDoc* d = s->d;
     int line = 0, best = 0, mn = 0, space = 0;
-    int indent = 0, ind[32], depth = 0;
+    int indent = 0, ind[16], depth = 0;
     unsigned int i;
     for (i = from; i < to; i++) {
         const BwOp* op = &d->ops[i];
@@ -663,7 +725,7 @@ static void measure_range(S* s, unsigned int from, unsigned int to, int* pmn, in
                 if (w + indent > mn) mn = w + indent;
             }
             break;
-        case BW_OP_CELL_START:
+        case BW_OP_CELL_START: case BW_OP_GAP:
             if (line) line += CELL_GAP;
             space = 0;
             break;
@@ -673,27 +735,29 @@ static void measure_range(S* s, unsigned int from, unsigned int to, int* pmn, in
                 Table t;
                 if (line + indent > best) best = line + indent;
                 line = 0;
-                if (s->tableDepth < 6 && measure_table(s, i, end, 100000, &t)) {
+                s->measureDepth++;
+                if (s->tableDepth + s->measureDepth <= 4 && measure_table(s, i, end, 100000, &t)) {
                     int tmn = t.gap * (t.cols - 1) + t.border * 2, tmx = tmn, c;
                     for (c = 0; c < t.cols; c++) { tmn += t.colMin[c]; tmx += t.colMax[c]; }
                     if (tmn + indent > mn) mn = tmn + indent;
                     if (tmx + indent > best) best = tmx + indent;
                     table_free(&t);
                 }
+                s->measureDepth--;
                 i = end;
             }
             break;
         case BW_OP_BLOCK_START:
             if (line + indent > best) best = line + indent;
             line = 0; space = 0;
-            if (depth < 32) ind[depth] = op->b;
+            if (depth < 16) ind[depth] = op->b;
             depth++;
             indent += op->b;
             break;
         case BW_OP_BLOCK_END:
             if (line + indent > best) best = line + indent;
             line = 0; space = 0;
-            if (depth > 0) { depth--; if (depth < 32) indent -= ind[depth]; }
+            if (depth > 0) { depth--; if (depth < 16) indent -= ind[depth]; }
             break;
         case BW_OP_BR: case BW_OP_HR: case BW_OP_ROW_START: case BW_OP_ROW_END: case BW_OP_TABLE_END:
             if (line + indent > best) best = line + indent;
@@ -799,6 +863,11 @@ static int measure_table(S* s, unsigned int i0, unsigned int end, int avail, Tab
         measure_range(s, ce->from, ce->to, &ce->mn, &ce->mx);
         ce->mn += 2 * t->pad;
         ce->mx += 2 * t->pad;
+        /* width="150" / "30%": the column would like that much (only if there is room) */
+        if (ce->op->len) {
+            int want = ce->op->len >= 100000u ? (avail < 50000 ? avail * (int)(ce->op->len - 100000u) / 100 : 0) : (int)ce->op->len;
+            if (want > ce->mx && want <= avail) ce->mx = want;
+        }
         if (ce->span == 1 && ce->col < MAX_COLS) {
             if (ce->mn > t->colMin[ce->col]) t->colMin[ce->col] = ce->mn;
             if (ce->mx > t->colMax[ce->col]) t->colMax[ce->col] = ce->mx;
@@ -838,6 +907,22 @@ static int measure_table(S* s, unsigned int i0, unsigned int end, int avail, Tab
             t->width += add;
         }
     }
+    /* <table width=100%> (or a width that is more than there is): the columns share the rest */
+    if (top->len && avail < 50000) {
+        int tw = top->len >= 100000u ? avail * (int)(top->len - 100000u) / 100 : (int)top->len;
+        if (tw > avail) tw = avail;
+        if (tw > t->width) {
+            int extra2 = tw - t->width, sumW = 0, given = 0;
+            for (c = 0; c < t->cols; c++) sumW += t->colW[c];
+            for (c = 0; c < t->cols; c++) {
+                int add = sumW ? (int)((long)extra2 * t->colW[c] / sumW) : extra2 / t->cols;
+                if (c == t->cols - 1) add = extra2 - given;
+                t->colW[c] += add;
+                given += add;
+            }
+            t->width = tw;
+        }
+    }
     return 1;
 }
 
@@ -862,7 +947,7 @@ static unsigned int layout_table(S* s, unsigned int i0, unsigned int to)
     Table t;
     int tx, avail, r, tableTop, tableFill = -1;
     unsigned int ci = 0;
-    if (end >= to || s->tableDepth >= 6) return 0;      /* (the phone's stack is small) */
+    if (end >= to || s->tableDepth >= 4) return 0;      /* (the phone's stack may be only 8 KB) */
     finish_line(s, 0);
     avail = s->right - s->left;
     if (!measure_table(s, i0, end, avail, &t)) return 0;

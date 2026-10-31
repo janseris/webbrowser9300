@@ -39,7 +39,9 @@ void CTextDialog::PreLayoutDynInitL()
     SetTitleL(iTitle);
     CEikEdwin* ed = (CEikEdwin*)Control(EBrTextField);
     ed->SetTextL(&iText);
-    ed->SetCursorPosL(iText.Length(), EFalse);
+    // the address bar: what is there is selected, so typing replaces it
+    if (iSelectAll && iText.Length()) ed->SelectAllL();
+    else ed->SetCursorPosL(iText.Length(), EFalse);
     }
 
 TBool CTextDialog::OkToExitL(TInt aButtonId)
@@ -465,12 +467,21 @@ TKeyResponse CBrAppUi::HandleKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aT
 
 // ------------------------------------------------------------------ navigation
 
-void CBrAppUi::GoToDialogL()
+// the address bar: the page's address selected, or (typed on the page) the first character
+void CBrAppUi::GoToDialogL(TUint aFirstChar)
     {
     HBufC* buf = HBufC::NewLC(1000);
     TPtr t = buf->Des();
-    if (iCurrentUrl->Left(6) != _L8("about:")) t.Copy(iCurrentUrl->Left(1000));
-    if (TextDialogL(_L("Go to address"), t) && t.Length())
+    if (aFirstChar) t.Append((TChar)aFirstChar);
+    else if (iCurrentUrl->Left(6) != _L8("about:")) t.Copy(iCurrentUrl->Left(1000));
+    TBool ok;
+    {
+    CTextDialog* d = new (ELeave) CTextDialog(t, _L("Address"), aFirstChar == 0);
+    ok = d->ExecuteLD(R_BR_TEXT_DIALOG) == EEikBidOk;
+    }
+    for (TInt i = 0; i < t.Length(); i++) if (t[i] == 0x2029) t[i] = ' ';
+    t.Trim();
+    if (ok && t.Length())
         {
         HBufC8* u8 = UnicodeToUtf8L(t);
         CleanupStack::PushL(u8);
@@ -963,6 +974,13 @@ void CBrAppUi::ActivateTargetL(TInt aTarget)
     BwDoc* d = iView->Doc();
     if (!d || aTarget < 0 || (TUint)aTarget >= d->targetCount) return;
     const BwTarget& t = d->targets[aTarget];
+    if (t.kind == BW_TGT_LABEL)
+        {
+        // a label: its checkbox / radio / field
+        TInt c = t.index >= 0 && (TUint)t.index < d->labelCount ? d->labels[t.index].control : -1;
+        if (c >= 0 && d->controls[c].target >= 0) ActivateTargetL(d->controls[c].target);
+        return;
+        }
     if (t.kind == BW_TGT_LINK)
         {
         TPtrC8 href((const TUint8*)d->links[t.index].href);
@@ -972,6 +990,11 @@ void CBrAppUi::ActivateTargetL(TInt aTarget)
         return;
         }
     BwControl& c = d->controls[t.index];
+    if (c.disabled == 1 || (c.disabled == 2 && (c.type == BW_CTL_TEXT || c.type == BW_CTL_PASSWORD || c.type == BW_CTL_TEXTAREA)))
+        {
+        Say(c.disabled == 1 ? _L("This field is disabled") : _L("This field is read-only"));
+        return;
+        }
     switch (c.type)
         {
         case BW_CTL_TEXT: case BW_CTL_PASSWORD: case BW_CTL_TEXTAREA:
@@ -1215,9 +1238,7 @@ HBufC8* CBrAppUi::StartPageLC()
     p.Append(_L8("Browser 9300"));
     p.Append(KPageStyle);
     p.Append(_L8("<h1>Browser 9300</h1>"
-                 "<form action='https://lite.duckduckgo.com/lite/' method=post>Search the web: <input name=q size=30> <input type=submit value=Search></form>"
-                 "<form action='https://en.m.wikipedia.org/w/index.php'>Wikipedia: <input name=search size=30> <input type=submit value=Go></form>"
-                 "<form action='https://cs.m.wikipedia.org/w/index.php'>Wikipedie: <input name=search size=30> <input type=submit value=Hledat></form>"
+                 "<p>Type an address to go there (just start typing, or Ctrl+L / Go to).</p>"
                  "<h2>Bookmarks</h2><ul>"));
     for (TInt i = 0; i < iBookmarkUrls.Count(); i++)
         {
@@ -1229,7 +1250,7 @@ HBufC8* CBrAppUi::StartPageLC()
         p.Append(_L8("</a>"));
         }
     p.Append(_L8("</ul><p><a href='about:bookmarks'>Edit bookmarks</a> | <a href='about:history'>History</a></p>"
-                 "<p class=s>Ctrl+L address, Ctrl+B bookmarks, Ctrl+D add bookmark, Esc back, Ctrl+R reload, Ctrl+F find, Ctrl+N find next, Ctrl+I page info. "
+                 "<p class=s>Typing on a page opens the address bar. Ctrl+L address, Ctrl+B bookmarks, Ctrl+D add bookmark, Esc back, Ctrl+R reload, Ctrl+F find, Ctrl+N find next, Ctrl+I page info. "
                  "Up/Down: links and scrolling, Left/Right: previous/next link, Shift+Up/Down or Space: page.</p></body></html>"));
     return b;
     }
@@ -1341,7 +1362,6 @@ void CBrAppUi::LoadBookmarksL()
         {
         // the first start: pages that work without JavaScript
         static const char* const kDefaults[] = {
-            "https://lite.duckduckgo.com/lite/", "DuckDuckGo Lite (search)",
             "https://en.m.wikipedia.org/", "Wikipedia (mobile)",
             "https://cs.m.wikipedia.org/", "Wikipedie (mobilni)",
             "https://lite.cnn.com/", "CNN Lite",

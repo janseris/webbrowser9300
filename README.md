@@ -19,6 +19,39 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.4** (not yet run on the phone): more HTML5 and CSS, all on the phone.
+  - **Address bar only**: the start page has no search boxes; typing a letter or digit on a
+    page opens the address bar with it, and the bar opens with the page's address selected.
+  - **CSS box model**: `margin`, `padding`, `border` (shorthands, sides, width / style / color),
+    `width` / `max-width` (px, %, em) with `margin: auto` centring, block backgrounds over the
+    padding. Desktop lengths are halved for the 640 x 200 screen and capped (vertical margins
+    16 px, horizontal 40, padding 10 / 16). `<fieldset>` has its frame.
+  - **Cascade**: `!important` (after the normal declarations, the style attribute's last).
+  - **Selectors**: attribute selectors `[a] [a=v] [a~=v] [a^=v] [a$=v] [a*=v] [a|=v]` (on the
+    element itself), `:first-child`, `:nth-child(odd | even | An+B)`, `:not(.x | #x | tag | [a])`,
+    `:root`, `:link` / `:visited`. Rules with `:hover`, `:focus`, `:last-child`, `+`, `~` are
+    still dropped rather than guessed.
+  - **Values**: all 148 CSS colour names, `hsl()` / `hsla()`, `#rgba` / `#rrggbbaa`, `rgb(r g b /
+    a)`; `var(--x, fallback)` with the custom properties of `:root` / `html` / `body` (a theme
+    class like `.dark` does not override them).
+  - **Lists**: `list-style(-type)`: none, disc, circle, square, decimal, lower/upper-alpha,
+    lower/upper-roman; `<ol type=a|A|i|I>`.
+  - **Flow**: `float: left/right` and the items of `display: flex / grid` rows flow side by side
+    with a gap (horizontal menus, card rows); `flex-direction: column` stacks them.
+  - **Text**: `::before` / `::after` with `content` strings, escapes and `attr()` (icon-font
+    glyphs are left out), `<q>` quotation marks, `text-transform`, `white-space: nowrap`
+    (`<nobr>`, `<td nowrap>`), inline backgrounds (`<mark>`, labels, badges).
+  - **Pictures**: `srcset` (the smallest candidate at least 480 px wide), `<picture><source>`
+    (the first JPEG / PNG / GIF one whose `media` fits; WebP / AVIF skipped), CSS `width` /
+    `height` on pictures, the `<noscript>` copy of a lazy-loaded picture not shown twice.
+  - **Media queries**: a light screen without hover, a coarse pointer, 1 pixel per pixel,
+    landscape (dark-mode, hover and 2x rules are skipped).
+  - **HTML5**: closed `<dialog>` hidden, `<object>` fallback content shown, image map `<area>`
+    links listed under the picture, icon-only links and buttons named by `aria-label` / `title`,
+    `<label for>` and labels around a field (pressing the label works the field), `disabled` /
+    `readonly` fields, textarea placeholders, table `width` attributes (columns and
+    `width=100%` tables), soft hyphens / zero-width characters / emoji not drawn as boxes.
+
 - **0.3** (not yet run on the phone):
   - **Tables with columns**: rows and cells are now in the op stream (TABLE / ROW / CELL
     start and end); the layout measures every cell's narrowest and widest form (min / max
@@ -27,7 +60,7 @@ receives logs (`localserver\ota_server.js`).
     `colspan`, `rowspan` (the spanned columns stay free in the rows below; the cell's height
     counts for its first row), `cellpadding`, `border` (cell and table frames), `bgcolor` / CSS backgrounds of
     tables, rows and cells, `align` of cells and of the table, `<th>` centred and bold, a
-    `<caption>` above. Up to 10 columns and 6 nested levels; a table that does not fit even
+    `<caption>` above. Up to 10 columns and 4 nested levels; a table that does not fit even
     at its narrowest stacks its rows as before (cells one after another). CSS `display:
     table / table-row / table-cell` builds the same structure; `display: block` on cells
     (responsive tables) stacks them.

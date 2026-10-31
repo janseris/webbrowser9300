@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.3");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.3");
+_LIT(KBrVersion, "0.4");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.4");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -478,12 +478,13 @@ private:
 class CTextDialog : public CEikDialog
     {
 public:
-    CTextDialog(TDes& aText, const TDesC& aTitle) : iText(aText), iTitle(aTitle) {}
+    CTextDialog(TDes& aText, const TDesC& aTitle, TBool aSelectAll = EFalse) : iText(aText), iTitle(aTitle), iSelectAll(aSelectAll) {}
     void PreLayoutDynInitL();
     TBool OkToExitL(TInt aButtonId);
 private:
     TDes& iText;
     const TDesC& iTitle;
+    TBool iSelectAll;
     };
 
 struct THistoryEntry
@@ -515,7 +516,7 @@ public:
 
     // navigation
     void OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost = NULL, TBool aAddHistory = ETrue);
-    void GoToDialogL();
+    void GoToDialogL(TUint aFirstChar = 0);
     void BackL();
     void ForwardL();
     void ReloadL();

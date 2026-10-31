@@ -438,7 +438,7 @@ void CBrView::DrawControl(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect,
         default:
             {
             // text, password, textarea, select
-            aGc.SetBrushColor(KRgbWhite);
+            aGc.SetBrushColor(c.disabled == 1 ? TRgb(0xEE, 0xEE, 0xEE) : KRgbWhite);
             aGc.SetPenColor(border);
             aGc.DrawRect(aRect);
             aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
@@ -449,8 +449,8 @@ void CBrView::DrawControl(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect,
             unsigned int n = 0;
             const unsigned short* t = bw_control_text(&c, &n);
             TBool placeholder = EFalse;
-            if (!n && c.labelLen && (c.type == BW_CTL_TEXT)) { t = c.label; n = c.labelLen; placeholder = ETrue; }
-            aGc.SetPenColor(placeholder ? TRgb(0x99, 0x99, 0x99) : KRgbBlack);
+            if (!n && c.labelLen && (c.type == BW_CTL_TEXT || c.type == BW_CTL_TEXTAREA)) { t = c.label; n = c.labelLen; placeholder = ETrue; }
+            aGc.SetPenColor(placeholder || c.disabled == 1 ? TRgb(0x99, 0x99, 0x99) : KRgbBlack);
             if (c.type == BW_CTL_PASSWORD)
                 {
                 TBuf<40> stars;
@@ -579,6 +579,14 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
                     aGc.DrawRect(fr);
                     }
                 TPtrC t((const TUint16*)iDoc->pool + b.off, b.len);
+                if (b.bg >= 0 && !focused)
+                    {
+                    // an inline element's background (a label, a highlighted word)
+                    aGc.SetPenStyle(CGraphicsContext::ENullPen);
+                    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+                    aGc.SetBrushColor(Rgb(b.bg));
+                    aGc.DrawRect(r);
+                    }
                 if ((TInt)i == iFindBox && iFindOff + iFindLen <= (TInt)b.len)
                     {
                     // the found text on yellow
@@ -893,6 +901,12 @@ TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aTyp
             return EKeyWasConsumed;
         default:
             break;
+        }
+    // a letter or digit typed on the page: the address bar opens with it
+    if (!ctrl && aKeyEvent.iCode > ' ' && aKeyEvent.iCode < 0xF700 && aKeyEvent.iCode != 0x7F && !(aKeyEvent.iModifiers & EModifierFunc))
+        {
+        iAppUi.GoToDialogL(aKeyEvent.iCode);
+        return EKeyWasConsumed;
         }
     return EKeyWasNotConsumed;
     }

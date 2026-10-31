@@ -44,6 +44,8 @@ static const char* const kTagNames[T_COUNT] = {
 enum { D_INLINE = 0, D_BLOCK, D_LISTITEM, D_NONE, D_CELL, D_ROW, D_TABLE, D_ROWGROUP };
 
 #define MAX_DEPTH 160
+/* a character not to show at all (outside the 16-bit range: emoji) */
+#define SKIP_CHAR 0x110000u
 #define MAX_ATTRS 40
 #define DEVICE_WIDTH 640
 
@@ -63,6 +65,28 @@ typedef struct {
     int listDepth;                /* how many lists are open around (for the bullet) */
     int marginBottom;
     int px100;                    /* the font size in px * 100 (16 px = normal) */
+    unsigned char listStyle;      /* inherited: 0 by the list's tag, else LS_* */
+    unsigned char olType;         /* <ol type>: LS_* (0 decimal) */
+    unsigned char transform;      /* inherited text-transform: 0 none, 1 upper, 2 lower, 3 capitalize */
+    unsigned char isFloat;
+    unsigned char isFlex, flexCol;   /* a flex / grid container (not inherited) */
+    unsigned char flexItem;          /* a block in a flex row: flows inline after a gap */
+    unsigned int afterOff;           /* ::after text in P.ancBuf (~0u none) */
+    int labelIndex;                  /* a <label>: its doc label, -1 */
+    int firstControl;                /* a <label>: the controls made inside it start here */
+    int ibg;                      /* the background of an inline element around the text (-1) */
+    int childCount;               /* element children opened so far (for :nth-child) */
+    int childIndex;               /* this element's place among its siblings, from 1 */
+    unsigned int opStart;         /* the op count when it opened (icon-only links) */
+    unsigned int labelOff;        /* aria-label / title in P.ancBuf (~0u none) */
+    /* the CSS box (not inherited), px after scaling for the small screen */
+    short mt, mb, ml, mr, pt, pb, pl, pr;
+    short width, maxw;            /* px, < 0: percent of the space there is, 0 none */
+    unsigned char center;         /* margin-left and -right auto */
+    unsigned char autoSides;      /* 1 right, 2 left margin is auto */
+    short imgW, imgH;             /* CSS width / height in px (pictures) */
+    unsigned char bw[4];          /* border widths: top right bottom left */
+    int bc;                       /* border color */
     /* for descendant selectors: the id and class attribute in P.ancBuf (offsets, ~0u none) */
     unsigned int bufStart, idOff, clsOff;
     unsigned int bloom;
@@ -81,34 +105,82 @@ typedef struct {
 #define CSS_PRE       0x200
 #define CSS_MONO      0x400
 #define CSS_STRIKE    0x800
+#define CSS_BOX       0x1000
+#define CSS_LIST      0x2000
+#define CSS_FLOAT     0x4000
+#define CSS_TRANSFORM 0x8000
+#define CSS_IMGSIZE   0x10000
+#define CSS_FLEXDIR   0x20000
+
+/* list-style-type */
+enum { LS_AUTO = 0, LS_NONE, LS_DISC, LS_CIRCLE, LS_SQUARE, LS_DECIMAL, LS_LALPHA, LS_UALPHA, LS_LROMAN, LS_UROMAN };
+
+/* a CSS length: v = value * 100; unit 0 px, 1 em, 2 %, 3 auto */
+typedef struct { int v; unsigned char unit; } CssLen;
+
+/* box fields set (boxMask) */
+#define BX_M(side)   (1u << (side))          /* margins: 0 top, 1 right, 2 bottom, 3 left */
+#define BX_P(side)   (1u << (4 + (side)))    /* paddings */
+#define BX_B(side)   (1u << (8 + (side)))    /* border widths */
+#define BX_BC        (1u << 12)
+#define BX_W         (1u << 13)
+#define BX_MAXW      (1u << 14)
 
 typedef struct {
     unsigned int mask;
     unsigned char display, bold, italic, align, underline, sizeRel, hidden, pre, mono, strike;
+    unsigned char listStyle, isFloat, transform;
     int sizeVal;                   /* px * 100, or (sizeRel) a factor * 10000 */
     int color, bg;
+    unsigned int boxMask;
+    CssLen m[4], pd[4], width, maxw, height;
+    unsigned char bw[4];
+    int bc;
+    char* content;                 /* ::before / ::after text (UTF-8, allocated by the reader); NULL none */
+    unsigned char contentAttr;     /* content is attr(name): the name */
+    unsigned char flexRow;         /* with CSS_DISPLAY: display flex / grid */
+    unsigned char flexCol;         /* with CSS_FLEXDIR: flex-direction column */
 } CssProps;
 
-/* one compound selector: tag#id.class.class */
+/* an attribute condition: [name], [name=v], ~= ^= $= *= |= */
+enum { AT_HAS = 0, AT_EQ, AT_WORD, AT_PREFIX, AT_SUFFIX, AT_SUB, AT_DASH };
+typedef struct {
+    char* name;
+    char* val;
+    unsigned char op;
+    unsigned char negate;          /* inside :not() */
+} CssAttrCond;
+
+#define MAX_ATTR_CONDS 3
+
+/* one compound selector: tag#id.class.class[attr]:pseudo */
 typedef struct {
     int tag;                       /* 0 any */
     char* id;                      /* NULL any */
     char* classes;                 /* NUL-separated, ends with an empty one; NULL none */
     unsigned int bloom;            /* bits of the tag / id / classes it needs (a quick reject) */
+    CssAttrCond attr[MAX_ATTR_CONDS];   /* only on the subject (ancestors keep no attributes) */
+    unsigned char attrCount;
+    unsigned char hasNth;          /* :first-child / :nth-child(An+B) */
+    short nthA, nthB;
+    int notTag;                    /* :not(tag) */
+    char* notClass;                /* :not(.x) */
+    char* notId;                   /* :not(#x) */
 } CssCompound;
 
 typedef struct {
     /* the subject (the rightmost compound) */
-    int tag;
-    char* id;
-    char* classes;
-    unsigned int bloom;
+    CssCompound subj;
     /* the compounds to its left, nearest first, and how each joins: 1 child (>), 0 descendant */
     CssCompound* anc;
     unsigned char* ancChild;
     unsigned int ancCount;
     int spec;                      /* ids * 10000 + classes * 100 + tags */
     CssProps props;
+    CssProps* imp;                 /* the !important declarations, NULL none */
+    unsigned char pseudo;          /* 1 ::before, 2 ::after (only its content counts) */
+    char* content;
+    unsigned char contentAttr;
 } CssRule;
 
 typedef struct {
@@ -146,6 +218,14 @@ typedef struct {
     int seenBody;
     IgBuf ancBuf;                  /* the open elements' id / class values */
     unsigned int lastCssMask;      /* what the CSS set on the element just styled */
+    /* custom properties (--x) from :root / html / body, for var() */
+    char* varName[64];
+    char* varVal[64];
+    int varCount;
+    int allowVars;                 /* the rule being read may define them */
+    char* picSrc;                  /* <picture>: the srcset of the <source> chosen for its <img> */
+    int curChildIndex;             /* the new element's place among its siblings */
+    const CssRule* pseudoRule[2];  /* the ::before / ::after rule of the element just styled */
     int inlineCss;                 /* parsing a <style> block (its @import counts) */
     /* rules by the key of their subject: bucket b holds idx[start[b] .. start[b+1]) */
     unsigned int* idx;
@@ -217,6 +297,7 @@ static BwOp* add_op(P* p, int type)
     op->target = -1;
     op->ref = -1;
     op->color = 0;
+    op->bg = -1;
     return op;
 }
 
@@ -278,6 +359,7 @@ static unsigned int read_entity(const char* s, unsigned int n, unsigned int* i, 
         if (j < n && s[j] == ';') j++;
         *i = j;
         if (v >= 0x80 && v < 0xA0) return bw_charset_char(BW_CS_1252, (unsigned char)v);
+        if (v > 0xFFFF && v <= 0x10FFFF) return SKIP_CHAR;     /* emoji and the like: no font has them */
         if (v == 0 || v > 0xFFFF || (v >= 0xD800 && v < 0xE000)) return 0xFFFD;
         return v;
     } else {
@@ -315,6 +397,15 @@ static unsigned int read_entity(const char* s, unsigned int n, unsigned int* i, 
 }
 
 /* the next character of s at *i in charset cs (entities decoded if asked) */
+
+/* characters that only steer the text (soft hyphen, zero-width spaces, direction marks,
+ * variation selectors, BOM): not drawn */
+static int invisible(unsigned int c)
+{
+    return c == SKIP_CHAR || c == 0xAD || (c >= 0x200B && c <= 0x200F) || (c >= 0x2060 && c <= 0x2064) ||
+           c == 0xFEFF || c == 0xFE0E || c == 0xFE0F || (c >= 0x202A && c <= 0x202E) || c == 0x034F;
+}
+
 static unsigned int read_char(int cs, const char* s, unsigned int n, unsigned int* i, int entities, int inAttr)
 {
     unsigned char c = (unsigned char)s[*i];
@@ -339,7 +430,8 @@ static unsigned int read_char(int cs, const char* s, unsigned int n, unsigned in
             cp = (cp << 6) | (cc & 0x3F);
         }
         *i += need + 1;
-        if (cp > 0xFFFF || (cp >= 0xD800 && cp < 0xE000)) return 0xFFFD;
+        if (cp > 0xFFFF) return SKIP_CHAR;
+        if (cp >= 0xD800 && cp < 0xE000) return 0xFFFD;
         return cp;
     }
 }
@@ -350,10 +442,49 @@ static Elem* top(P* p) { return &p->stack[p->depth - 1]; }
 
 static int capturing(P* p) { return p->capture != 0; }
 
+/* upper / lower case for the scripts the phone's fonts have (Latin, Greek, Cyrillic) */
+static unsigned int to_upper(unsigned int c)
+{
+    if (c >= 'a' && c <= 'z') return c - 32;
+    if (c < 0xE0) return c;
+    if (c <= 0xFE && c != 0xF7) return c - 32;
+    if (c == 0xFF) return 0x178;
+    if (c >= 0x100 && c <= 0x137) return c & ~1u;
+    if (c >= 0x139 && c <= 0x148) return (c & 1) ? c : c - 1;
+    if (c >= 0x14A && c <= 0x177) return c & ~1u;
+    if (c >= 0x179 && c <= 0x17E) return (c & 1) ? c : c - 1;
+    if (c >= 0x3B1 && c <= 0x3C9 && c != 0x3C2) return c - 32;
+    if (c >= 0x430 && c <= 0x44F) return c - 32;
+    if (c >= 0x450 && c <= 0x45F) return c - 80;
+    return c;
+}
+
+static unsigned int to_lower(unsigned int c)
+{
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    if (c < 0xC0) return c;
+    if (c <= 0xDE && c != 0xD7) return c + 32;
+    if (c == 0x178) return 0xFF;
+    if (c >= 0x100 && c <= 0x137) return c | 1u;
+    if (c >= 0x139 && c <= 0x148) return (c & 1) ? c + 1 : c;
+    if (c >= 0x14A && c <= 0x177) return c | 1u;
+    if (c >= 0x179 && c <= 0x17E) return (c & 1) ? c + 1 : c;
+    if (c >= 0x391 && c <= 0x3A9) return c + 32;
+    if (c >= 0x410 && c <= 0x42F) return c + 32;
+    if (c >= 0x400 && c <= 0x40F) return c + 80;
+    return c;
+}
+
 static void put_text_char(P* p, unsigned int c, const Elem* e)
 {
     BwDoc* d = p->doc;
     BwOp* last;
+    if (invisible(c)) return;
+    if (e->transform && !is_ws((int)c)) {
+        if (e->transform == 1) c = to_upper(c);
+        else if (e->transform == 2) c = to_lower(c);
+        else if (p->lastSpace) c = to_upper(c);
+    }
     if (capturing(p)) {
         unsigned short u = (unsigned short)c;
         if (is_ws((int)c)) { if (p->lastSpace) return; u = ' '; p->lastSpace = 1; }
@@ -373,7 +504,7 @@ static void put_text_char(P* p, unsigned int c, const Elem* e)
         p->lastSpace = 0;
     }
     last = d->opCount ? &d->ops[d->opCount - 1] : 0;
-    if (!(last && last->type == BW_OP_TEXT && last->font == e->font && last->color == e->color &&
+    if (!(last && last->type == BW_OP_TEXT && last->font == e->font && last->color == e->color && last->bg == e->ibg &&
           last->flags == e->flags && last->target == e->target && last->off + last->len == d->poolLen)) {
         if (c == ' ' && !(e->flags & BW_OPF_PRE) && last && last->type != BW_OP_TEXT &&
             last->type != BW_OP_IMAGE && last->type != BW_OP_CONTROL) {
@@ -384,6 +515,7 @@ static void put_text_char(P* p, unsigned int c, const Elem* e)
         if (!last) return;
         last->font = e->font;
         last->color = e->color;
+        last->bg = e->ibg;
         last->flags = e->flags;
         last->target = e->target;
         last->off = d->poolLen;
@@ -412,14 +544,154 @@ static void put_text(P* p, const char* s, unsigned int n)
 
 typedef struct { const char* name; int rgb; } NamedColor;
 static const NamedColor kColors[] = {
-    { "aqua", 0x00FFFF }, { "black", 0x000000 }, { "blue", 0x0000FF }, { "brown", 0xA52A2A },
-    { "crimson", 0xDC143C }, { "cyan", 0x00FFFF }, { "darkblue", 0x00008B }, { "darkgray", 0xA9A9A9 },
-    { "darkgreen", 0x006400 }, { "darkgrey", 0xA9A9A9 }, { "darkred", 0x8B0000 }, { "fuchsia", 0xFF00FF },
-    { "gold", 0xFFD700 }, { "gray", 0x808080 }, { "green", 0x008000 }, { "grey", 0x808080 },
-    { "lightgray", 0xD3D3D3 }, { "lightgrey", 0xD3D3D3 }, { "lime", 0x00FF00 }, { "magenta", 0xFF00FF },
-    { "maroon", 0x800000 }, { "navy", 0x000080 }, { "olive", 0x808000 }, { "orange", 0xFFA500 },
-    { "pink", 0xFFC0CB }, { "purple", 0x800080 }, { "red", 0xFF0000 }, { "silver", 0xC0C0C0 },
-    { "teal", 0x008080 }, { "white", 0xFFFFFF }, { "whitesmoke", 0xF5F5F5 }, { "yellow", 0xFFFF00 }
+    { "aliceblue", 0xF0F8FF },
+    { "antiquewhite", 0xFAEBD7 },
+    { "aqua", 0x00FFFF },
+    { "aquamarine", 0x7FFFD4 },
+    { "azure", 0xF0FFFF },
+    { "beige", 0xF5F5DC },
+    { "bisque", 0xFFE4C4 },
+    { "black", 0x000000 },
+    { "blanchedalmond", 0xFFEBCD },
+    { "blue", 0x0000FF },
+    { "blueviolet", 0x8A2BE2 },
+    { "brown", 0xA52A2A },
+    { "burlywood", 0xDEB887 },
+    { "cadetblue", 0x5F9EA0 },
+    { "chartreuse", 0x7FFF00 },
+    { "chocolate", 0xD2691E },
+    { "coral", 0xFF7F50 },
+    { "cornflowerblue", 0x6495ED },
+    { "cornsilk", 0xFFF8DC },
+    { "crimson", 0xDC143C },
+    { "cyan", 0x00FFFF },
+    { "darkblue", 0x00008B },
+    { "darkcyan", 0x008B8B },
+    { "darkgoldenrod", 0xB8860B },
+    { "darkgray", 0xA9A9A9 },
+    { "darkgreen", 0x006400 },
+    { "darkgrey", 0xA9A9A9 },
+    { "darkkhaki", 0xBDB76B },
+    { "darkmagenta", 0x8B008B },
+    { "darkolivegreen", 0x556B2F },
+    { "darkorange", 0xFF8C00 },
+    { "darkorchid", 0x9932CC },
+    { "darkred", 0x8B0000 },
+    { "darksalmon", 0xE9967A },
+    { "darkseagreen", 0x8FBC8F },
+    { "darkslateblue", 0x483D8B },
+    { "darkslategray", 0x2F4F4F },
+    { "darkslategrey", 0x2F4F4F },
+    { "darkturquoise", 0x00CED1 },
+    { "darkviolet", 0x9400D3 },
+    { "deeppink", 0xFF1493 },
+    { "deepskyblue", 0x00BFFF },
+    { "dimgray", 0x696969 },
+    { "dimgrey", 0x696969 },
+    { "dodgerblue", 0x1E90FF },
+    { "firebrick", 0xB22222 },
+    { "floralwhite", 0xFFFAF0 },
+    { "forestgreen", 0x228B22 },
+    { "fuchsia", 0xFF00FF },
+    { "gainsboro", 0xDCDCDC },
+    { "ghostwhite", 0xF8F8FF },
+    { "gold", 0xFFD700 },
+    { "goldenrod", 0xDAA520 },
+    { "gray", 0x808080 },
+    { "green", 0x008000 },
+    { "greenyellow", 0xADFF2F },
+    { "grey", 0x808080 },
+    { "honeydew", 0xF0FFF0 },
+    { "hotpink", 0xFF69B4 },
+    { "indianred", 0xCD5C5C },
+    { "indigo", 0x4B0082 },
+    { "ivory", 0xFFFFF0 },
+    { "khaki", 0xF0E68C },
+    { "lavender", 0xE6E6FA },
+    { "lavenderblush", 0xFFF0F5 },
+    { "lawngreen", 0x7CFC00 },
+    { "lemonchiffon", 0xFFFACD },
+    { "lightblue", 0xADD8E6 },
+    { "lightcoral", 0xF08080 },
+    { "lightcyan", 0xE0FFFF },
+    { "lightgoldenrodyellow", 0xFAFAD2 },
+    { "lightgray", 0xD3D3D3 },
+    { "lightgreen", 0x90EE90 },
+    { "lightgrey", 0xD3D3D3 },
+    { "lightpink", 0xFFB6C1 },
+    { "lightsalmon", 0xFFA07A },
+    { "lightseagreen", 0x20B2AA },
+    { "lightskyblue", 0x87CEFA },
+    { "lightslategray", 0x778899 },
+    { "lightslategrey", 0x778899 },
+    { "lightsteelblue", 0xB0C4DE },
+    { "lightyellow", 0xFFFFE0 },
+    { "lime", 0x00FF00 },
+    { "limegreen", 0x32CD32 },
+    { "linen", 0xFAF0E6 },
+    { "magenta", 0xFF00FF },
+    { "maroon", 0x800000 },
+    { "mediumaquamarine", 0x66CDAA },
+    { "mediumblue", 0x0000CD },
+    { "mediumorchid", 0xBA55D3 },
+    { "mediumpurple", 0x9370DB },
+    { "mediumseagreen", 0x3CB371 },
+    { "mediumslateblue", 0x7B68EE },
+    { "mediumspringgreen", 0x00FA9A },
+    { "mediumturquoise", 0x48D1CC },
+    { "mediumvioletred", 0xC71585 },
+    { "midnightblue", 0x191970 },
+    { "mintcream", 0xF5FFFA },
+    { "mistyrose", 0xFFE4E1 },
+    { "moccasin", 0xFFE4B5 },
+    { "navajowhite", 0xFFDEAD },
+    { "navy", 0x000080 },
+    { "oldlace", 0xFDF5E6 },
+    { "olive", 0x808000 },
+    { "olivedrab", 0x6B8E23 },
+    { "orange", 0xFFA500 },
+    { "orangered", 0xFF4500 },
+    { "orchid", 0xDA70D6 },
+    { "palegoldenrod", 0xEEE8AA },
+    { "palegreen", 0x98FB98 },
+    { "paleturquoise", 0xAFEEEE },
+    { "palevioletred", 0xDB7093 },
+    { "papayawhip", 0xFFEFD5 },
+    { "peachpuff", 0xFFDAB9 },
+    { "peru", 0xCD853F },
+    { "pink", 0xFFC0CB },
+    { "plum", 0xDDA0DD },
+    { "powderblue", 0xB0E0E6 },
+    { "purple", 0x800080 },
+    { "rebeccapurple", 0x663399 },
+    { "red", 0xFF0000 },
+    { "rosybrown", 0xBC8F8F },
+    { "royalblue", 0x4169E1 },
+    { "saddlebrown", 0x8B4513 },
+    { "salmon", 0xFA8072 },
+    { "sandybrown", 0xF4A460 },
+    { "seagreen", 0x2E8B57 },
+    { "seashell", 0xFFF5EE },
+    { "sienna", 0xA0522D },
+    { "silver", 0xC0C0C0 },
+    { "skyblue", 0x87CEEB },
+    { "slateblue", 0x6A5ACD },
+    { "slategray", 0x708090 },
+    { "slategrey", 0x708090 },
+    { "snow", 0xFFFAFA },
+    { "springgreen", 0x00FF7F },
+    { "steelblue", 0x4682B4 },
+    { "tan", 0xD2B48C },
+    { "teal", 0x008080 },
+    { "thistle", 0xD8BFD8 },
+    { "tomato", 0xFF6347 },
+    { "turquoise", 0x40E0D0 },
+    { "violet", 0xEE82EE },
+    { "wheat", 0xF5DEB3 },
+    { "white", 0xFFFFFF },
+    { "whitesmoke", 0xF5F5F5 },
+    { "yellow", 0xFFFF00 },
+    { "yellowgreen", 0x9ACD32 }
 };
 
 static int hexval(int c)
@@ -451,6 +723,8 @@ static int parse_color(const char* s, unsigned int n)
         m = (int)(s[0] == '#' ? n - 1 : n);
         if (m != 3 && m != 6 && m != 4 && m != 8) return -1;
         for (k = 0; k < m && k < 6; k++) { v[k] = hexval((unsigned char)h[k]); if (v[k] < 0) return -1; }
+        if (m == 4 && hexval((unsigned char)h[3]) == 0) return -2;                      /* alpha 0 */
+        if (m == 8 && hexval((unsigned char)h[6]) == 0 && hexval((unsigned char)h[7]) == 0) return -2;
         if (m == 3 || m == 4) return (v[0] * 17 << 16) | (v[1] * 17 << 8) | (v[2] * 17);
         return (v[0] << 20) | (v[1] << 16) | (v[2] << 12) | (v[3] << 8) | (v[4] << 4) | v[5];
     }
@@ -473,6 +747,44 @@ static int parse_color(const char* s, unsigned int n)
         while (i < n && (is_ws((unsigned char)s[i]) || s[i] == ',' || s[i] == '/')) i++;
         if (i < n && s[i] == '0' && (i + 1 >= n || s[i + 1] == ')' || is_ws((unsigned char)s[i + 1]))) return -2;
         return (c[0] << 16) | (c[1] << 8) | c[2];
+    }
+    if (n > 4 && ig_strieq_n(s, "hsl", 3)) {
+        int hsl[3], k;
+        long r, g, b, c, x, m2, hh, l, sat;
+        i = 3;
+        if (i < n && lower((unsigned char)s[i]) == 'a') i++;
+        if (i >= n || s[i] != '(') return -1;
+        i++;
+        for (k = 0; k < 3; k++) {
+            int v;
+            while (i < n && (is_ws((unsigned char)s[i]) || s[i] == ',')) i++;
+            v = read_num(s, n, &i);
+            if (v < 0) return -1;
+            if (i + 3 <= n && ig_strieq_n(s + i, "deg", 3)) i += 3;
+            if (i < n && s[i] == '%') i++;
+            hsl[k] = v;
+        }
+        while (i < n && (is_ws((unsigned char)s[i]) || s[i] == ',' || s[i] == '/')) i++;
+        if (i < n && s[i] == '0' && (i + 1 >= n || s[i + 1] == ')' || is_ws((unsigned char)s[i + 1]))) return -2;
+        hh = hsl[0] % 360; sat = hsl[1] > 100 ? 100 : hsl[1]; l = hsl[2] > 100 ? 100 : hsl[2];
+        /* in thousandths */
+        c = (1000 - (2 * l * 10 - 1000 < 0 ? -(2 * l * 10 - 1000) : 2 * l * 10 - 1000)) * sat / 100;
+        x = c * (1000 - ((hh * 1000 / 60) % 2000 - 1000 < 0 ? -((hh * 1000 / 60) % 2000 - 1000) : (hh * 1000 / 60) % 2000 - 1000)) / 1000;
+        m2 = l * 10 - c / 2;
+        if (hh < 60) { r = c; g = x; b = 0; }
+        else if (hh < 120) { r = x; g = c; b = 0; }
+        else if (hh < 180) { r = 0; g = c; b = x; }
+        else if (hh < 240) { r = 0; g = x; b = c; }
+        else if (hh < 300) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+        r = (r + m2) * 255 / 1000; g = (g + m2) * 255 / 1000; b = (b + m2) * 255 / 1000;
+        if (r < 0) r = 0;
+        if (g < 0) g = 0;
+        if (b < 0) b = 0;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
+        return (int)((r << 16) | (g << 8) | b);
     }
     if ((n == 11 && ig_strieq_n(s, "transparent", 11)) || (n == 4 && ig_strieq_n(s, "none", 4))) return -2;
     {
@@ -558,11 +870,167 @@ static int px_class(int px100)
     return 3;
 }
 
-/* Parses "prop: value; prop: value" into props. */
-static void parse_decls(const char* s, unsigned int n, CssProps* pr)
+/* a CSS length; 0 if it is not one */
+static int parse_len(const char* v, unsigned int n, CssLen* out)
+{
+    unsigned int i = 0, st;
+    int whole, frac = 0, neg = 0, num;
+    while (i < n && is_ws((unsigned char)v[i])) i++;
+    while (n > i && is_ws((unsigned char)v[n - 1])) n--;
+    if (n - i == 4 && ig_strieq_n(v + i, "auto", 4)) { out->v = 0; out->unit = 3; return 1; }
+    if (i < n && v[i] == '-') { neg = 1; i++; }
+    else if (i < n && v[i] == '+') i++;
+    st = i;
+    whole = read_num(v, n, &i);
+    if (whole < 0) { if (st < n && v[st] == '.') { whole = 0; i = st; read_num(v, n, &i); } else return 0; }
+    {
+        unsigned int k;
+        for (k = st; k < i; k++) if (v[k] == '.') {
+            if (k + 1 < i) frac += (v[k + 1] - '0') * 10;
+            if (k + 2 < i) frac += v[k + 2] - '0';
+            break;
+        }
+    }
+    num = whole * 100 + frac;
+    if (num > 10000000) num = 10000000;
+    if (neg) num = -num;
+    out->v = num;
+    if (i == n) { if (num != 0) return 0; out->unit = 0; return 1; }       /* a bare 0 */
+    if (n - i == 2 && ig_strieq_n(v + i, "px", 2)) out->unit = 0;
+    else if (n - i == 2 && ig_strieq_n(v + i, "pt", 2)) { out->unit = 0; out->v = num * 4 / 3; }
+    else if (n - i == 2 && ig_strieq_n(v + i, "em", 2)) out->unit = 1;
+    else if (n - i == 3 && ig_strieq_n(v + i, "rem", 3)) { out->unit = 0; out->v = num * 16; }
+    else if (n - i == 2 && ig_strieq_n(v + i, "ex", 2)) { out->unit = 1; out->v = num / 2; }
+    else if (n - i == 2 && ig_strieq_n(v + i, "ch", 2)) { out->unit = 1; out->v = num / 2; }
+    else if (n - i == 1 && v[i] == '%') out->unit = 2;
+    else if (n - i == 2 && ig_strieq_n(v + i, "vw", 2)) { out->unit = 0; out->v = num * 64 / 10; }
+    else if (n - i == 2 && ig_strieq_n(v + i, "vh", 2)) { out->unit = 0; out->v = num * 2; }
+    else return 0;
+    return 1;
+}
+
+/* the words of a value (spaces outside parentheses), up to max */
+static int split_words(const char* v, unsigned int n, unsigned int* ws, unsigned int* we, int max)
+{
+    unsigned int i = 0;
+    int count = 0;
+    while (i < n && count < max) {
+        int paren = 0;
+        while (i < n && is_ws((unsigned char)v[i])) i++;
+        if (i >= n) break;
+        ws[count] = i;
+        while (i < n && (!is_ws((unsigned char)v[i]) || paren)) {
+            if (v[i] == '(') paren++; else if (v[i] == ')' && paren) paren--;
+            i++;
+        }
+        we[count++] = i;
+    }
+    return count;
+}
+
+/* margin / padding shorthand: 1-4 lengths -> top right bottom left */
+static void parse_sides(const char* v, unsigned int n, CssLen* out, unsigned int* boxMask, unsigned int firstBit)
+{
+    unsigned int ws[4], we[4];
+    CssLen l[4];
+    int c = split_words(v, n, ws, we, 4), k;
+    for (k = 0; k < c; k++) if (!parse_len(v + ws[k], we[k] - ws[k], &l[k])) return;
+    if (c == 1) { l[1] = l[2] = l[3] = l[0]; }
+    else if (c == 2) { l[2] = l[0]; l[3] = l[1]; }
+    else if (c == 3) { l[3] = l[1]; }
+    else if (c != 4) return;
+    for (k = 0; k < 4; k++) { out[k] = l[k]; *boxMask |= 1u << (firstBit + k); }
+}
+
+/* "1px solid #ccc" for one side (side -1: all) */
+static void parse_border(const char* v, unsigned int n, CssProps* pr, int side)
+{
+    unsigned int ws[4], we[4];
+    int c = split_words(v, n, ws, we, 4), k, width = -1, visible = 1, color = -1;
+    for (k = 0; k < c; k++) {
+        const char* w = v + ws[k];
+        unsigned int wl = we[k] - ws[k];
+        CssLen len;
+        int col;
+        if (word_is(w, wl, "none") || word_is(w, wl, "hidden")) visible = 0;
+        else if (word_is(w, wl, "thin")) width = 1;
+        else if (word_is(w, wl, "medium")) width = 2;
+        else if (word_is(w, wl, "thick")) width = 3;
+        else if (word_is(w, wl, "solid") || word_is(w, wl, "dashed") || word_is(w, wl, "dotted") || word_is(w, wl, "double") ||
+                 word_is(w, wl, "groove") || word_is(w, wl, "ridge") || word_is(w, wl, "inset") || word_is(w, wl, "outset")) { if (width < 0) width = -2; }
+        else if (parse_len(w, wl, &len)) width = len.unit == 1 ? len.v / 100 * 16 / 1 : len.v / 100;
+        else if ((col = parse_color(w, wl)) != -1) color = col;
+    }
+    if (width == -2) width = 2;          /* a style alone: "medium" */
+    if (width == -1) width = visible && c ? (color != -1 ? 2 : 0) : 0;
+    if (!visible) width = 0;
+    if (width > 3) width = 3;
+    if (width < 0) width = 0;
+    for (k = 0; k < 4; k++) if (side < 0 || side == k) { pr->bw[k] = (unsigned char)width; pr->boxMask |= BX_B(k); }
+    if (color >= 0) { pr->bc = color; pr->boxMask |= BX_BC; }
+}
+
+/* var(--x, fallback) -> the value; the result in out (truncated at its size) */
+static void expand_vars(P* p, const char* v, unsigned int n, IgBuf* out, int depth)
+{
+    unsigned int i = 0;
+    while (i < n) {
+        if (i + 4 <= n && ig_strieq_n(v + i, "var(", 4)) {
+            unsigned int e = i + 3, ns, ne, fs = 0, fe = 0;
+            int paren = 0, k, found = 0;
+            /* the closing parenthesis */
+            for (; e < n; e++) { if (v[e] == '(') paren++; else if (v[e] == ')' && --paren == 0) break; }
+            if (e >= n) { ig_buf_append(out, v + i, n - i); return; }
+            ns = i + 4;
+            while (ns < e && is_ws((unsigned char)v[ns])) ns++;
+            ne = ns;
+            while (ne < e && v[ne] != ',' && !is_ws((unsigned char)v[ne])) ne++;
+            {
+                unsigned int c = ne;
+                while (c < e && v[c] != ',') c++;
+                if (c < e) { fs = c + 1; fe = e; }
+            }
+            for (k = 0; k < p->varCount; k++)
+                if (ig_strlen(p->varName[k]) == ne - ns && ig_memcmp(p->varName[k], v + ns, ne - ns) == 0) {
+                    const char* val = p->varVal[k];
+                    if (depth < 4) expand_vars(p, val, ig_strlen(val), out, depth + 1);
+                    found = 1;
+                    break;
+                }
+            if (!found && fs && depth < 4) expand_vars(p, v + fs, fe - fs, out, depth + 1);
+            i = e + 1;
+            continue;
+        }
+        ig_buf_putc(out, v[i]);
+        i++;
+    }
+}
+
+static void set_var(P* p, const char* name, unsigned int nl, const char* val, unsigned int vl)
+{
+    int k;
+    char* nv;
+    while (vl && is_ws((unsigned char)*val)) { val++; vl--; }
+    for (k = 0; k < p->varCount; k++)
+        if (ig_strlen(p->varName[k]) == nl && ig_memcmp(p->varName[k], name, nl) == 0) {
+            nv = ig_strndup(val, vl);
+            if (nv) { ig_free(p->varVal[k]); p->varVal[k] = nv; }
+            return;
+        }
+    if (p->varCount >= 64) return;
+    p->varName[p->varCount] = ig_strndup(name, nl);
+    p->varVal[p->varCount] = ig_strndup(val, vl);
+    if (!p->varName[p->varCount] || !p->varVal[p->varCount]) { ig_free(p->varName[p->varCount]); ig_free(p->varVal[p->varCount]); return; }
+    p->varCount++;
+}
+
+/* Parses "prop: value; prop: value" into props (the !important ones into imp, if given). */
+static void parse_decls(P* pp, const char* s, unsigned int n, CssProps* prNormal, CssProps* imp)
 {
     unsigned int i = 0;
     int w1 = 0, h1 = 0, ovh = 0;
+    IgBuf exp;
+    ig_buf_init(&exp);
     while (i < n) {
         unsigned int ps, pe, vs, ve;
         while (i < n && (is_ws((unsigned char)s[i]) || s[i] == ';')) i++;
@@ -584,21 +1052,44 @@ static void parse_decls(const char* s, unsigned int n, CssProps* pr)
         }
         ve = i;
         while (ve > vs && is_ws((unsigned char)s[ve - 1])) ve--;
-        /* "!important" changes nothing here */
         {
-            unsigned int k;
-            for (k = vs; k < ve; k++) if (s[k] == '!') { ve = k; while (ve > vs && is_ws((unsigned char)s[ve - 1])) ve--; break; }
-        }
-        {
+            CssProps* pr = prNormal;
             const char* p = s + ps;
             unsigned int pl = pe - ps;
-            const char* v = s + vs;
-            unsigned int vl = ve - vs;
+            const char* v;
+            unsigned int vl;
+            {
+                unsigned int k;
+                for (k = vs; k < ve; k++) if (s[k] == '!') {
+                    if (ve - k >= 10 && ig_strieq_n(s + k + 1, "important", 9) && imp) pr = imp;
+                    ve = k;
+                    while (ve > vs && is_ws((unsigned char)s[ve - 1])) ve--;
+                    break;
+                }
+            }
+            v = s + vs;
+            vl = ve - vs;
+            /* a custom property (--x): kept for var() when it is a page-wide one */
+            if (pl > 2 && p[0] == '-' && p[1] == '-') {
+                if (pp && pp->allowVars) set_var(pp, p, pl, v, vl);
+                continue;
+            }
+            if (pp && pp->varCount && contains_ci(v, vl, "var(")) {
+                exp.len = 0;
+                expand_vars(pp, v, vl, &exp, 0);
+                if (exp.failed || !exp.data) continue;
+                v = exp.data;
+                vl = exp.len;
+            }
             if (word_is(p, pl, "display")) {
                 pr->mask |= CSS_DISPLAY;
+                pr->flexRow = 0;
                 if (word_is(v, vl, "none")) pr->display = D_NONE;
-                else if (word_is(v, vl, "inline") || word_is(v, vl, "inline-block") || word_is(v, vl, "inline-flex") ||
-                         word_is(v, vl, "contents")) pr->display = D_INLINE;
+                else if (word_is(v, vl, "inline") || word_is(v, vl, "inline-block") || word_is(v, vl, "contents")) pr->display = D_INLINE;
+                else if (word_is(v, vl, "flex") || word_is(v, vl, "grid") || word_is(v, vl, "inline-flex") || word_is(v, vl, "inline-grid")) {
+                    pr->display = D_BLOCK;
+                    pr->flexRow = 1;
+                }
                 else if (word_is(v, vl, "table") || word_is(v, vl, "inline-table")) pr->display = D_TABLE;
                 else if (word_is(v, vl, "table-row-group") || word_is(v, vl, "table-header-group") ||
                          word_is(v, vl, "table-footer-group")) pr->display = D_ROWGROUP;
@@ -674,9 +1165,117 @@ static void parse_decls(const char* s, unsigned int n, CssProps* pr)
                 if (word_is(v, vl, "hidden") || word_is(v, vl, "collapse")) { pr->mask |= CSS_HIDDEN; pr->hidden = 1; }
             } else if (word_is(p, pl, "white-space")) {
                 pr->mask |= CSS_PRE;
-                pr->pre = (unsigned char)(word_is(v, vl, "pre") || word_is(v, vl, "pre-wrap"));
-            } else if (word_is(p, pl, "left") || word_is(p, pl, "text-indent") || word_is(p, pl, "top") ||
-                       word_is(p, pl, "margin-left")) {
+                pr->pre = (unsigned char)(word_is(v, vl, "pre") || word_is(v, vl, "pre-wrap") || word_is(v, vl, "break-spaces") ? 1 :
+                                          word_is(v, vl, "nowrap") ? 2 : 0);
+            } else if (word_is(p, pl, "margin") || word_is(p, pl, "padding")) {
+                parse_sides(v, vl, p[0] == 'm' ? pr->m : pr->pd, &pr->boxMask, p[0] == 'm' ? 0 : 4);
+            } else if (pl > 8 && (ig_strieq_n(p, "margin-", 7) || ig_strieq_n(p, "padding-", 8))) {
+                int isM = p[0] == 'm' || p[0] == 'M';
+                const char* side = p + (isM ? 7 : 8);
+                unsigned int sl = pl - (isM ? 7 : 8);
+                int k = word_is(side, sl, "top") || word_is(side, sl, "block-start") ? 0 :
+                        word_is(side, sl, "right") || word_is(side, sl, "inline-end") ? 1 :
+                        word_is(side, sl, "bottom") || word_is(side, sl, "block-end") ? 2 :
+                        word_is(side, sl, "left") || word_is(side, sl, "inline-start") ? 3 : -1;
+                CssLen len;
+                if (k >= 0 && parse_len(v, vl, &len)) {
+                    if (isM) { pr->m[k] = len; pr->boxMask |= BX_M(k); }
+                    else { pr->pd[k] = len; pr->boxMask |= BX_P(k); }
+                }
+                if (isM && k == 3 && (contains_ci(v, vl, "-999") || contains_ci(v, vl, "-1000"))) { pr->mask |= CSS_HIDDEN; pr->hidden = 1; }
+            } else if (word_is(p, pl, "border")) {
+                parse_border(v, vl, pr, -1);
+            } else if (word_is(p, pl, "border-top") || word_is(p, pl, "border-right") || word_is(p, pl, "border-bottom") || word_is(p, pl, "border-left")) {
+                parse_border(v, vl, pr, p[7] == 't' || p[7] == 'T' ? 0 : p[7] == 'r' || p[7] == 'R' ? 1 : p[7] == 'b' || p[7] == 'B' ? 2 : 3);
+            } else if (word_is(p, pl, "border-width")) {
+                CssLen side[4];
+                unsigned int bm = 0;
+                int k;
+                parse_sides(v, vl, side, &bm, 0);
+                for (k = 0; k < 4; k++) if (bm & (1u << k)) { int w = side[k].v / 100; pr->bw[k] = (unsigned char)(w < 0 ? 0 : w > 3 ? 3 : w); pr->boxMask |= BX_B(k); }
+            } else if (word_is(p, pl, "border-color")) {
+                int c = parse_color(v, vl);
+                if (c >= 0) { pr->bc = c; pr->boxMask |= BX_BC; }
+            } else if (word_is(p, pl, "border-style")) {
+                if (word_is(v, vl, "none") || word_is(v, vl, "hidden")) { int k; for (k = 0; k < 4; k++) { pr->bw[k] = 0; pr->boxMask |= BX_B(k); } }
+            } else if (word_is(p, pl, "max-width")) {
+                CssLen len;
+                if (parse_len(v, vl, &len) && len.unit != 3) { pr->maxw = len; pr->boxMask |= BX_MAXW; }
+                else if (word_is(v, vl, "none")) { pr->maxw.v = 0; pr->maxw.unit = 3; pr->boxMask |= BX_MAXW; }
+            } else if (word_is(p, pl, "list-style") || word_is(p, pl, "list-style-type")) {
+                static const char* const kLs[] = { "none", "disc", "circle", "square", "decimal", "lower-alpha", "upper-alpha", "lower-roman", "upper-roman", "lower-latin", "upper-latin", "decimal-leading-zero" };
+                static const unsigned char kLsV[] = { LS_NONE, LS_DISC, LS_CIRCLE, LS_SQUARE, LS_DECIMAL, LS_LALPHA, LS_UALPHA, LS_LROMAN, LS_UROMAN, LS_LALPHA, LS_UALPHA, LS_DECIMAL };
+                unsigned int ws[3], we[3];
+                int c = split_words(v, vl, ws, we, 3), k, q;
+                for (k = 0; k < c; k++)
+                    for (q = 0; q < (int)(sizeof(kLsV)); q++)
+                        if (word_is(v + ws[k], we[k] - ws[k], kLs[q])) { pr->listStyle = kLsV[q]; pr->mask |= CSS_LIST; }
+            } else if (word_is(p, pl, "content")) {
+                /* "text" "more" / attr(x) / none; escapes like \201C decoded */
+                IgBuf c;
+                unsigned int k = 0;
+                int any = 0, isAttr = 0, bad = 0;
+                ig_buf_init(&c);
+                while (k < vl) {
+                    if (v[k] == '"' || v[k] == '\'') {
+                        char q = v[k++];
+                        while (k < vl && v[k] != q) {
+                            if (v[k] == '\\' && k + 1 < vl) {
+                                unsigned int cp = 0, digits = 0;
+                                k++;
+                                while (k < vl && digits < 6 && hexval((unsigned char)v[k]) >= 0) { cp = cp * 16 + (unsigned int)hexval((unsigned char)v[k]); k++; digits++; }
+                                if (digits) {
+                                    char u[3];
+                                    if (k < vl && v[k] == ' ') k++;
+                                    if ((cp >= 0xE000 && cp <= 0xF8FF) || cp > 0xFFFF || cp == 0) { bad = 1; continue; }
+                                    if (cp == 0xA || cp == 0xD) { ig_buf_putc(&c, ' '); continue; }
+                                    if (cp < 0x80) ig_buf_putc(&c, (char)cp);
+                                    else if (cp < 0x800) { u[0] = (char)(0xC0 | (cp >> 6)); u[1] = (char)(0x80 | (cp & 0x3F)); ig_buf_append(&c, u, 2); }
+                                    else { u[0] = (char)(0xE0 | (cp >> 12)); u[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); u[2] = (char)(0x80 | (cp & 0x3F)); ig_buf_append(&c, u, 3); }
+                                    continue;
+                                }
+                                if (k < vl) ig_buf_putc(&c, v[k++]);
+                                continue;
+                            }
+                            /* a private-use character straight in UTF-8 (an icon font): not shown */
+                            if ((unsigned char)v[k] == 0xEE || ((unsigned char)v[k] == 0xEF && k + 1 < vl && (unsigned char)v[k + 1] < 0xA4)) bad = 1;
+                            ig_buf_putc(&c, v[k++]);
+                        }
+                        if (k < vl) k++;
+                        any = 1;
+                    } else if (k + 5 <= vl && ig_strieq_n(v + k, "attr(", 5)) {
+                        unsigned int st = k + 5, e = st;
+                        while (e < vl && v[e] != ')') e++;
+                        while (st < e && is_ws((unsigned char)v[st])) st++;
+                        {
+                            unsigned int ae = e;
+                            while (ae > st && is_ws((unsigned char)v[ae - 1])) ae--;
+                            /* \1name\1 marks an attribute in the text */
+                            ig_buf_putc(&c, 1);
+                            ig_buf_append(&c, v + st, ae - st);
+                            ig_buf_putc(&c, 1);
+                        }
+                        isAttr = 1;
+                        any = 1;
+                        k = e + 1;
+                    } else k++;
+                }
+                if (pr->content) { ig_free(pr->content); pr->content = 0; }
+                if (any && !bad && c.len && !c.failed) {
+                    ig_buf_putc(&c, 0);
+                    pr->content = ig_buf_detach(&c);
+                    pr->contentAttr = (unsigned char)isAttr;
+                } else ig_buf_free(&c);
+            } else if (word_is(p, pl, "flex-direction") || word_is(p, pl, "flex-flow")) {
+                pr->mask |= CSS_FLEXDIR;
+                pr->flexCol = (unsigned char)contains_ci(v, vl, "column");
+            } else if (word_is(p, pl, "float")) {
+                pr->mask |= CSS_FLOAT;
+                pr->isFloat = (unsigned char)(word_is(v, vl, "left") || word_is(v, vl, "right") || word_is(v, vl, "inline-start") || word_is(v, vl, "inline-end"));
+            } else if (word_is(p, pl, "text-transform")) {
+                pr->mask |= CSS_TRANSFORM;
+                pr->transform = (unsigned char)(word_is(v, vl, "uppercase") ? 1 : word_is(v, vl, "lowercase") ? 2 : word_is(v, vl, "capitalize") ? 3 : 0);
+            } else if (word_is(p, pl, "left") || word_is(p, pl, "text-indent") || word_is(p, pl, "top")) {
                 /* off-screen text (skip links, screen-reader labels) */
                 if (contains_ci(v, vl, "-999") || contains_ci(v, vl, "-1000")) { pr->mask |= CSS_HIDDEN; pr->hidden = 1; }
             } else if (word_is(p, pl, "clip")) {
@@ -684,9 +1283,13 @@ static void parse_decls(const char* s, unsigned int n, CssProps* pr)
             } else if (word_is(p, pl, "clip-path")) {
                 if (contains_ci(v, vl, "inset(50%")) { pr->mask |= CSS_HIDDEN; pr->hidden = 1; }
             } else if (word_is(p, pl, "width")) {
+                CssLen len;
                 if (word_is(v, vl, "1px") || word_is(v, vl, "0") || word_is(v, vl, "0px")) w1 = 1;
+                if (parse_len(v, vl, &len)) { pr->width = len; pr->boxMask |= BX_W; }
             } else if (word_is(p, pl, "height")) {
+                CssLen len;
                 if (word_is(v, vl, "1px") || word_is(v, vl, "0") || word_is(v, vl, "0px")) h1 = 1;
+                if (parse_len(v, vl, &len) && len.unit == 0) { pr->height = len; pr->mask |= CSS_IMGSIZE; }
             } else if (word_is(p, pl, "overflow")) {
                 if (word_is(v, vl, "hidden")) ovh = 1;
             } else if (word_is(p, pl, "opacity")) {
@@ -694,7 +1297,10 @@ static void parse_decls(const char* s, unsigned int n, CssProps* pr)
             }
         }
     }
-    if (w1 && h1 && ovh) { pr->mask |= CSS_HIDDEN; pr->hidden = 1; }
+    if (w1 && h1 && ovh) { prNormal->mask |= CSS_HIDDEN; prNormal->hidden = 1; }
+    if (prNormal->boxMask) prNormal->mask |= CSS_BOX;
+    if (imp && imp->boxMask) imp->mask |= CSS_BOX;
+    ig_buf_free(&exp);
 }
 
 /* ------------------------------------------------------------------ CSS rules */
@@ -747,6 +1353,23 @@ static int media_matches(const char* s, unsigned int n)
             unsigned int ql = e - st, k;
             if (contains_ci(q, ql, "print") && !contains_ci(q, ql, "screen")) ok = 0;
             if (contains_ci(q, ql, "speech")) ok = 0;
+            /* a light screen, no hover, a coarse pointer, 1 pixel per pixel */
+            if (contains_ci(q, ql, "dark")) ok = 0;
+            if (contains_ci(q, ql, "hover: hover") || contains_ci(q, ql, "hover:hover")) ok = 0;
+            if (contains_ci(q, ql, "pointer: fine") || contains_ci(q, ql, "pointer:fine")) ok = 0;
+            if (contains_ci(q, ql, "pixel-ratio") && !contains_ci(q, ql, "max-")) {
+                /* min-device-pixel-ratio: 2 and the like */
+                unsigned int k;
+                for (k = 0; k + 11 < ql; k++) if (ig_strieq_n(q + k, "pixel-ratio", 11)) {
+                    unsigned int m = k + 11;
+                    int v;
+                    while (m < ql && (q[m] == ':' || is_ws((unsigned char)q[m]))) m++;
+                    v = read_num(q, ql, &m);
+                    if (v > 1) ok = 0;
+                    break;
+                }
+            }
+            if (contains_ci(q, ql, "min-resolution") && (contains_ci(q, ql, "dppx") || contains_ci(q, ql, "192dpi") || contains_ci(q, ql, "144dpi"))) ok = 0;
             for (k = 0; k + 9 < ql && ok; k++) {
                 int isMin = ig_strieq_n(q + k, "min-width", 9);
                 int isMax = ig_strieq_n(q + k, "max-width", 9);
@@ -776,16 +1399,118 @@ static unsigned int bloom_bit(const char* s, unsigned int n)
     return 1u << (h & 31);
 }
 
-/* tag#id.a.b at s[0..n) -> a compound (strings allocated); 0 if it is not one we can match */
-static int parse_compound(const char* s, unsigned int n, CssCompound* c, int* nIds, int* nCls, int* nTags)
+static int is_ident(int c) { return is_alnum(c) || c == '-' || c == '_' || c >= 0x80; }
+
+/* An+B / odd / even / N inside :nth-child( ) */
+static int parse_nth(const char* s, unsigned int n, short* A, short* B)
 {
-    unsigned int i = 0, ts, te, is = 0, ie = 0, cs = 0, ce = 0;
+    unsigned int i = 0;
+    int a = 0, b = 0, sign = 1, num = -1;
+    while (i < n && is_ws((unsigned char)s[i])) i++;
+    while (n > i && is_ws((unsigned char)s[n - 1])) n--;
+    if (n - i == 3 && ig_strieq_n(s + i, "odd", 3)) { *A = 2; *B = 1; return 1; }
+    if (n - i == 4 && ig_strieq_n(s + i, "even", 4)) { *A = 2; *B = 0; return 1; }
+    if (i < n && (s[i] == '-' || s[i] == '+')) { if (s[i] == '-') sign = -1; i++; }
+    if (i < n && s[i] >= '0' && s[i] <= '9') { num = 0; while (i < n && s[i] >= '0' && s[i] <= '9') { num = num * 10 + (s[i] - '0'); i++; if (num > 10000) return 0; } }
+    if (i < n && (s[i] == 'n' || s[i] == 'N')) {
+        a = sign * (num < 0 ? 1 : num);
+        i++;
+        while (i < n && is_ws((unsigned char)s[i])) i++;
+        if (i < n) {
+            int bs = 1;
+            if (s[i] == '+') i++; else if (s[i] == '-') { bs = -1; i++; } else return 0;
+            while (i < n && is_ws((unsigned char)s[i])) i++;
+            if (i >= n || s[i] < '0' || s[i] > '9') return 0;
+            while (i < n && s[i] >= '0' && s[i] <= '9') { b = b * 10 + (s[i] - '0'); i++; if (b > 10000) return 0; }
+            b *= bs;
+        }
+    } else {
+        if (num < 0) return 0;
+        b = sign * num;
+    }
+    if (i != n) return 0;
+    *A = (short)a;
+    *B = (short)b;
+    return 1;
+}
+
+/* [name], [name=v] ... at s (after '['), up to ']' at e; into c */
+static int parse_attr_cond(const char* s, unsigned int n, CssAttrCond* c)
+{
+    unsigned int i = 0, ns, ne;
+    ig_memset(c, 0, sizeof(CssAttrCond));
+    while (i < n && is_ws((unsigned char)s[i])) i++;
+    ns = i;
+    while (i < n && is_ident((unsigned char)s[i])) i++;
+    ne = i;
+    if (ne == ns) return 0;
+    while (i < n && is_ws((unsigned char)s[i])) i++;
+    if (i < n) {
+        unsigned int vs, ve;
+        char q = 0;
+        if (s[i] == '=') c->op = AT_EQ;
+        else if (i + 1 < n && s[i + 1] == '=') {
+            switch (s[i]) {
+            case '~': c->op = AT_WORD; break;
+            case '^': c->op = AT_PREFIX; break;
+            case '$': c->op = AT_SUFFIX; break;
+            case '*': c->op = AT_SUB; break;
+            case '|': c->op = AT_DASH; break;
+            default: return 0;
+            }
+            i++;
+        } else return 0;
+        i++;
+        while (i < n && is_ws((unsigned char)s[i])) i++;
+        if (i < n && (s[i] == '"' || s[i] == '\'')) q = s[i++];
+        vs = i;
+        if (q) { while (i < n && s[i] != q) i++; ve = i; if (i < n) i++; }
+        else { while (i < n && !is_ws((unsigned char)s[i])) i++; ve = i; }
+        while (i < n && is_ws((unsigned char)s[i])) i++;
+        if (i < n && (s[i] == 'i' || s[i] == 'I')) i++;      /* [a=b i]: case is ignored anyway below */
+        while (i < n && is_ws((unsigned char)s[i])) i++;
+        if (i != n) return 0;
+        c->val = ig_strndup(s + vs, ve - vs);
+        if (!c->val) return 0;
+    }
+    {
+        unsigned int k;
+        c->name = ig_strndup(s + ns, ne - ns);
+        if (!c->name) { ig_free(c->val); c->val = 0; return 0; }
+        for (k = 0; c->name[k]; k++) c->name[k] = (char)lower((unsigned char)c->name[k]);
+    }
+    return 1;
+}
+
+/* the end of a [...] or (...) group starting at s[i] (the index after its closing bracket) */
+static unsigned int group_end(const char* s, unsigned int n, unsigned int i)
+{
+    char open = s[i], close = open == '[' ? ']' : ')';
+    int depth = 0;
+    char q = 0;
+    for (; i < n; i++) {
+        char c = s[i];
+        if (q) { if (c == q) q = 0; continue; }
+        if (c == '"' || c == '\'') { q = c; continue; }
+        if (c == open) depth++;
+        else if (c == close && --depth == 0) return i + 1;
+    }
+    return n + 1;          /* unclosed */
+}
+
+static void free_compound(CssCompound* c);
+
+/* tag#id.a.b[x=y]:first-child at s[0..n) -> a compound (strings allocated); 0 if it is not
+ * one we can match. aSubject: attribute conditions are allowed (only the element itself has
+ * its attributes at hand) */
+static int parse_compound(const char* s, unsigned int n, CssCompound* c, int* nIds, int* nCls, int* nTags, int aSubject)
+{
+    unsigned int i = 0, ts, te;
+    IgBuf cls;
     ig_memset(c, 0, sizeof(CssCompound));
-    /* a:link / a:visited are just a */
-    if (n > 5 && ig_strieq_n(s + n - 5, ":link", 5)) n -= 5;
-    else if (n > 8 && ig_strieq_n(s + n - 8, ":visited", 8)) n -= 8;
+    ig_buf_init(&cls);
     ts = i;
-    while (i < n && (is_alnum((unsigned char)s[i]) || s[i] == '-' || s[i] == '_' || s[i] == '*')) i++;
+    while (i < n && (is_ident((unsigned char)s[i]) || s[i] == '*')) i++;
     te = i;
     if (te > ts && !(te - ts == 1 && s[ts] == '*')) {
         char name[16];
@@ -796,69 +1521,126 @@ static int parse_compound(const char* s, unsigned int n, CssCompound* c, int* nI
         if (!c->tag) return 0;
         (*nTags)++;
     }
+    c->bloom = c->tag ? 1u << (c->tag & 31) : 0;
     while (i < n) {
-        if (s[i] == '#' && !is) {
-            i++;
-            is = i;
-            while (i < n && (is_alnum((unsigned char)s[i]) || s[i] == '-' || s[i] == '_')) i++;
-            ie = i;
-            if (ie == is) return 0;
+        if (s[i] == '#' && !c->id) {
+            unsigned int st = ++i;
+            while (i < n && is_ident((unsigned char)s[i])) i++;
+            if (i == st) goto fail;
+            c->id = ig_strndup(s + st, i - st);
+            if (!c->id) goto fail;
+            c->bloom |= bloom_bit(s + st, i - st);
             (*nIds)++;
         } else if (s[i] == '.') {
-            unsigned int st;
-            if (!cs) cs = i + 1;
-            i++;
-            st = i;
-            while (i < n && (is_alnum((unsigned char)s[i]) || s[i] == '-' || s[i] == '_')) i++;
-            if (i == st) return 0;
-            ce = i;
+            unsigned int st = ++i;
+            while (i < n && is_ident((unsigned char)s[i])) i++;
+            if (i == st) goto fail;
+            if (cls.len) ig_buf_putc(&cls, 0);
+            ig_buf_append(&cls, s + st, i - st);
+            c->bloom |= bloom_bit(s + st, i - st);
             (*nCls)++;
-        } else return 0;       /* pseudo-class, attribute selector: not for us */
+        } else if (s[i] == '[') {
+            unsigned int e = group_end(s, n, i);
+            if (!aSubject || e > n || c->attrCount >= MAX_ATTR_CONDS) goto fail;
+            if (!parse_attr_cond(s + i + 1, e - i - 2, &c->attr[c->attrCount])) goto fail;
+            c->attrCount++;
+            (*nCls)++;
+            i = e;
+        } else if (s[i] == ':') {
+            unsigned int st;
+            if (i + 1 < n && s[i + 1] == ':') goto fail;            /* ::before, ::placeholder */
+            st = ++i;
+            while (i < n && is_ident((unsigned char)s[i])) i++;
+            {
+                const char* ps = s + st;
+                unsigned int pl = i - st;
+                if (word_is(ps, pl, "link") || word_is(ps, pl, "visited") || word_is(ps, pl, "any-link")) { (*nCls)++; continue; }
+                if (word_is(ps, pl, "root")) { if (c->tag && c->tag != T_HTML) goto fail; c->tag = T_HTML; c->bloom |= 1u << (T_HTML & 31); (*nCls)++; continue; }
+                if (word_is(ps, pl, "first-child")) { c->hasNth = 1; c->nthA = 0; c->nthB = 1; (*nCls)++; continue; }
+                if (i < n && s[i] == '(' && (word_is(ps, pl, "nth-child") || word_is(ps, pl, "not"))) {
+                    unsigned int e = group_end(s, n, i);
+                    const char* as = s + i + 1;
+                    unsigned int al = e > n ? 0 : e - i - 2;
+                    if (e > n) goto fail;
+                    if (word_is(ps, pl, "nth-child")) {
+                        if (!parse_nth(as, al, &c->nthA, &c->nthB)) goto fail;
+                        c->hasNth = 1;
+                    } else {
+                        /* :not(.x) / :not(#x) / :not(tag) / :not([a]) */
+                        unsigned int k = 0;
+                        while (k < al && is_ws((unsigned char)as[k])) k++;
+                        while (al > k && is_ws((unsigned char)as[al - 1])) al--;
+                        if (k < al && as[k] == '.' && !c->notClass) {
+                            unsigned int q = k + 1;
+                            while (q < al && is_ident((unsigned char)as[q])) q++;
+                            if (q != al || q == k + 1) goto fail;
+                            c->notClass = ig_strndup(as + k + 1, q - k - 1);
+                        } else if (k < al && as[k] == '#' && !c->notId) {
+                            unsigned int q = k + 1;
+                            while (q < al && is_ident((unsigned char)as[q])) q++;
+                            if (q != al || q == k + 1) goto fail;
+                            c->notId = ig_strndup(as + k + 1, q - k - 1);
+                        } else if (k < al && as[k] == '[' && aSubject && c->attrCount < MAX_ATTR_CONDS) {
+                            if (as[al - 1] != ']' || !parse_attr_cond(as + k + 1, al - k - 2, &c->attr[c->attrCount])) goto fail;
+                            c->attr[c->attrCount++].negate = 1;
+                        } else if (k < al && is_ident((unsigned char)as[k]) && !c->notTag) {
+                            char name[16];
+                            unsigned int q = k;
+                            while (q < al && is_ident((unsigned char)as[q])) { if (q - k >= 15) goto fail; name[q - k] = (char)lower((unsigned char)as[q]); q++; }
+                            if (q != al) goto fail;
+                            c->notTag = lookup_tag(name, q - k);
+                            if (!c->notTag) goto fail;
+                        } else goto fail;
+                    }
+                    (*nCls)++;
+                    i = e;
+                    continue;
+                }
+                goto fail;      /* :hover, :focus, :checked, :last-child...: not something we can know */
+            }
+        } else goto fail;
     }
-    if (!c->tag && !is && !cs && te == ts) return 0;
-    c->bloom = c->tag ? 1u << (c->tag & 31) : 0;
-    if (ie > is) {
-        c->id = ig_strndup(s + is, ie - is);
-        if (!c->id) return 0;
-        c->bloom |= bloom_bit(s + is, ie - is);
+    if (!c->tag && !c->id && !cls.len && te == ts && !c->attrCount && !c->hasNth && !c->notClass && !c->notId && !c->notTag) goto fail;
+    if (cls.len) {
+        ig_buf_putc(&cls, 0);
+        ig_buf_putc(&cls, 0);
+        if (cls.failed) goto fail;
+        c->classes = cls.data;
+        cls.data = 0;
     }
-    if (cs) {
-        unsigned int clsLen = ce - cs, k = 0;
-        const char* cls = s + cs;
-        c->classes = (char*)ig_malloc(clsLen + 2);
-        if (!c->classes) { ig_free(c->id); c->id = 0; return 0; }
-        for (k = 0; k < clsLen; k++) c->classes[k] = cls[k] == '.' ? 0 : cls[k];
-        c->classes[clsLen] = 0;
-        c->classes[clsLen + 1] = 0;
-        k = 0;
-        while (k < clsLen) {
-            unsigned int st = k;
-            while (k < clsLen && cls[k] != '.') k++;
-            if (k > st) c->bloom |= bloom_bit(cls + st, k - st);
-            k++;
-        }
-    }
+    ig_buf_free(&cls);
     return 1;
+fail:
+    ig_buf_free(&cls);
+    free_compound(c);
+    ig_memset(c, 0, sizeof(CssCompound));
+    return 0;
 }
 
 static void free_compound(CssCompound* c)
 {
+    int k;
     ig_free(c->id);
     ig_free(c->classes);
+    ig_free(c->notClass);
+    ig_free(c->notId);
+    for (k = 0; k < c->attrCount && k < MAX_ATTR_CONDS; k++) { ig_free(c->attr[k].name); ig_free(c->attr[k].val); }
 }
 
 #define MAX_COMPOUNDS 8
 
 /* one selector -> a rule. Descendant (space) and child (>) combinators are matched; a selector
  * with anything else (+, ~, pseudo-classes, attributes) is dropped */
-static void add_selector(P* p, const char* s, unsigned int n, const CssProps* pr)
+static void add_selector(P* p, const char* s, unsigned int n, const CssProps* pr, const CssProps* imp)
 {
     CssCompound comp[MAX_COMPOUNDS];
     unsigned char child[MAX_COMPOUNDS];
-    int count = 0, nIds = 0, nCls = 0, nTags = 0, k, ok = 1;
+    unsigned int cs[MAX_COMPOUNDS], ce[MAX_COMPOUNDS];
+    int count = 0, nIds = 0, nCls = 0, nTags = 0, k, ok = 1, parts = 0, pseudo = 0, anyTag = 0;
     unsigned int i = 0;
     int pendingChild = 0;
     while (n && is_ws((unsigned char)s[n - 1])) n--;
+    /* the compounds and how they join (brackets and quotes may hold spaces) */
     while (i < n && ok) {
         unsigned int st;
         while (i < n && is_ws((unsigned char)s[i])) i++;
@@ -866,11 +1648,39 @@ static void add_selector(P* p, const char* s, unsigned int n, const CssProps* pr
         if (i >= n) break;
         if (s[i] == '+' || s[i] == '~') { ok = 0; break; }
         st = i;
-        while (i < n && !is_ws((unsigned char)s[i]) && s[i] != '>' && s[i] != '+' && s[i] != '~') i++;
-        if (count >= MAX_COMPOUNDS) { ok = 0; break; }
-        if (!parse_compound(s + st, i - st, &comp[count], &nIds, &nCls, &nTags)) { ok = 0; break; }
-        child[count] = (unsigned char)pendingChild;   /* how it joins the one before it */
+        while (i < n && !is_ws((unsigned char)s[i]) && s[i] != '>' && s[i] != '+' && s[i] != '~') {
+            if (s[i] == '[' || s[i] == '(') { i = group_end(s, n, i); if (i > n) { ok = 0; break; } continue; }
+            i++;
+        }
+        if (!ok) break;
+        if (parts >= MAX_COMPOUNDS) { ok = 0; break; }
+        cs[parts] = st;
+        ce[parts] = i;
+        child[parts] = (unsigned char)pendingChild;   /* how it joins the one before it */
         pendingChild = 0;
+        parts++;
+    }
+    if (ok && parts) {
+        /* ::before / ::after on the subject: a rule for generated text */
+        const char* se = s + ce[parts - 1];
+        unsigned int sl = ce[parts - 1] - cs[parts - 1];
+        static const char* const kPs[] = { "::before", "::after", ":before", ":after" };
+        int q;
+        for (q = 0; q < 4; q++) {
+            unsigned int ql = ig_strlen(kPs[q]);
+            if (sl > ql && ig_strieq_n(se - ql, kPs[q], ql)) { pseudo = (q & 1) ? 2 : 1; ce[parts - 1] -= ql; break; }
+            if (sl == ql && ig_strieq_n(se - ql, kPs[q], ql)) { pseudo = (q & 1) ? 2 : 1; ce[parts - 1] -= ql; anyTag = 1; break; }
+        }
+        if (pseudo && !pr->content) ok = 0;         /* only the text is used */
+    }
+    for (k = 0; k < parts && ok; k++) {
+        if (anyTag && k == parts - 1) {
+            /* "::before" alone: any element */
+            ig_memset(&comp[count], 0, sizeof(CssCompound));
+            count++;
+            continue;
+        }
+        if (!parse_compound(s + cs[k], ce[k] - cs[k], &comp[count], &nIds, &nCls, &nTags, k == parts - 1)) { ok = 0; break; }
         count++;
     }
     if (ok && (count == 0 || pendingChild)) ok = 0;
@@ -880,12 +1690,22 @@ static void add_selector(P* p, const char* s, unsigned int n, const CssProps* pr
         else {
             r = &p->rules[p->ruleCount];
             ig_memset(r, 0, sizeof(CssRule));
-            r->tag = comp[count - 1].tag;
-            r->id = comp[count - 1].id;
-            r->classes = comp[count - 1].classes;
-            r->bloom = comp[count - 1].bloom;
+            r->subj = comp[count - 1];
             r->spec = nIds * 10000 + nCls * 100 + nTags;
             r->props = *pr;
+            r->props.content = 0;
+            if (imp && imp->mask && !pseudo) {
+                r->imp = (CssProps*)ig_malloc(sizeof(CssProps));
+                if (r->imp) { *r->imp = *imp; r->imp->content = 0; }
+            }
+            if (pseudo) {
+                r->pseudo = (unsigned char)pseudo;
+                r->content = ig_strdup(pr->content);
+                r->contentAttr = pr->contentAttr;
+                r->props.mask = 0;
+                r->props.boxMask = 0;
+                if (!r->content) ok = 0;
+            }
             if (count > 1) {
                 r->anc = (CssCompound*)ig_malloc((unsigned int)(count - 1) * sizeof(CssCompound));
                 r->ancChild = (unsigned char*)ig_malloc((unsigned int)(count - 1));
@@ -970,7 +1790,7 @@ static void parse_css(P* p, const char* s, unsigned int n, int depth)
         if (i >= n || s[i] == '}') { i++; continue; }
         {
             unsigned int ds = i + 1, de;
-            CssProps pr;
+            CssProps pr, imp;
             i = ds;
             while (i < n && s[i] != '}') {
                 if (s[i] == '"' || s[i] == '\'') { char q = s[i++]; while (i < n && s[i] != q) i++; }
@@ -979,17 +1799,36 @@ static void parse_css(P* p, const char* s, unsigned int n, int depth)
             de = i;
             if (i < n) i++;
             ig_memset(&pr, 0, sizeof(pr));
-            parse_decls(s + ds, de - ds, &pr);
-            if (!pr.mask) continue;
+            ig_memset(&imp, 0, sizeof(imp));
+            /* custom properties count from the page-wide rules only (not a dark theme class) */
+            {
+                unsigned int k = ss, nonGlobal = 0;
+                while (k < se) {
+                    unsigned int st = k, e;
+                    while (k < se && s[k] != ',') k++;
+                    e = k;
+                    while (st < e && is_ws((unsigned char)s[st])) st++;
+                    while (e > st && is_ws((unsigned char)s[e - 1])) e--;
+                    if (!(word_is(s + st, e - st, ":root") || word_is(s + st, e - st, "html") || word_is(s + st, e - st, "body") ||
+                          word_is(s + st, e - st, "*") || word_is(s + st, e - st, "html:root"))) nonGlobal = 1;
+                    k++;
+                }
+                p->allowVars = !nonGlobal;
+            }
+            parse_decls(p, s + ds, de - ds, &pr, &imp);
+            p->allowVars = 0;
+            if (!pr.mask && !imp.mask && !pr.boxMask && !pr.content) { ig_free(imp.content); continue; }
             /* each selector of the group */
             {
                 unsigned int k = ss;
                 while (k < se) {
                     unsigned int st = k;
                     while (k < se && s[k] != ',') k++;
-                    add_selector(p, s + st, k - st, &pr);
+                    add_selector(p, s + st, k - st, &pr, &imp);
                     k++;
                 }
+                ig_free(pr.content);
+                ig_free(imp.content);
             }
         }
     }
@@ -1000,8 +1839,9 @@ static void free_rules(P* p)
     unsigned int i;
     for (i = 0; i < p->ruleCount; i++) {
         unsigned int k;
-        ig_free(p->rules[i].id);
-        ig_free(p->rules[i].classes);
+        free_compound(&p->rules[i].subj);
+        ig_free(p->rules[i].imp);
+        ig_free(p->rules[i].content);
         for (k = 0; k < p->rules[i].ancCount; k++) free_compound(&p->rules[i].anc[k]);
         ig_free(p->rules[i].anc);
         ig_free(p->rules[i].ancChild);
@@ -1027,6 +1867,29 @@ static const char* attr(P* p, const char* name)
 }
 
 static int has_attr(P* p, const char* name) { return attr(p, name) != 0; }
+
+/* width="150" / width="40%" -> 150 / -40; 0 none */
+static int attr_width(P* p)
+{
+    const char* v = attr(p, "width");
+    unsigned int i = 0, n;
+    int r;
+    if (!v) return 0;
+    n = ig_strlen(v);
+    while (i < n && v[i] == ' ') i++;
+    r = read_num(v, n, &i);
+    if (r <= 0) return 0;
+    if (i < n && v[i] == '%') return r > 100 ? -100 : -r;
+    return r > 4000 ? 4000 : r;
+}
+
+/* a width hint into an op's len: px, or 100000 + percent */
+static unsigned int width_hint(int w)
+{
+    if (w > 0) return (unsigned int)w;
+    if (w < 0) return 100000u + (unsigned int)(-w);
+    return 0;
+}
 
 static int attr_int(P* p, const char* name, int def)
 {
@@ -1101,6 +1964,7 @@ static int read_attrs(P* p, unsigned int* ip, int* selfClose)
                 while (k < ve) {
                     unsigned int c = read_char(p->cs, s, ve, &k, 1, 1);
                     char u[3];
+                    if (invisible(c)) continue;
                     if (c < 0x80) ig_buf_putc(&p->attrBuf, (char)(c == '\n' || c == '\r' || c == '\t' ? ' ' : c));
                     else if (c < 0x800) {
                         u[0] = (char)(0xC0 | (c >> 6)); u[1] = (char)(0x80 | (c & 0x3F));
@@ -1138,7 +2002,7 @@ static int default_display(int tag)
     case T_LI: return D_LISTITEM;
     case T_HEAD: case T_SCRIPT: case T_STYLE: case T_TEMPLATE: case T_TITLE: case T_META: case T_LINK:
     case T_BASE: case T_NOEMBED: case T_PARAM: case T_SOURCE: case T_TRACK: case T_SVG: case T_MATH:
-    case T_CANVAS: case T_MAP: case T_AREA: case T_DATALIST: case T_COL: case T_COLGROUP: case T_OBJECT:
+    case T_CANVAS: case T_AREA: case T_DATALIST: case T_COL: case T_COLGROUP:
     case T_EMBED: case T_AUDIO: case T_VIDEO:
         return D_NONE;
     default:
@@ -1170,9 +2034,41 @@ static int indent_of(int tag)
     }
 }
 
+/* a margin / padding in screen px: desktop lengths halved for the small screen, then capped */
+static int css_px(const CssLen* l, int px100, int horizontal, int cap)
+{
+    long v;
+    switch (l->unit) {
+    case 0: v = l->v / 2; break;                                  /* px * 100, halved */
+    case 1: v = (long)l->v * px100 / 100 / 2; break;              /* em */
+    case 2: v = horizontal ? (long)l->v * 3 / 2 : 0; break;       /* % of about 300 px */
+    default: v = 0; break;                                        /* auto */
+    }
+    v /= 100;
+    if (v < 0) v = 0;
+    if (v > cap) v = cap;
+    return (int)v;
+}
+
+/* a width: px (not scaled: the layout clamps it), < 0 a percent, 0 none / auto */
+static int css_size(const CssLen* l, int px100)
+{
+    long v;
+    switch (l->unit) {
+    case 0: v = l->v / 100; break;
+    case 1: v = (long)l->v * px100 / 10000; break;
+    case 2: v = -(l->v / 100); if (v < -100) v = -100; if (v == 0) v = 0; return (int)v;
+    default: return 0;
+    }
+    if (v <= 0) return 0;
+    if (v > 4000) v = 4000;
+    return (int)v;
+}
+
 static void apply_props(Elem* e, const CssProps* pr, int parentPx)
 {
-    if (pr->mask & CSS_DISPLAY) e->display = pr->display;
+    if (pr->mask & CSS_DISPLAY) { e->display = pr->display; e->isFlex = pr->flexRow; }
+    if (pr->mask & CSS_FLEXDIR) e->flexCol = pr->flexCol;
     if (pr->mask & CSS_COLOR) e->color = pr->color;
     if (pr->mask & CSS_BG) e->bg = pr->bg;
     if (pr->mask & CSS_BOLD) e->font = (unsigned char)(pr->bold ? (e->font | BW_FONT_BOLD) : (e->font & ~BW_FONT_BOLD));
@@ -1187,8 +2083,38 @@ static void apply_props(Elem* e, const CssProps* pr, int parentPx)
     if (pr->mask & CSS_ALIGN) e->align = pr->align;
     if (pr->mask & CSS_UNDERLINE) e->flags = (unsigned char)(pr->underline ? (e->flags | BW_OPF_UNDERLINE) : (e->flags & ~BW_OPF_UNDERLINE));
     if (pr->mask & CSS_STRIKE) e->flags = (unsigned char)(pr->strike ? (e->flags | BW_OPF_STRIKE) : (e->flags & ~BW_OPF_STRIKE));
-    if (pr->mask & CSS_PRE) e->flags = (unsigned char)(pr->pre ? (e->flags | BW_OPF_PRE) : (e->flags & ~BW_OPF_PRE));
+    if (pr->mask & CSS_PRE) {
+        e->flags = (unsigned char)(e->flags & ~(BW_OPF_PRE | BW_OPF_NOWRAP));
+        if (pr->pre == 1) e->flags |= BW_OPF_PRE;
+        else if (pr->pre == 2) e->flags |= BW_OPF_NOWRAP;
+    }
     if (pr->mask & CSS_HIDDEN) e->hidden = 1;
+    if (pr->mask & CSS_LIST) e->listStyle = pr->listStyle;
+    if (pr->mask & CSS_FLOAT) e->isFloat = pr->isFloat;
+    if (pr->mask & CSS_TRANSFORM) e->transform = pr->transform;
+    if (pr->mask & CSS_IMGSIZE) e->imgH = (short)(pr->height.v / 100);
+    if (pr->boxMask) {
+        int k;
+        for (k = 0; k < 4; k++) {
+            if (pr->boxMask & BX_M(k)) {
+                const CssLen* l = &pr->m[k];
+                int v = css_px(l, e->px100, k == 1 || k == 3, k == 0 || k == 2 ? 16 : 40);
+                if (k == 0) e->mt = (short)v; else if (k == 1) e->mr = (short)v; else if (k == 2) e->mb = (short)v; else e->ml = (short)v;
+                if (k == 1 || k == 3) e->autoSides = (unsigned char)(l->unit == 3 ? (e->autoSides | (k == 1 ? 1 : 2)) : (e->autoSides & ~(k == 1 ? 1 : 2)));
+            }
+            if (pr->boxMask & BX_P(k)) {
+                int v = css_px(&pr->pd[k], e->px100, k == 1 || k == 3, k == 0 || k == 2 ? 10 : 16);
+                if (k == 0) e->pt = (short)v; else if (k == 1) e->pr = (short)v; else if (k == 2) e->pb = (short)v; else e->pl = (short)v;
+            }
+            if (pr->boxMask & BX_B(k)) e->bw[k] = pr->bw[k];
+        }
+        if (pr->boxMask & BX_BC) e->bc = pr->bc;
+        if (pr->boxMask & BX_W) {
+            e->width = (short)css_size(&pr->width, e->px100);
+            if (pr->width.unit == 0 && pr->width.v > 0) e->imgW = (short)(pr->width.v / 100);
+        }
+        if (pr->boxMask & BX_MAXW) e->maxw = (short)css_size(&pr->maxw, e->px100);
+    }
 }
 
 #define MAX_MATCHED 64
@@ -1208,9 +2134,9 @@ static unsigned int key_bucket(const char* s, unsigned int n)
 
 static unsigned int rule_bucket(const CssRule* r)
 {
-    if (r->id) return B_ID + key_bucket(r->id, ig_strlen(r->id));
-    if (r->classes) return B_CLASS + key_bucket(r->classes, ig_strlen(r->classes));
-    if (r->tag) return (unsigned int)r->tag;
+    if (r->subj.id) return B_ID + key_bucket(r->subj.id, ig_strlen(r->subj.id));
+    if (r->subj.classes) return B_CLASS + key_bucket(r->subj.classes, ig_strlen(r->subj.classes));
+    if (r->subj.tag) return (unsigned int)r->subj.tag;
     return B_ANY;
 }
 
@@ -1269,6 +2195,14 @@ static int classes_match(const char* list, const char* need)
     return 1;
 }
 
+/* :nth-child(An+B) for a 1-based index */
+static int nth_matches(int a, int b, int index)
+{
+    if (a == 0) return index == b;
+    if ((index - b) % a != 0) return 0;
+    return (index - b) / a >= 0;
+}
+
 static int compound_matches(P* p, const CssCompound* c, const Elem* e)
 {
     const char* buf = p->ancBuf.data;
@@ -1276,6 +2210,47 @@ static int compound_matches(P* p, const CssCompound* c, const Elem* e)
     if (c->tag && c->tag != e->tag) return 0;
     if (c->id && (e->idOff == ~0u || !buf || !ig_streq(buf + e->idOff, c->id))) return 0;
     if (c->classes && (e->clsOff == ~0u || !buf || !classes_match(buf + e->clsOff, c->classes))) return 0;
+    if (c->hasNth && !nth_matches(c->nthA, c->nthB, e->childIndex)) return 0;
+    if (c->notTag && c->notTag == e->tag) return 0;
+    if (c->notClass && e->clsOff != ~0u && buf && has_class(buf + e->clsOff, c->notClass)) return 0;
+    if (c->notId && e->idOff != ~0u && buf && ig_streq(buf + e->idOff, c->notId)) return 0;
+    return 1;
+}
+
+static int lower_eq(const char* a, const char* b, unsigned int n)
+{
+    return ig_strieq_n(a, b, n);
+}
+
+/* the conditions of the subject that need the element itself: [attr], :nth-child, :not() */
+static int subject_extra_matches(P* p, const CssCompound* c, int tag, const char* id, const char* cls)
+{
+    int k;
+    if (c->hasNth && !nth_matches(c->nthA, c->nthB, p->curChildIndex)) return 0;
+    if (c->notTag && c->notTag == tag) return 0;
+    if (c->notClass && cls && has_class(cls, c->notClass)) return 0;
+    if (c->notId && id && ig_streq(id, c->notId)) return 0;
+    for (k = 0; k < c->attrCount; k++) {
+        const CssAttrCond* a = &c->attr[k];
+        const char* v = attr(p, a->name);
+        int ok;
+        if (!v) ok = 0;
+        else if (a->op == AT_HAS || !a->val) ok = 1;
+        else {
+            unsigned int vl = ig_strlen(v), ql = ig_strlen(a->val);
+            switch (a->op) {
+            case AT_EQ: ok = vl == ql && lower_eq(v, a->val, vl); break;
+            case AT_PREFIX: ok = ql && vl >= ql && lower_eq(v, a->val, ql); break;
+            case AT_SUFFIX: ok = ql && vl >= ql && lower_eq(v + vl - ql, a->val, ql); break;
+            case AT_SUB: ok = ql && contains_ci(v, vl, a->val); break;
+            case AT_WORD: ok = has_class(v, a->val); break;
+            case AT_DASH: ok = (vl == ql && lower_eq(v, a->val, vl)) || (vl > ql && v[ql] == '-' && lower_eq(v, a->val, ql)); break;
+            default: ok = 0; break;
+            }
+        }
+        if (a->negate) ok = !ok;
+        if (!ok) return 0;
+    }
     return 1;
 }
 
@@ -1317,6 +2292,9 @@ static void note_attrs(P* p, Elem* e)
 static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
 {
     const char* v;
+    unsigned int impMatched[MAX_MATCHED];
+    unsigned int nImp = 0;
+    CssProps inl, inlImp;
     *e = *parent;
     e->tag = (unsigned char)tag;
     e->display = (unsigned char)default_display(tag);
@@ -1324,6 +2302,31 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     e->blockOpen = 0;
     e->listKind = 0;
     e->marginBottom = 0;
+    e->isFloat = 0;
+    e->isFlex = 0;
+    e->flexCol = 0;
+    e->flexItem = 0;
+    e->afterOff = ~0u;
+    e->labelIndex = -1;
+    e->childCount = 0;
+    e->childIndex = p->curChildIndex;
+    e->labelOff = ~0u;
+    e->imgW = e->imgH = 0;
+    /* the box: the tag's defaults, which the CSS may change */
+    e->mt = e->mb = (short)margin_top(tag, parent->listDepth);
+    e->ml = e->mr = e->pt = e->pb = e->pr = e->pl = 0;
+    if (tag == T_UL || tag == T_OL || tag == T_MENU || tag == T_DIR) e->pl = (short)indent_of(tag);
+    else e->ml = (short)indent_of(tag);
+    e->width = e->maxw = 0;
+    e->autoSides = 0;
+    e->bw[0] = e->bw[1] = e->bw[2] = e->bw[3] = 0;
+    e->bc = 0x999999;
+    if (tag == T_FIELDSET) {
+        e->bw[0] = e->bw[1] = e->bw[2] = e->bw[3] = 1;
+        e->bc = 0xAAAAAA;
+        e->pt = e->pb = 3;
+        e->pl = e->pr = 6;
+    }
     switch (tag) {
     case T_B: case T_STRONG: case T_TH: case T_DT: case T_LEGEND: case T_SUMMARY:
         e->font |= BW_FONT_BOLD; break;
@@ -1348,17 +2351,25 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     case T_H5: case T_H6: e->font |= BW_FONT_BOLD; break;
     case T_CENTER: case T_CAPTION: e->align = BW_ALIGN_CENTER; break;
     case T_MARK: e->bg = 0xFFFF00; break;
-    case T_NOBR: break;
+    case T_NOBR: e->flags |= BW_OPF_NOWRAP; break;
     default: break;
     }
     if (tag == T_UL || tag == T_OL || tag == T_MENU || tag == T_DIR) {
         e->listKind = (unsigned char)(tag == T_OL ? 2 : 1);
         e->listCounter = attr_int(p, "start", 1);
         e->listDepth = parent->listDepth + 1;
+        e->olType = 0;
+        {
+            /* <ol type=a|A|i|I|1> */
+            const char* t = attr(p, "type");
+            if (t && tag == T_OL) e->olType = (unsigned char)(t[0] == 'a' ? LS_LALPHA : t[0] == 'A' ? LS_UALPHA : t[0] == 'i' ? LS_LROMAN : t[0] == 'I' ? LS_UROMAN : LS_DECIMAL);
+        }
+        e->listStyle = LS_AUTO;
     }
     /* legacy presentation attributes */
     v = attr(p, "align");
     if (tag == T_TH) e->align = BW_ALIGN_CENTER;
+    if ((tag == T_TD || tag == T_TH) && has_attr(p, "nowrap")) e->flags |= BW_OPF_NOWRAP;
     if (v && tag != T_TABLE && (e->display == D_BLOCK || e->display == D_ROW || tag == T_TD || tag == T_TH)) {
         unsigned int vl = ig_strlen(v);
         if (word_is(v, vl, "center") || word_is(v, vl, "middle")) e->align = BW_ALIGN_CENTER;
@@ -1393,6 +2404,7 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     if (attr(p, "aria-hidden") && ig_streq(attr(p, "aria-hidden"), "true") && (tag == T_SVG || tag == T_SPAN || tag == T_I)) e->hidden = 1;
     /* the stylesheet: the matching rules by specificity, then source order */
     p->lastCssMask = 0;
+    p->pseudoRule[0] = p->pseudoRule[1] = 0;
     if (p->ruleCount) {
         const char* id = attr(p, "id");
         const char* cls = attr(p, "class");
@@ -1426,11 +2438,18 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
             for (j = p->start[buckets[k]]; j < p->start[buckets[k] + 1]; j++) {
                 unsigned int r = p->idx[j];
                 const CssRule* rule = &p->rules[r];
-                if (rule->bloom & ~have) continue;
-                if (rule->tag && rule->tag != tag) continue;
-                if (rule->id && (!id || !ig_streq(rule->id, id))) continue;
-                if (rule->classes && !classes_match(cls, rule->classes)) continue;
+                if (rule->subj.bloom & ~have) continue;
+                if (rule->subj.tag && rule->subj.tag != tag) continue;
+                if (rule->subj.id && (!id || !ig_streq(rule->subj.id, id))) continue;
+                if (rule->subj.classes && !classes_match(cls, rule->subj.classes)) continue;
+                if ((rule->subj.attrCount || rule->subj.hasNth || rule->subj.notTag || rule->subj.notClass || rule->subj.notId) &&
+                    !subject_extra_matches(p, &rule->subj, tag, id, cls)) continue;
                 if (rule->ancCount && !ancestors_match(p, rule)) continue;
+                if (rule->pseudo) {
+                    int which = rule->pseudo - 1;
+                    if (!p->pseudoRule[which] || p->pseudoRule[which]->spec <= rule->spec) p->pseudoRule[which] = rule;
+                    continue;
+                }
                 if (nm < MAX_MATCHED) {
                     /* insertion by (specificity, source order) */
                     unsigned int at = nm;
@@ -1448,15 +2467,37 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
             apply_props(e, &p->rules[matched[k]].props, parent->px100);
             p->lastCssMask |= p->rules[matched[k]].props.mask;
         }
+        nImp = nm;
+        for (k = 0; k < nm; k++) impMatched[k] = matched[k];
     }
     v = attr(p, "style");
     if (v) {
-        CssProps pr;
-        ig_memset(&pr, 0, sizeof(pr));
-        parse_decls(v, ig_strlen(v), &pr);
-        apply_props(e, &pr, parent->px100);
-        p->lastCssMask |= pr.mask;
+        ig_memset(&inl, 0, sizeof(inl));
+        ig_memset(&inlImp, 0, sizeof(inlImp));
+        parse_decls(p, v, ig_strlen(v), &inl, &inlImp);
+        ig_free(inl.content); inl.content = 0;
+        ig_free(inlImp.content); inlImp.content = 0;
+        apply_props(e, &inl, parent->px100);
+        p->lastCssMask |= inl.mask;
     }
+    /* !important: the rules' (in the same order), then the style attribute's */
+    {
+        unsigned int k;
+        for (k = 0; k < nImp; k++) {
+            const CssProps* ip = p->rules[impMatched[k]].imp;
+            if (ip) { apply_props(e, ip, parent->px100); p->lastCssMask |= ip->mask; }
+        }
+        if (v && inlImp.mask) { apply_props(e, &inlImp, parent->px100); p->lastCssMask |= inlImp.mask; }
+    }
+    /* floated blocks flow side by side (a horizontal menu); a closed <dialog> is not shown */
+    if (e->isFloat && (e->display == D_BLOCK || e->display == D_LISTITEM) && tag != T_TABLE) e->display = D_INLINE;
+    /* the blocks in a flex / grid row flow side by side with a gap */
+    if (parent->isFlex && !parent->flexCol && (e->display == D_BLOCK || e->display == D_LISTITEM)) { e->display = D_INLINE; e->flexItem = 1; }
+    if (tag == T_DIALOG && !has_attr(p, "open")) e->hidden = 1;
+    if (e->autoSides == 3) e->center = 1; else e->center = 0;
+    /* an inline element's background goes behind its text */
+    if (e->display == D_INLINE) { if (e->bg >= 0) e->ibg = e->bg; }
+    else e->ibg = -1;
     if (e->display == D_NONE) e->hidden = 1;
     e->font = BW_FONT_MAKE(px_class(e->px100), e->font & 7);
 }
@@ -1466,19 +2507,80 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
 static void emit_block_start(P* p, Elem* e, int margin)
 {
     BwOp* op;
+    BwDoc* d = p->doc;
+    (void)margin;
     if (e->hidden || capturing(p)) return;
     op = add_op(p, BW_OP_BLOCK_START);
     if (!op) return;
-    op->a = margin;
-    op->b = indent_of(e->tag);
+    op->a = e->mt;
+    op->b = e->ml + e->bw[3] + e->pl;
     op->align = e->align;
     op->color = e->bg >= 0 ? e->bg : -1;
     op->font = e->font;
+    op->ref = -1;
+    /* the rest of the box, when there is any */
+    if (e->pt || e->pb || e->pr || e->mr || e->bw[0] || e->bw[1] || e->bw[2] || e->bw[3] || e->width || e->maxw || e->center) {
+        if (grow((void**)&d->blocks, &d->blockCap, d->blockCount, sizeof(BwBlockBox))) {
+            BwBlockBox* b = &d->blocks[d->blockCount];
+            b->ml = (short)e->ml; b->mr = (short)e->mr;
+            b->pt = (short)e->pt; b->pb = (short)e->pb; b->pl = (short)e->pl; b->pr = (short)e->pr;
+            b->bt = e->bw[0]; b->br = e->bw[1]; b->bb = e->bw[2]; b->bl = e->bw[3];
+            b->bc = e->bc;
+            b->width = e->width;
+            b->maxw = e->maxw;
+            b->center = e->center;
+            op->ref = (int)d->blockCount++;
+        } else d->failed = 1;
+    }
+    e->marginBottom = e->mb;
     e->blockOpen = 1;
     p->lastSpace = 1;
 }
 
+/* a list marker's text for number n */
+static void marker_text(BwDoc* d, int style, int n, int level)
+{
+    char buf[16];
+    int i = 0, j;
+    switch (style) {
+    case LS_DISC: pool_put(d, 0x2022); return;
+    case LS_CIRCLE: pool_put(d, 0x25E6); return;
+    case LS_SQUARE: pool_put(d, 0x25AA); return;
+    case LS_LALPHA: case LS_UALPHA:
+        {
+            char t[8];
+            int k = 0, v = n < 1 ? 1 : n;
+            while (v > 0 && k < 7) { t[k++] = (char)((style == LS_LALPHA ? 'a' : 'A') + (v - 1) % 26); v = (v - 1) / 26; }
+            while (k) buf[i++] = t[--k];
+        }
+        break;
+    case LS_LROMAN: case LS_UROMAN:
+        {
+            static const int kVal[] = { 1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1 };
+            static const char* const kSym[] = { "m", "cm", "d", "cd", "c", "xc", "l", "xl", "x", "ix", "v", "iv", "i" };
+            int v = n < 1 ? 1 : n > 3999 ? 3999 : n, k;
+            for (k = 0; k < 13 && i < 14; k++)
+                while (v >= kVal[k] && i < 14) {
+                    const char* sy = kSym[k];
+                    while (*sy && i < 14) { buf[i++] = (char)(style == LS_UROMAN ? *sy - 32 : *sy); sy++; }
+                    v -= kVal[k];
+                }
+        }
+        break;
+    case LS_DECIMAL:
+        ig_itoa(n, buf);
+        i = (int)ig_strlen(buf);
+        break;
+    default:
+        pool_put(d, (unsigned short)(level <= 1 ? 0x2022 : level == 2 ? 0x25E6 : 0x25AA));
+        return;
+    }
+    for (j = 0; j < i; j++) pool_put(d, (unsigned short)buf[j]);
+    pool_put(d, '.');
+}
+
 static void finish_capture(P* p);
+static void put_label(P* p, const char* utf8);
 
 static void pop(P* p)
 {
@@ -1500,6 +2602,35 @@ static void pop(P* p)
         p->curSelect = -1;
     }
     if (e->tag == T_FORM) p->curForm = -1;
+    /* a label around its control: that one (the first visible one made inside) */
+    if (e->tag == T_LABEL && e->labelIndex >= 0 && !p->doc->labels[e->labelIndex].forId) {
+        unsigned int k;
+        for (k = (unsigned int)e->firstControl; k < p->doc->controlCount; k++)
+            if (p->doc->controls[k].target >= 0) { p->doc->labels[e->labelIndex].control = (int)k; break; }
+    }
+    if (e->tag == T_PICTURE) { ig_free(p->picSrc); p->picSrc = 0; }
+    if (e->afterOff != ~0u && p->ancBuf.data && !e->hidden) {
+        char* at = ig_strdup(p->ancBuf.data + e->afterOff);
+        if (at) { put_label(p, at); ig_free(at); }
+    }
+    /* a link with nothing to show (an icon font, an SVG): its aria-label or title */
+    if (e->tag == T_A && e->target >= 0 && e->labelOff != ~0u && p->ancBuf.data && !e->hidden && !capturing(p) &&
+        (p->depth < 2 || p->stack[p->depth - 2].target != e->target)) {
+        unsigned int k;
+        int shown = 0;
+        for (k = e->opStart; k < p->doc->opCount; k++) {
+            const BwOp* o = &p->doc->ops[k];
+            if (o->target == e->target && (o->type == BW_OP_TEXT || o->type == BW_OP_IMAGE || o->type == BW_OP_CONTROL)) { shown = 1; break; }
+        }
+        if (!shown) {
+            char* lab = ig_strdup(p->ancBuf.data + e->labelOff);
+            if (lab) {
+                if (!p->lastSpace) put_text_char(p, ' ', e);
+                put_label(p, lab);
+                ig_free(lab);
+            }
+        }
+    }
     if (e->blockOpen) {
         static const unsigned char kEnd[5] = { 0, BW_OP_BLOCK_END, BW_OP_TABLE_END, BW_OP_ROW_END, BW_OP_CELL_END };
         BwOp* op = add_op(p, kEnd[e->blockOpen]);
@@ -1582,9 +2713,12 @@ static void finish_capture(P* p)
     if (kind == 1 && p->captureCtl >= 0) {
         BwControl* c = &d->controls[p->captureCtl];
         Elem* e = top(p);
-        ig_free(c->label);
-        c->label = n ? dup16(s, n) : 0;
-        c->labelLen = c->label ? n : 0;
+        if (n) {
+            /* the button's text (an icon-only one keeps its aria-label) */
+            ig_free(c->label);
+            c->label = dup16(s, n);
+            c->labelLen = c->label ? n : 0;
+        }
         if (c->target >= 0) {
             BwOp* op = add_op(p, BW_OP_CONTROL);
             if (op) { op->ref = p->captureCtl; op->target = c->target; op->font = e->font; }
@@ -1625,7 +2759,9 @@ static BwControl* new_control(P* p, int type, int* index)
     c->selected = 0;
     {
         const char* nm = attr(p, "name");
+        const char* id = attr(p, "id");
         if (nm && nm[0]) c->name = ig_strdup(nm);
+        if (id && id[0]) c->idAttr = ig_strdup(id);
     }
     *index = (int)d->controlCount++;
     return c;
@@ -1681,31 +2817,107 @@ static int new_link(P* p, const char* href)
     return t;
 }
 
-static void handle_image(P* p, int tag)
+/* A picture format the phone decodes (by the URL's or type's ending): not WebP / AVIF / SVG */
+static int decodable(const char* u, unsigned int n)
+{
+    unsigned int e = 0;
+    while (e < n && u[e] != '?' && u[e] != '#') e++;
+    if (e >= 5 && (ig_strieq_n(u + e - 5, ".webp", 5) || ig_strieq_n(u + e - 5, ".avif", 5))) return 0;
+    if (e >= 4 && ig_strieq_n(u + e - 4, ".svg", 4)) return 0;
+    if (e >= 5 && ig_strieq_n(u + e - 5, ".heic", 5)) return 0;
+    return 1;
+}
+
+/* The candidate of a srcset to load: the smallest that is at least 480 px wide (else the
+ * widest), or the 1x one; decodable formats first. A new string, or NULL. */
+static char* pick_srcset(const char* s)
+{
+    unsigned int i = 0, n = ig_strlen(s);
+    unsigned int bestS = 0, bestL = 0;
+    int bestW = -1, bestOk = -1, best1x = -1;
+    while (i < n) {
+        unsigned int us, ue, ds;
+        int w = 0, x100 = 100, ok;
+        while (i < n && (is_ws((unsigned char)s[i]) || s[i] == ',')) i++;
+        if (i >= n) break;
+        us = i;
+        while (i < n && !is_ws((unsigned char)s[i])) i++;
+        ue = i;
+        if (ue > us && s[ue - 1] == ',') ue--;          /* "a.jpg, b.jpg" without descriptors */
+        else {
+            while (i < n && is_ws((unsigned char)s[i])) i++;
+            ds = i;
+            while (i < n && s[i] != ',') i++;
+            if (i > ds) {
+                unsigned int k = ds;
+                int v = read_num(s, i, &k);
+                if (v > 0 && k < i && (s[k] == 'w' || s[k] == 'W')) w = v;
+                else if (v >= 0 && k < i && (s[k] == 'x' || s[k] == 'X')) x100 = v * 100;
+                else if (k < i && s[k] == '.') { /* 1.5x */ x100 = 150; }
+            }
+        }
+        if (ue <= us) continue;
+        ok = decodable(s + us, ue - us);
+        {
+            int better = 0;
+            if (bestW < 0) better = 1;
+            else if (ok != bestOk) better = ok > bestOk;
+            else if (w) {
+                /* the smallest at or above 480, else the largest below */
+                if (bestW >= 480) better = w >= 480 && w < bestW;
+                else better = w > bestW;
+            } else better = x100 < best1x;
+            if (better) { bestS = us; bestL = ue - us; bestW = w ? w : 0; bestOk = ok; best1x = x100; }
+        }
+    }
+    if (bestW < 0) return 0;
+    return ig_strndup(s + bestS, bestL);
+}
+
+static void handle_image(P* p, int tag, int cssW, int cssH)
 {
     BwDoc* d = p->doc;
     const char* src = attr(p, "src");
     const char* ds = attr(p, "data-src");
     const char* alt = attr(p, "alt");
+    const char* ss = attr(p, "srcset");
     Elem* e = top(p);
     BwImage* im;
     BwOp* op;
+    char* chosen = 0;
     int w = attr_int(p, "width", 0), h = attr_int(p, "height", 0);
     (void)tag;
     if (e->hidden || capturing(p)) return;
+    if (cssW > 0 && cssW < 2000) { if (w && h && !cssH) h = h * cssW / w; w = cssW; }
+    if (cssH > 0 && cssH < 2000) { if (w && h && cssW <= 0) w = w * cssH / h; h = cssH; }
     if (!ds) ds = attr(p, "data-lazy-src");
     if (!ds) ds = attr(p, "data-original");
     if (ds && ds[0] && (!src || !src[0] || ig_strieq_n(src, "data:", 5))) src = ds;
-    if ((w > 0 && w <= 2) || (h > 0 && h <= 2)) return;     /* tracking pixels, spacers */
+    if (!ss || !ss[0]) ss = attr(p, "data-srcset");
+    /* <picture>: the <source> chosen; else this img's srcset, if src is missing or undecodable */
+    if (p->picSrc && in_stack(p, T_PICTURE)) chosen = pick_srcset(p->picSrc);
+    else if (ss && ss[0]) chosen = pick_srcset(ss);       /* (src is often the biggest one) */
+    if (chosen && !decodable(chosen, ig_strlen(chosen)) && src && src[0] && decodable(src, ig_strlen(src))) { ig_free(chosen); chosen = 0; }
+    if (chosen) src = chosen;
+    if ((w > 0 && w <= 2) || (h > 0 && h <= 2)) { ig_free(chosen); return; }     /* tracking pixels, spacers */
     if (!src || !src[0]) {
         if (alt && alt[0]) { put_label(p, alt); }
+        ig_free(chosen);
         return;
     }
-    if (!grow((void**)&d->images, &d->imageCap, d->imageCount, sizeof(BwImage))) { d->failed = 1; return; }
+    if (!grow((void**)&d->images, &d->imageCap, d->imageCount, sizeof(BwImage))) { d->failed = 1; ig_free(chosen); return; }
     im = &d->images[d->imageCount];
     ig_memset(im, 0, sizeof(BwImage));
     if (ig_strieq_n(src, "data:", 5)) im->src = 0;
     else im->src = bw_url_resolve(d->baseUrl, src, ig_strlen(src));
+    /* <noscript><img> after the lazy-loaded copy of the same picture: once is enough */
+    if (im->src && d->imageCount && in_stack(p, T_NOSCRIPT) && d->images[d->imageCount - 1].src &&
+        ig_streq(d->images[d->imageCount - 1].src, im->src)) {
+        ig_free(im->src);
+        im->src = 0;
+        ig_free(chosen);
+        return;
+    }
     im->attrW = w;
     im->attrH = h;
     im->target = e->target;
@@ -1714,6 +2926,7 @@ static void handle_image(P* p, int tag)
         unsigned int i = 0, n = ig_strlen(alt);
         while (i < n) {
             unsigned int c = read_char(BW_CS_UTF8, alt, n, &i, 0, 0);
+            if (invisible(c)) continue;
             if (!pool_put(d, (unsigned short)c)) break;
         }
     }
@@ -1723,6 +2936,7 @@ static void handle_image(P* p, int tag)
     if (op) { op->ref = (int)d->imageCount; op->target = e->target; op->font = e->font; op->color = e->color; }
     d->imageCount++;
     p->lastSpace = 0;
+    ig_free(chosen);
 }
 
 static void handle_input(P* p)
@@ -1745,6 +2959,7 @@ static void handle_input(P* p)
     }
     c = new_control(p, t, &idx);
     if (!c) return;
+    c->disabled = has_attr(p, "disabled") ? 1 : has_attr(p, "readonly") ? 2 : 0;
     set_value_from_attr(c, attr(p, "value"));
     c->checked = c->initialChecked = has_attr(p, "checked");
     c->size = attr_int(p, "size", 20);
@@ -1821,6 +3036,32 @@ static const int kStopDl[] = { T_DL, T_TABLE, 0 };
 static const int kStopRow[] = { T_TABLE, 0 };
 static const int kStopCell[] = { T_TR, T_TABLE, 0 };
 
+/* a ::before / ::after rule's text with its attr() parts filled in (new string) */
+static char* content_text(P* p, const CssRule* r)
+{
+    IgBuf b;
+    const char* c = r->content;
+    if (!r->contentAttr) return ig_strdup(c);
+    ig_buf_init(&b);
+    while (*c) {
+        if (*c == 1) {
+            const char* e = c + 1;
+            char name[40];
+            unsigned int n = 0;
+            while (*e && *e != 1) { if (n < sizeof(name) - 1) name[n++] = (char)lower((unsigned char)*e); e++; }
+            name[n] = 0;
+            {
+                const char* v = attr(p, name);
+                if (v) ig_buf_puts(&b, v);
+            }
+            c = *e ? e + 1 : e;
+            continue;
+        }
+        ig_buf_putc(&b, *c++);
+    }
+    return ig_buf_detach(&b);
+}
+
 static void start_tag(P* p, int tag, int selfClose)
 {
     Elem* parent;
@@ -1851,6 +3092,9 @@ static void start_tag(P* p, int tag, int selfClose)
     if (tag == T_FORM && p->curForm >= 0) return;          /* nested forms are not allowed */
 
     parent = top(p);
+    /* its place among its siblings (for :nth-child) */
+    parent->childCount++;
+    p->curChildIndex = parent->childCount;
 
     /* elements that are not pushed */
     switch (tag) {
@@ -1866,8 +3110,8 @@ static void start_tag(P* p, int tag, int selfClose)
             Elem tmp;
             compute_style(p, &tmp, parent, tag);
             if (tmp.hidden) return;
+            handle_image(p, tag, tmp.imgW, tmp.imgH);
         }
-        handle_image(p, tag);
         return;
     case T_INPUT:
         {
@@ -1911,7 +3155,46 @@ static void start_tag(P* p, int tag, int selfClose)
             }
         }
         return;
-    case T_PARAM: case T_SOURCE: case T_TRACK: case T_AREA: case T_COL: case T_EMBED:
+    case T_SOURCE:
+        {
+            /* <picture><source srcset type media>: the first one the phone can show */
+            const char* ss = attr(p, "srcset");
+            const char* type = attr(p, "type");
+            const char* media = attr(p, "media");
+            if (ss && ss[0] && in_stack(p, T_PICTURE) && !p->picSrc &&
+                (!type || contains_ci(type, ig_strlen(type), "jpeg") || contains_ci(type, ig_strlen(type), "jpg") ||
+                 contains_ci(type, ig_strlen(type), "png") || contains_ci(type, ig_strlen(type), "gif")) &&
+                (!media || media_matches(media, ig_strlen(media))))
+                p->picSrc = ig_strdup(ss);
+        }
+        return;
+    case T_AREA:
+        {
+            /* an image map's area: a link under the picture, named by its alt text */
+            const char* href = attr(p, "href");
+            const char* alt = attr(p, "alt");
+            if (!alt || !alt[0]) alt = attr(p, "title");
+            if (href && href[0] && !parent->hidden && !capturing(p) && p->depth < MAX_DEPTH) {
+                int t = new_link(p, href);
+                if (t >= 0) {
+                    Elem* e2 = &p->stack[p->depth];
+                    compute_style(p, e2, parent, T_SPAN);
+                    note_attrs(p, e2);
+                    p->depth++;
+                    e2->target = t;
+                    e2->color = d->linkColor;
+                    e2->flags |= BW_OPF_UNDERLINE;
+                    if (!p->lastSpace) put_text_char(p, ' ', e2);
+                    put_label(p, "[");
+                    put_label(p, alt && alt[0] ? alt : href);
+                    put_label(p, "]");
+                    pop(p);
+                    p->lastSpace = 0;
+                }
+            }
+        }
+        return;
+    case T_PARAM: case T_TRACK: case T_COL: case T_EMBED:
         return;
     case T_FRAME:
         {
@@ -1973,6 +3256,10 @@ static void start_tag(P* p, int tag, int selfClose)
             if (href && !e->hidden) {
                 int t = new_link(p, href);
                 if (t >= 0) {
+                    const char* lab = attr(p, "aria-label");
+                    if (!lab || !lab[0]) lab = attr(p, "title");
+                    e->opStart = d->opCount;
+                    if (lab && lab[0]) { e->labelOff = p->ancBuf.len; ig_buf_append(&p->ancBuf, lab, ig_strlen(lab) + 1); if (p->ancBuf.failed) e->labelOff = ~0u; }
                     e->target = t;
                     /* the page's link color and underline unless a rule for this link set them */
                     if (!(p->lastCssMask & CSS_COLOR)) e->color = d->linkColor;
@@ -1993,6 +3280,22 @@ static void start_tag(P* p, int tag, int selfClose)
             }
         }
         break;
+    case T_LABEL:
+        if (!e->hidden && !capturing(p) && grow((void**)&d->labels, &d->labelCap, d->labelCount, sizeof(BwLabel))) {
+            const char* f = attr(p, "for");
+            BwLabel* lb = &d->labels[d->labelCount];
+            int t;
+            lb->forId = f && f[0] ? ig_strdup(f) : 0;
+            lb->control = -1;
+            t = add_target(p, BW_TGT_LABEL, (int)d->labelCount);
+            if (t >= 0) {
+                e->labelIndex = (int)d->labelCount;
+                e->firstControl = (int)d->controlCount;
+                if (e->target < 0) e->target = t;      /* (a label inside a link stays the link) */
+                d->labelCount++;
+            } else ig_free(lb->forId);
+        }
+        break;
     case T_BUTTON:
         {
             const char* type = attr(p, "type");
@@ -2002,6 +3305,10 @@ static void start_tag(P* p, int tag, int selfClose)
             else if (type && ig_strieq_n(type, "reset", 5)) ct = BW_CTL_RESET;
             c = new_control(p, ct, &idx);
             if (c) {
+                const char* lab = attr(p, "aria-label");
+                c->disabled = has_attr(p, "disabled");
+                if (!lab || !lab[0]) lab = attr(p, "title");
+                if (lab && lab[0]) c->label = utf8_to_16(lab, &c->labelLen);
                 set_value_from_attr(c, attr(p, "value"));
                 if (!e->hidden && !capturing(p)) c->target = add_target(p, BW_TGT_CONTROL, idx);
                 start_capture(p, 1, idx);
@@ -2013,6 +3320,7 @@ static void start_tag(P* p, int tag, int selfClose)
             int idx;
             BwControl* c = new_control(p, BW_CTL_SELECT, &idx);
             if (c) {
+                c->disabled = has_attr(p, "disabled");
                 p->curSelect = idx;
                 if (!e->hidden && !capturing(p)) c->target = add_target(p, BW_TGT_CONTROL, idx);
             }
@@ -2069,11 +3377,8 @@ static void start_tag(P* p, int tag, int selfClose)
 
     /* blocks */
     if (e->display == D_BLOCK || e->display == D_LISTITEM) {
-        int depthLists = parent->listDepth;
-        int m = margin_top(tag, depthLists);
-        emit_block_start(p, e, m);
-        e->marginBottom = m;
-        if (e->display == D_LISTITEM && e->blockOpen) {
+        emit_block_start(p, e, 0);
+        if (e->display == D_LISTITEM && e->blockOpen && e->listStyle != LS_NONE) {
             /* the marker */
             BwOp* op = add_op(p, BW_OP_MARKER);
             if (op) {
@@ -2083,16 +3388,17 @@ static void start_tag(P* p, int tag, int selfClose)
                 op->font = e->font & ~BW_FONT_ITALIC;
                 op->color = e->color;
                 op->off = d->poolLen;
-                if (list && list->listKind == 2) {
-                    char num[12];
-                    int v = attr_int(p, "value", list->listCounter), j;
-                    list->listCounter = v + 1;
-                    ig_itoa(v, num);
-                    for (j = 0; num[j]; j++) pool_put(d, (unsigned short)num[j]);
-                    pool_put(d, '.');
-                } else {
-                    int lvl = list ? list->listDepth : 1;
-                    pool_put(d, (unsigned short)(lvl <= 1 ? 0x2022 : lvl == 2 ? 0x25E6 : 0x00B7));
+                {
+                    int style = e->listStyle;
+                    int v = 1;
+                    if (style == LS_AUTO && list && list->listKind == 2) {
+                        style = list->olType ? list->olType : LS_DECIMAL;
+                    }
+                    if (list) {
+                        v = attr_int(p, "value", list->listCounter);
+                        list->listCounter = v + 1;
+                    }
+                    marker_text(d, style, v, list ? list->listDepth : 1);
                 }
                 op->len = d->poolLen - op->off;
             }
@@ -2108,6 +3414,7 @@ static void start_tag(P* p, int tag, int selfClose)
             op->color = e->bg >= 0 ? e->bg : -1;
             op->ref = attr_int(p, "cellpadding", -1);
             op->font = e->font;
+            op->len = width_hint(e->width ? e->width : attr_width(p));
             e->blockOpen = 2;
             e->marginBottom = 4;
         }
@@ -2131,12 +3438,25 @@ static void start_tag(P* p, int tag, int selfClose)
             op->align = e->align;
             op->color = e->bg >= 0 ? e->bg : -1;
             op->font = e->font;
+            op->len = width_hint(e->width ? e->width : attr_width(p));
             e->blockOpen = 4;
         }
         e->bg = -1;
         p->lastSpace = 1;
     }
     if (tag == T_DT && e->blockOpen) e->font |= BW_FONT_BOLD;
+    if (e->flexItem && !e->hidden && !capturing(p)) { add_op(p, BW_OP_GAP); p->lastSpace = 1; }
+    /* generated text: ::before now, ::after when it closes; <q> gets quotation marks */
+    if (!e->hidden) {
+        const CssRule* br = p->pseudoRule[0];
+        const CssRule* ar = p->pseudoRule[1];
+        char* bt = br ? content_text(p, br) : tag == T_Q ? ig_strdup("\xE2\x80\x9C") : 0;
+        char* at = ar ? content_text(p, ar) : tag == T_Q ? ig_strdup("\xE2\x80\x9D") : 0;
+        if (at && at[0]) { e->afterOff = p->ancBuf.len; ig_buf_append(&p->ancBuf, at, ig_strlen(at) + 1); if (p->ancBuf.failed) e->afterOff = ~0u; }
+        if (bt && bt[0]) put_label(p, bt);
+        ig_free(bt);
+        ig_free(at);
+    }
 
     {
         const char* id = attr(p, "id");
@@ -2200,6 +3520,7 @@ static void raw_text_element(P* p, int tag, unsigned int* ip)
             while (i < e) {
                 unsigned int c = read_char(p->cs, p->s, e, &i, 1, 0);
                 unsigned short u;
+                if (invisible(c)) continue;
                 if (is_ws((int)c)) { if (sp) continue; c = ' '; sp = 1; } else sp = 0;
                 u = (unsigned short)c;
                 ig_buf_append(&b, &u, 2);
@@ -2216,14 +3537,18 @@ static void raw_text_element(P* p, int tag, unsigned int* ip)
         BwControl* c = new_control(p, BW_CTL_TEXTAREA, &idx);
         Elem* t = top(p);
         if (c) {
+            const char* ph = attr(p, "placeholder");
             IgBuf b;
             unsigned int i = st;
+            if (ph && ph[0]) c->label = utf8_to_16(ph, &c->labelLen);
+            c->disabled = has_attr(p, "disabled") ? 1 : has_attr(p, "readonly") ? 2 : 0;
             ig_buf_init(&b);
             if (i < e && p->s[i] == '\r') i++;
             if (i < e && p->s[i] == '\n') i++;
             while (i < e) {
                 unsigned int ch = read_char(p->cs, p->s, e, &i, 1, 0);
                 unsigned short u = (unsigned short)ch;
+                if (invisible(ch)) continue;
                 if (ch == '\r') continue;
                 ig_buf_append(&b, &u, 2);
             }
@@ -2351,6 +3676,19 @@ static void run(P* p)
     }
     while (p->depth > 1) pop(p);
     if (p->capture) finish_capture(p);
+    {
+        /* <label for=x>: the control with id x */
+        BwDoc* d = p->doc;
+        unsigned int k, c;
+        for (k = 0; k < d->labelCount; k++) {
+            if (!d->labels[k].forId) continue;
+            for (c = 0; c < d->controlCount; c++)
+                if (d->controls[c].idAttr && ig_streq(d->controls[c].idAttr, d->labels[k].forId) && d->controls[c].target >= 0) {
+                    d->labels[k].control = (int)c;
+                    break;
+                }
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ public */
@@ -2387,6 +3725,9 @@ static void init_parser(P* p, BwDoc* d, const char* data, unsigned int len, int 
     ig_memset(root, 0, sizeof(Elem));
     root->font = BW_FONT_MAKE(1, 0);
     root->px100 = 1600;
+    root->ibg = -1;
+    root->labelOff = ~0u;
+    root->afterOff = ~0u;
     root->color = d->textColor;
     root->bg = -1;
     root->target = -1;
@@ -2402,6 +3743,11 @@ static void done_parser(P* p)
     ig_buf_free(&p->cap16);
     ig_buf_free(&p->ancBuf);
     ig_free(p->optValue);
+    ig_free(p->picSrc);
+    {
+        int k;
+        for (k = 0; k < p->varCount; k++) { ig_free(p->varName[k]); ig_free(p->varVal[k]); }
+    }
     free_rules(p);
 }
 
@@ -2485,18 +3831,21 @@ void bw_doc_free(BwDoc* d)
     ig_free(d->images);
     for (i = 0; i < d->controlCount; i++) {
         BwControl* c = &d->controls[i];
-        ig_free(c->name); ig_free(c->value); ig_free(c->label);
+        ig_free(c->name); ig_free(c->value); ig_free(c->label); ig_free(c->idAttr);
         for (k = 0; k < c->optionCount; k++) { ig_free(c->options[k].label); ig_free(c->options[k].value); }
         ig_free(c->options);
     }
     ig_free(d->controls);
     for (i = 0; i < d->formCount; i++) ig_free(d->forms[i].action);
     ig_free(d->forms);
+    for (i = 0; i < d->labelCount; i++) ig_free(d->labels[i].forId);
+    ig_free(d->labels);
     for (i = 0; i < d->styleCount; i++) ig_free(d->styleUrls[i]);
     ig_free(d->styleUrls);
     for (i = 0; i < d->anchorCount; i++) ig_free(d->anchors[i].name);
     ig_free(d->anchors);
     ig_free(d->targets);
+    ig_free(d->blocks);
     ig_free(d->title);
     ig_free(d->baseUrl);
     ig_free(d->refreshUrl);

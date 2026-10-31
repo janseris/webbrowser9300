@@ -65,7 +65,7 @@ typedef struct {
 /* ---------------------------------------------------------------- the document */
 enum {
     BW_OP_TEXT = 1,      /* a run of text: off/len in the pool, font, color, flags, target */
-    BW_OP_BLOCK_START,   /* a: margin top, b: indent (px), align, color = background (or -1) */
+    BW_OP_BLOCK_START,   /* a: margin top, b: left indent (px), align, color = background (or -1), ref: box (-1) */
     BW_OP_BLOCK_END,     /* a: margin bottom */
     BW_OP_BR,
     BW_OP_HR,
@@ -78,12 +78,14 @@ enum {
     BW_OP_ROW_START,     /* color: background */
     BW_OP_ROW_END,
     BW_OP_CELL_START,    /* a: colspan, b: 1 = th, ref: rowspan, align, color: background */
-    BW_OP_CELL_END
+    BW_OP_CELL_END,
+    BW_OP_GAP            /* an item of a flex / grid row starts: a gap if the line is not empty */
 };
 
 #define BW_OPF_UNDERLINE 1
 #define BW_OPF_PRE       2
 #define BW_OPF_STRIKE    4
+#define BW_OPF_NOWRAP    8
 
 enum { BW_ALIGN_LEFT = 0, BW_ALIGN_CENTER, BW_ALIGN_RIGHT };
 
@@ -98,11 +100,22 @@ typedef struct {
     int a, b;
     int ref;
     int target;          /* the link / control the text belongs to, -1 none */
+    int bg;              /* text: the background of an inline element (-1 none) */
 } BwOp;
 
 typedef struct {
     char* href;          /* absolute URL (UTF-8) */
 } BwLink;
+
+/* a block's CSS box beyond the left margin (BLOCK_START op->a: margin top, op->b: the whole left
+ * indent = margin + border + padding; BLOCK_END op->a: margin bottom) */
+typedef struct {
+    short ml, mr, pt, pb, pl, pr;
+    unsigned char bt, br, bb, bl;     /* border widths */
+    int bc;                           /* border color */
+    short width, maxw;                /* px; < 0 a percent of the space; 0 none */
+    unsigned char center;             /* margin: auto on both sides */
+} BwBlockBox;
 
 typedef struct {
     char* src;           /* absolute URL */
@@ -128,6 +141,7 @@ typedef struct {
     int type;
     int form;            /* -1 outside a form */
     char* name;          /* UTF-8, may be NULL */
+    char* idAttr;        /* its id (for <label for>), may be NULL */
     unsigned short* value;   /* current value (UTF-16), may be NULL */
     unsigned int valueLen;
     unsigned short* label;   /* button caption */
@@ -141,6 +155,7 @@ typedef struct {
     int selected;        /* select: index */
     int target;
     int initialChecked;
+    int disabled;        /* 1 disabled (not sent, not editable), 2 readonly (sent, not editable) */
 } BwControl;
 
 typedef struct {
@@ -153,7 +168,13 @@ typedef struct {
 } BwAnchor;
 
 /* targets: what Tab / the arrows move between, in document order */
-enum { BW_TGT_LINK = 1, BW_TGT_CONTROL };
+enum { BW_TGT_LINK = 1, BW_TGT_CONTROL, BW_TGT_LABEL };
+
+/* <label for=x> / <label><input ...> text</label>: pressing it works the control */
+typedef struct {
+    char* forId;         /* the for attribute, NULL when the control is inside */
+    int control;         /* the control it works, -1 none */
+} BwLabel;
 typedef struct {
     int kind;
     int index;           /* link or control index */
@@ -168,6 +189,8 @@ typedef struct {
     BwForm* forms; unsigned int formCount, formCap;
     BwAnchor* anchors; unsigned int anchorCount, anchorCap;
     BwTarget* targets; unsigned int targetCount, targetCap;
+    BwBlockBox* blocks; unsigned int blockCount, blockCap;     /* BLOCK_START op->ref */
+    BwLabel* labels; unsigned int labelCount, labelCap;
     unsigned short* title; unsigned int titleLen;
     char* baseUrl;       /* the page URL, or <base href> */
     char* refreshUrl;    /* <meta http-equiv=refresh>, may be NULL */
@@ -222,6 +245,7 @@ typedef struct {
     unsigned int off, len;   /* text in the doc's pool */
     int ref;                 /* image / control index */
     int target;
+    int bg;                  /* text: a background behind it (-1 none) */
 } BwBox;
 
 typedef struct {

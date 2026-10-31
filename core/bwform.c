@@ -150,7 +150,7 @@ int bw_form_submit(const BwDoc* doc, int form, int submitter, char** url, char**
     ig_buf_init(&q);
     for (i = 0; i < doc->controlCount; i++) {
         const BwControl* c = &doc->controls[i];
-        if (c->form != form || !c->name) continue;
+        if (c->form != form || !c->name || c->disabled == 1) continue;
         switch (c->type) {
         case BW_CTL_TEXT: case BW_CTL_PASSWORD: case BW_CTL_HIDDEN: case BW_CTL_TEXTAREA:
             put_name(&q, c->name, cs, 0);
