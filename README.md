@@ -19,6 +19,16 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.9** (not yet run on the phone): full screen with a side bar.
+  - **Full screen is the default.** The side buttons are hidden (the Menu key still works).
+    The bar that was across the top is now a 100 px column at the right, where the buttons
+    were. It shows the page title at the top, the address of the link under the pointer (or
+    the selected one) under it, and the loading status at the bottom. The page gets the whole
+    200 px of height, so it is less of a wide, short strip.
+  - **View > Full screen** switches back to the older layout (side buttons, bar at the top) and
+    again. It's stored as `full=`, so older settings files that said `fullscreen=0` start full
+    screen once.
+  - A click on the side bar's top half pages up, on its bottom half pages down.
 - **0.8** (not yet run on the phone): Opera-style Up/Down, and the pointer fixed.
   - **Up/Down move between links and fields** the way the 9300's built-in Opera does: the next
     (previous) one if it is on the screen, otherwise the page scrolls a step. Long text between
@@ -227,9 +237,10 @@ receives logs (`localserver\ota_server.js`).
 | Ctrl+G | pictures on / off |
 | Ctrl+S | the start page |
 
-The header shows the page title (or the focused link's address) and the status on the right:
-the request stages, "34 KB, 1.2 s" when a page is done, pictures still to load. View > Full
-screen hides the side buttons (the menu still works); View > Mouse pointer (on by default) turns
+The bar at the side (full screen, the default) or at the top (View > Full screen off, with the
+side buttons) shows the page title, the address of the link under the pointer or the selected
+one, and the status: the request stages, "34 KB, 1.2 s" when a page is done, pictures still to
+load; View > Mouse pointer (on by default) turns
 the phone's cursor on or off. The link under the cursor is underlined and its address shows in
 the header; resting on an element applies `:hover` styles. Resting on the header or the bottom
 edge scrolls. A click opens a link; a click on the right edge jumps there.

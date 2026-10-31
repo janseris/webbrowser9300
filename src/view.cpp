@@ -15,6 +15,7 @@ const TInt KScrollStep = 36;
 const TInt KScrollBarW = 4;
 const TInt KFullWidth = 1024;              // the original size: a desktop window's width
 const TInt KScrollBarH = 3;                // the sideways bar at the bottom
+const TInt KSideW = 100;                   // the bar at the right: title, link, status
 const TInt KListMaxRows = 10;
 
 static TRgb Rgb(TInt c) { return TRgb((c >> 16) & 255, (c >> 8) & 255, c & 255); }
@@ -82,6 +83,7 @@ TBool CBrView::Find(const TDesC& aText, TBool aNext)
 void CBrView::ConstructL(const TRect& aRect)
     {
     CreateWindowL();
+    iSideW = KSideW;
     iHeaderH = iEikonEnv->DenseFont()->HeightInPixels() + 5;
     iRelayout = new (ELeave) CAsyncCallBack(TCallBack(RelayoutCallback, this), CActive::EPriorityIdle);
     iPointerTimer = CPeriodic::NewL(CActive::EPriorityLow);
@@ -167,7 +169,7 @@ void CBrView::Relayout()
     {
     iRelayoutPending = EFalse;
     if (!iDoc) { Render(); return; }
-    TInt width = iDoc->fullSize ? KFullWidth : Rect().Width() - KScrollBarW;
+    TInt width = iDoc->fullSize ? KFullWidth : PageAreaW() - KScrollBarW;
     if (!iDoc->fullSize) iScrollX = 0;
     // keep the first text on the screen where it is
     TInt anchorOff = -1, anchorDy = 0;
@@ -274,7 +276,7 @@ void CBrView::ClampScroll()
 
 TInt CBrView::PageWidthOnScreen() const
     {
-    return Rect().Width() - KScrollBarW;
+    return PageAreaW() - KScrollBarW;
     }
 
 void CBrView::ScrollXBy(TInt aDx)
@@ -353,7 +355,7 @@ TInt CBrView::PointerTick(TAny* aSelf)
 void CBrView::HoverAt(TPoint aPos, TBool aTick)
     {
     iPointerPos = aPos;
-    TInt w = Rect().Width();
+    TInt w = PageAreaW();
     TInt hgt = Rect().Height();
     TBool redraw = EFalse;
     if (aTick && iLayout)
@@ -438,7 +440,7 @@ void CBrView::Render()
     CFbsBitGc& gc = *iBufferGc;
     gc.Reset();
     RenderPage(gc);
-    RenderHeader(gc);
+    if (iSideBar) RenderSide(gc); else RenderHeader(gc);
     if (iListOpen) RenderList(gc);
     gc.DiscardFont();
     DrawDeferred();
@@ -457,18 +459,16 @@ void CBrView::RenderHeader(CFbsBitGc& aGc)
     TInt base = (iHeaderH - f->HeightInPixels()) / 2 + f->AscentInPixels();
     TInt statusW = iStatusText.Length() ? f->TextWidthInPixels(iStatusText) + 8 : 0;
     if (statusW > r.Width() / 2) statusW = r.Width() / 2;
-    // left: the focused link's address, else the title
+    // left: the address of the link under the pointer (or the focused one), else the title
     TBuf<160> left;
     TInt shown = iHoverTarget >= 0 ? iHoverTarget : iFocus;
     if (!iLoading && iDoc && shown >= 0 && (TUint)shown < iDoc->targetCount && iDoc->targets[shown].kind == BW_TGT_LINK)
         {
-        const char* href = iDoc->links[iDoc->targets[shown].index].href;
-        TPtrC8 h((const TUint8*)href);
+        TPtrC8 h((const TUint8*)iDoc->links[iDoc->targets[shown].index].href);
         left.Copy(h.Left(left.MaxLength()));
         }
     else left.Copy(iTitle);
-    TInt avail = r.Width() - statusW - 6;
-    TInt n = f->TextCount(left, avail);
+    TInt n = f->TextCount(left, r.Width() - statusW - 6);
     aGc.SetPenStyle(CGraphicsContext::ESolidPen);
     aGc.SetPenColor(KRgbWhite);
     aGc.DrawText(left.Left(n), TPoint(3, base));
@@ -478,6 +478,111 @@ void CBrView::RenderHeader(CFbsBitGc& aGc)
         TInt sn = f->TextCount(iStatusText, statusW - 4);
         aGc.DrawText(iStatusText.Left(sn), TPoint(r.Width() - statusW + 2, base));
         }
+    }
+
+void CBrView::SetSideBar(TBool aSide)
+    {
+    if (aSide == iSideBar) return;
+    iSideBar = aSide;              // the SetRect that follows (other size) lays the page out again
+    }
+
+// The bar at the right edge (where the side buttons are): the title at the top, the address of the
+// link under the pointer (or the focused one) under it, the status at the bottom. The page keeps
+// the whole height of the 200 px screen.
+void CBrView::RenderSide(CFbsBitGc& aGc)
+    {
+    TRect r(PageAreaW(), 0, Rect().Width(), Rect().Height());
+    aGc.SetPenStyle(CGraphicsContext::ENullPen);
+    aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+    aGc.SetBrushColor(iLoading ? TRgb(0x60, 0x30, 0x10) : TRgb(0x1C, 0x3A, 0x6E));
+    aGc.DrawRect(r);
+    aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+    const CFont* f = iEikonEnv->DenseFont();
+    aGc.UseFont(f);
+    TInt lh = f->HeightInPixels() + 1;
+    TInt x = r.iTl.iX + 3;
+    TInt w = iSideW - 5;
+    TInt maxLines = (r.Height() - 4) / lh;
+    // the status from the bottom up (up to 3 lines)
+    TInt statusLines = 0;
+    if (iStatusText.Length())
+        {
+        TInt pos = 0;
+        while (pos < iStatusText.Length() && statusLines < 3)
+            {
+            TInt n = f->TextCount(iStatusText.Mid(pos), w);
+            if (n <= 0) break;
+            pos += n;
+            statusLines++;
+            }
+        }
+    TInt bottomY = r.iBr.iY - 2 - statusLines * lh;
+    // the link's address
+    TBuf<200> link;
+    TInt shown = iHoverTarget >= 0 ? iHoverTarget : iFocus;
+    if (!iLoading && iDoc && shown >= 0 && (TUint)shown < iDoc->targetCount && iDoc->targets[shown].kind == BW_TGT_LINK)
+        {
+        TPtrC8 h((const TUint8*)iDoc->links[iDoc->targets[shown].index].href);
+        link.Copy(h.Left(link.MaxLength()));
+        }
+    TInt free = maxLines - statusLines;
+    TInt linkLines = link.Length() ? Min(4, free / 2) : 0;
+    TInt titleLines = free - linkLines;
+    if (link.Length() && titleLines > 3) titleLines = 3;
+    TInt y = r.iTl.iY + 2;
+    aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+    aGc.SetPenColor(KRgbWhite);
+    y = DrawWrapped(aGc, f, iTitle, x, y, w, titleLines);
+    if (link.Length() && linkLines > 0)
+        {
+        aGc.SetPenColor(TRgb(0x80, 0x90, 0xB0));
+        aGc.DrawLine(TPoint(x, y + 1), TPoint(x + w - 2, y + 1));
+        y += 3;
+        aGc.SetPenColor(TRgb(0xA0, 0xD0, 0xFF));
+        DrawWrapped(aGc, f, link, x, y, w, linkLines);
+        }
+    if (statusLines)
+        {
+        aGc.SetPenColor(TRgb(0xFF, 0xE0, 0x80));
+        DrawWrapped(aGc, f, iStatusText, x, bottomY, w, statusLines);
+        }
+    }
+
+// Draws the text in lines of at most aW pixels (breaking after a space when there is one in the
+// line, else anywhere, as for addresses); the last line that fits ends in "..." if text is left.
+// The y below the last line.
+TInt CBrView::DrawWrapped(CFbsBitGc& aGc, const CFont* aFont, const TDesC& aText, TInt aX, TInt aY, TInt aW, TInt aMaxLines)
+    {
+    TInt lh = aFont->HeightInPixels() + 1;
+    TInt pos = 0;
+    TInt len = aText.Length();
+    for (TInt line = 0; line < aMaxLines && pos < len; line++)
+        {
+        while (pos < len && aText[pos] == ' ') pos++;
+        TPtrC rest = aText.Mid(pos);
+        TInt n = aFont->TextCount(rest, aW);
+        if (n <= 0) break;
+        if (n < rest.Length())
+            {
+            if (line == aMaxLines - 1)
+                {
+                // the last line: cut with an ellipsis
+                _LIT(KDots, "...");
+                TInt m = aFont->TextCount(rest, aW - aFont->TextWidthInPixels(KDots));
+                TBuf<120> t;
+                t.Copy(rest.Left(Min(m, 116)));
+                t.Append(KDots);
+                aGc.DrawText(t, TPoint(aX, aY + aFont->AscentInPixels()));
+                return aY + lh;
+                }
+            TInt sp = rest.Left(n).LocateReverse(' ');
+            if (sp > n / 3) n = sp + 1;
+            }
+        aGc.DrawText(rest.Left(n), TPoint(aX, aY + aFont->AscentInPixels()));
+        aY += lh;
+        pos += n;
+        }
+    return aY;
     }
 
 void CBrView::DrawImage(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect, TInt aPriority)
@@ -647,7 +752,7 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
     {
     TInt top = PageTop();
     TInt h = PageHeightOnScreen();
-    TInt w = Rect().Width();
+    TInt w = PageAreaW();
     TRect area(TPoint(0, top), TSize(w, h));
     aGc.SetPenStyle(CGraphicsContext::ENullPen);
     aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
@@ -1148,8 +1253,14 @@ void CBrView::HandlePointerEventL(const TPointerEvent& aPointerEvent)
     if (aPointerEvent.iType != TPointerEvent::EButton1Up) return;
     TInt h = PageHeightOnScreen();
     if (iListOpen) return;
-    if (p.iY < PageTop()) { ScrollTo(iScrollY - h + 20); return; }        // the header: page up
-    if (p.iX >= Rect().Width() - KScrollBarW - 4)
+    if (p.iY < PageTop()) { ScrollTo(iScrollY - h + 20); return; }        // the top bar: page up
+    if (p.iX >= PageAreaW())
+        {
+        // the side bar: its top half pages up, the bottom half down
+        ScrollTo(iScrollY + (p.iY < Rect().Height() / 2 ? -(h - 20) : h - 20));
+        return;
+        }
+    if (p.iX >= PageAreaW() - KScrollBarW - 4)
         {
         // the scroll bar: jump there
         if (iLayout) ScrollTo((p.iY - PageTop()) * iLayout->height / Max(1, h) - h / 2);

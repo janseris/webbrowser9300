@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.8");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.8");
+_LIT(KBrVersion, "0.9");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.9");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -349,7 +349,7 @@ public:
     TBool iStyles;
     TBool iLogOn;
     TBool iMouseOn;
-    TBool iFullScreen;
+    TBool iFullScreen;              // on by default ("full="; "fullscreen", off before 0.9, is ignored)
     TInt iTextSize;                 // -1, 0, 1
     TBool iFullSize;                // View > Original size: laid out 1024 px wide, scrolls sideways
     TBool iPromptAccessPoint;
@@ -401,6 +401,7 @@ public:
     void ShowListL(TInt aId, const TDesC& aTitle, const RPointerArray<HBufC>& aItems, TInt aSelected, MListObserver& aObserver);
     TBool ListOpen() const { return iListOpen; }
     void SetPointerOn(TBool aOn);
+    void SetSideBar(TBool aSide);          // full screen (side bar) or the bar at the top
     void SetForeground(TBool aForeground);
     void ResetHover();                     // a new page: the old element numbers mean nothing; at the left
     CFbsBitmap* Buffer() const { return iBuffer; }
@@ -419,14 +420,17 @@ private:
     void ConstructL(const TRect& aRect);
     void EnsureBufferL();
     void Render();                         // into iBuffer, then DrawDeferred
-    void RenderHeader(CFbsBitGc& aGc);
+    void RenderSide(CFbsBitGc& aGc);       // full screen: the bar at the right (title, link address, status)
+    void RenderHeader(CFbsBitGc& aGc);     // otherwise the bar at the top
+    TInt DrawWrapped(CFbsBitGc& aGc, const CFont* aFont, const TDesC& aText, TInt aX, TInt aY, TInt aW, TInt aMaxLines);
     void RenderPage(CFbsBitGc& aGc);
     void RenderList(CFbsBitGc& aGc);
     void DrawControl(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect, TBool aFocused);
     void DrawImage(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect, TInt aPriority);
     void RequestImages();                  // queue the pictures near the screen
-    TInt PageTop() const { return iHeaderH; }
-    TInt PageHeightOnScreen() const { return Rect().Height() - iHeaderH; }
+    TInt PageTop() const { return iSideBar ? 0 : iHeaderH; }
+    TInt PageHeightOnScreen() const { return Rect().Height() - PageTop(); }
+    TInt PageAreaW() const { return Rect().Width() - (iSideBar ? iSideW : 0); }   // the page and its scroll bar
     void ClampScroll();
     TInt PageWidthOnScreen() const;
     TBool TargetVisible(TInt aTarget, TBool aFully) const;
@@ -449,7 +453,9 @@ private:
     TInt iScrollX;                         // > 0 only at the original size
     TInt iLayoutW;                         // the width the page was laid out at
     TInt iFocus;                           // target index, -1 none
+    TInt iSideW;
     TInt iHeaderH;
+    TBool iSideBar;                        // full screen: the bar at the side, the page the whole height
     TBuf<160> iTitle;
     TBuf<120> iStatusText;
     TBool iLoading;

@@ -266,11 +266,13 @@ void CBrAppUi::ApplyFullScreenL()
     if (iSettings->iFullScreen)
         {
         if (cba) cba->MakeVisible(EFalse);
+        iView->SetSideBar(ETrue);
         iView->SetRect(ApplicationRect());
         }
     else
         {
         if (cba) cba->MakeVisible(ETrue);
+        iView->SetSideBar(EFalse);
         iView->SetRect(ClientRect());
         }
     }
