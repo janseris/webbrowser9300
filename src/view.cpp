@@ -33,7 +33,7 @@ CBrView* CBrView::NewL(const TRect& aRect, CBrAppUi& aAppUi, CImageLoader& aImag
 
 CBrView::CBrView(CBrAppUi& aAppUi, CImageLoader& aImages, CBrFonts& aFonts)
     : iAppUi(aAppUi), iImages(aImages), iFonts(&aFonts), iFocus(-1), iForeground(ETrue), iPointerPos(-1, -1),
-      iHoverTarget(-1), iHoverElem(-1), iHoverSent(-1), iFindBox(-1)
+      iHoverTarget(-1), iHoverElem(-1), iHoverSent(-1), iPointerMinY(KMaxTInt), iFindBox(-1)
     {
     }
 
@@ -369,6 +369,7 @@ TInt CBrView::PointerTick(TAny* aSelf)
 void CBrView::HoverAt(TPoint aPos, TBool aTick)
     {
     iPointerPos = aPos;
+    if (aPos.iY < iPointerMinY) iPointerMinY = aPos.iY;
     TInt w = PageAreaW();
     TInt hgt = Rect().Height();
     TBool redraw = EFalse;
@@ -379,7 +380,10 @@ void CBrView::HoverAt(TPoint aPos, TBool aTick)
         // side bar's top included); the bottom one is reached
         if (aPos.iX >= 0 && aPos.iX < Rect().Width())
             {
-            if (aPos.iY < PageTop() + KEdgeTop) dir = -1;
+            // the top: the strip, or as high as the cursor goes (if that is in the top quarter)
+            TBool atTop = aPos.iY < PageTop() + KEdgeTop ||
+                          (iPointerMinY < hgt / 4 && aPos.iY <= iPointerMinY + 2);
+            if (atTop) dir = -1;
             else if (aPos.iY >= hgt - 3 && aPos.iX < w) dir = 1;
             }
         // sideways at the original size: the left and right edges
@@ -508,10 +512,14 @@ void CBrView::RenderHeader(CFbsBitGc& aGc)
         }
     }
 
-void CBrView::SetSideBar(TBool aSide)
+void CBrView::SetBar(TInt aSideW)
     {
-    if (aSide == iSideBar) return;
-    iSideBar = aSide;              // the SetRect that follows (other size) lays the page out again
+    TBool side = aSideW > 0;
+    if (side == iSideBar && (!side || aSideW == iSideW)) return;
+    iSideBar = side;
+    if (side) iSideW = aSideW;
+    // the page's width changed
+    if (iDoc) Relayout(); else Render();
     }
 
 // The bar at the right edge (where the side buttons are): the title at the top, the address of the

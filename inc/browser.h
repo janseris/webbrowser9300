@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.12");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.12");
+_LIT(KBrVersion, "0.13");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.13");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -357,6 +357,7 @@ public:
     TInt iTextSize;                 // -1, 0, 1
     TBool iFullSize;                // View > Original size: laid out 1024 px wide, scrolls sideways
     TBool iStatsOn;                 // View > CPU and RAM (on by default)
+    TInt iBar;                      // View > Bar: 0 top, else the side bar's width (80 / 100 / 130)
     TBool iPromptAccessPoint;
     TBuf<256> iHome;
     TBuf8<64> iServerHost;
@@ -407,7 +408,7 @@ public:
     void ShowListL(TInt aId, const TDesC& aTitle, const RPointerArray<HBufC>& aItems, TInt aSelected, MListObserver& aObserver);
     TBool ListOpen() const { return iListOpen; }
     void SetPointerOn(TBool aOn);
-    void SetSideBar(TBool aSide);          // full screen (side bar) or the bar at the top
+    void SetBar(TInt aSideW);              // the bar at the side, this wide; 0: at the top
     void SetForeground(TBool aForeground);
     void ResetHover();                     // a new page: the old element numbers mean nothing; at the left
     CFbsBitmap* Buffer() const { return iBuffer; }
@@ -481,6 +482,7 @@ private:
     TInt iHoverSent;                       // the element the page was last styled for
     TInt iHoverQuiet;                      // ticks it has rested on iHoverElem
     TInt iEdgeTicks;                       // ticks at the top / bottom edge (scrolling speeds up)
+    TInt iPointerMinY;                     // the highest the cursor has been (it stops short of the top)
     TInt iFindBox, iFindOff, iFindLen;     // the last match (box index; -1 none)
     // the list
     TBool iListOpen;
@@ -648,6 +650,21 @@ private:
     RThread iNullThread;                // the kernel's idle thread: its CPU time is the idle time
     TBool iNullOpen;
     TBool iStatsStarted;
+    // without CPU times: a lowest-priority thread counts how far it gets in ~0.1 s each second
+    // (it only runs when nothing else wants the CPU; the most it ever got = an idle phone)
+    struct TCpuProbe
+        {
+        RSemaphore iGo;
+        volatile TInt iCount;
+        volatile TInt iDone;
+        volatile TBool iQuit;
+        };
+    TCpuProbe* iProbe;
+    RThread iProbeThread;
+    TBool iProbeOn;
+    TInt iProbeSeen, iProbeMax;
+    static TInt ProbeThread(TAny* aProbe);
+    void StartProbeL();
     HBufC8* iRefreshUrl;
     TInt iLoadStartMs, iParseMs, iDownloadMs, iPageBytes;
     TBool iSubmitAfterEdit;

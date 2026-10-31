@@ -246,6 +246,15 @@ CBrAppUi::~CBrAppUi()
     if (iStatsTimer) iStatsTimer->Cancel();
     delete iStatsTimer;
     if (iNullOpen) iNullThread.Close();
+    if (iProbeOn)
+        {
+        iProbe->iQuit = ETrue;
+        iProbe->iGo.Signal();
+        iProbeThread.Kill(0);
+        iProbeThread.Close();
+        iProbe->iGo.Close();
+        }
+    delete iProbe;
     delete iRefreshUrl;
     delete iExitCallback;
     delete iStyles;
@@ -297,6 +306,38 @@ void CBrAppUi::UpdateStatsTimer(TBool aForeground)
         }
     }
 
+const TInt KProbeTicks = 6;                       // the probe's window: 6 system ticks (~0.1 s)
+
+TInt CBrAppUi::ProbeThread(TAny* aProbe)
+    {
+    TCpuProbe* p = (TCpuProbe*)aProbe;
+    for (;;)
+        {
+        p->iGo.Wait();
+        if (p->iQuit) return 0;
+        // from a tick's edge, count until KProbeTicks more have passed
+        TUint start = User::TickCount();
+        while (User::TickCount() == start) { }
+        start = User::TickCount();
+        TInt n = 0;
+        while (User::TickCount() - start < (TUint)KProbeTicks) n++;
+        p->iCount = n;
+        p->iDone++;
+        }
+    }
+
+void CBrAppUi::StartProbeL()
+    {
+    iProbe = new (ELeave) TCpuProbe;
+    Mem::FillZ(iProbe, sizeof(TCpuProbe));
+    User::LeaveIfError(iProbe->iGo.CreateLocal(0));
+    TInt err = iProbeThread.Create(_L("br9300cpuprobe"), ProbeThread, 4096, &User::Heap(), iProbe);
+    if (err != KErrNone) { iProbe->iGo.Close(); User::Leave(err); }
+    iProbeThread.SetPriority(EPriorityAbsoluteVeryLow);
+    iProbeThread.Resume();
+    iProbeOn = ETrue;
+    }
+
 TInt CBrAppUi::StatsCallback(TAny* aSelf)
     {
     ((CBrAppUi*)aSelf)->StatsTick();
@@ -326,15 +367,21 @@ void CBrAppUi::StatsTick()
         TInt64 dWall = wall - iStatsWall;
         if (dWall < TInt64(1)) dWall = TInt64(1);
         t.Append(_L("CPU "));
-        if (idleErr == KErrNone)
+        if (idleErr == KErrNone && idleT.Int64() != iStatsIdle)
             {
             TInt idlePct = ((idleT.Int64() - iStatsIdle) * TInt64(100) / dWall).GetTInt();
             if (idlePct > 100) idlePct = 100;
             if (idlePct < 0) idlePct = 0;
             t.AppendFormat(_L("%d%%"), 100 - idlePct);
             }
-        else t.Append(_L("?"));
-        if (appErr == KErrNone)
+        else if (iProbeOn && iProbe->iDone != iProbeSeen && iProbeMax > 0)
+            {
+            TInt busy = 100 - iProbe->iCount * 100 / iProbeMax;
+            if (busy < 0) busy = 0;
+            t.AppendFormat(_L("%d%%"), busy);
+            }
+        else t.Append(_L("..."));
+        if (appErr == KErrNone && appT.Int64() != iStatsApp)
             {
             TInt appPct = ((appT.Int64() - iStatsApp) * TInt64(100) / dWall).GetTInt();
             if (appPct > 100) appPct = 100;
@@ -346,6 +393,22 @@ void CBrAppUi::StatsTick()
         {
         t.Append(_L("CPU ..."));
         IgLogF2(_L("stats: cpu time errors app %d, idle %d"), appErr, idleErr);
+        }
+    // the probe: its last window, then the next one
+    if (iProbeOn)
+        {
+        if (iProbe->iDone != iProbeSeen)
+            {
+            iProbeSeen = iProbe->iDone;
+            if (iProbe->iCount > iProbeMax) iProbeMax = iProbe->iCount;
+            }
+        iProbe->iGo.Signal();
+        }
+    else if (!iProbe && iStatsStarted && !(idleErr == KErrNone && idleT.Int64() != iStatsIdle))
+        {
+        TRAPD(perr, StartProbeL());
+        IgLogF(_L("stats: cpu probe thread %d"), perr);
+        if (perr != KErrNone && iProbe) { delete iProbe; iProbe = NULL; }
         }
     iStatsStarted = ETrue;
     iStatsWall = wall;
@@ -386,13 +449,13 @@ void CBrAppUi::ApplyFullScreenL()
     if (iSettings->iFullScreen)
         {
         if (cba) cba->MakeVisible(EFalse);
-        iView->SetSideBar(ETrue);
+        iView->SetBar(iSettings->iBar);
         iView->SetRect(ApplicationRect());
         }
     else
         {
         if (cba) cba->MakeVisible(ETrue);
-        iView->SetSideBar(EFalse);
+        iView->SetBar(iSettings->iBar);
         iView->SetRect(ClientRect());
         }
     }
@@ -482,6 +545,11 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
             iHoverCount = 0;
             ReparseCurrentL();
             Say(iSettings->iFullSize ? _L("Original size: Left / Right scroll sideways") : _L("Fitted to the screen"));
+            break;
+        case EBrCmdBarTop: case EBrCmdBarNarrow: case EBrCmdBarSide: case EBrCmdBarWide:
+            iSettings->iBar = aCommand == EBrCmdBarTop ? 0 : aCommand == EBrCmdBarNarrow ? 80 : aCommand == EBrCmdBarWide ? 130 : 100;
+            iSettings->Save();
+            iView->SetBar(iSettings->iBar);
             break;
         case EBrCmdStats:
             iSettings->iStatsOn = !iSettings->iStatsOn;
@@ -582,6 +650,10 @@ void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
         aMenuPane->SetItemButtonState(EBrCmdFullSize, iSettings->iFullSize ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdMouse, iSettings->iMouseOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdStats, iSettings->iStatsOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdBarTop, iSettings->iBar == 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdBarNarrow, iSettings->iBar == 80 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdBarSide, iSettings->iBar == 100 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdBarWide, iSettings->iBar == 130 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextSmaller, iSettings->iTextSize < 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextNormal, iSettings->iTextSize == 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextBigger, iSettings->iTextSize > 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);

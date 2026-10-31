@@ -453,12 +453,10 @@ void CHttpClient::RunL()
                 TInt got = iSinkOpen ? iSinkBytes : iRespLen;
                 if (got / 2048 != iLastProgressKb)
                     {
-                    // "12 / 40 KB, 30%" (the body when its length is known), then the speed
+                    // "12 / 40 KB" (the body when its length is known), then the speed
                     TInt body = iSinkOpen ? iSinkBytes : (iHeadersDone ? iRespLen - (TInt)iInfo.headerLen : 0);
                     TBuf<60> t;
-                    if (iHeadersDone && iInfo.contentLength > 0)
-                        t.Format(_L("%d / %d KB, %d%%"), body / 1024, iInfo.contentLength / 1024,
-                                 (TInt)((TInt64(body) * TInt64(100) / TInt64(iInfo.contentLength)).GetTInt()));
+                    if (iHeadersDone && iInfo.contentLength > 0) t.Format(_L("%d / %d KB"), body / 1024, iInfo.contentLength / 1024);
                     else t.Format(_L("%d KB"), got / 1024);
                     TTime now; now.UniversalTime();
                     TInt ms = (now.MicroSecondsFrom(iRequestStart).Int64() / TInt64(1000)).GetTInt();

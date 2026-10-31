@@ -19,6 +19,20 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.13** (not yet run on the phone): CPU without CPU times, the bar's place and width, the
+  pointer's top.
+  - **CPU works without the kernel's CPU times** (the phone showed "?"). Once a second, a thread
+    at the lowest priority counts how far it gets in about 0.1 s. It only runs when nothing else
+    wants the CPU, so the most it ever got is an idle phone, and less means busy:
+    busy = 100% - count / best count. It costs about 10% of one second and never slows anything
+    else down. The app's own share is shown only when the phone keeps thread CPU times.
+    The first readings can be low until it has seen an idle moment.
+  - **View > Bar: at the top / side, narrow (80 px) / side (100 px) / side, wide (130 px)**,
+    independent of full screen (`bar=`; Full screen now only hides the side buttons).
+  - **The pointer's top edge**: the cursor stops lower than the 12 px strip. The browser now
+    remembers the highest point the cursor has reached and treats resting there (if it's in the
+    top quarter) as the top edge. Push the cursor up as far as it goes and wait.
+  - The download progress no longer shows a percentage ("12 / 40 KB" says it).
 - **0.12** (not yet run on the phone): CPU and RAM shown, and more RAM used.
   - **View > CPU and RAM** (on by default): three lines at the bottom of the side bar (or in
     the top bar's row), updated once a second while the browser is in front. Only the bar is
