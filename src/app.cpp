@@ -23,9 +23,10 @@
 #include "browser.h"
 
 _LIT(KBookmarksFile, "C:\\System\\Data\\browser9300\\bookmarks.txt");
+_LIT(KHistoryFile, "C:\\System\\Data\\browser9300\\history.txt");
 _LIT(KCookiesFile, "C:\\System\\Data\\browser9300\\cookies.txt");
 _LIT(KUpdateFile, "C:\\System\\Temp\\browser9300_update.sis");
-_LIT8(KUpdatePath, "/browser9300/browser9300.sis");
+_LIT8(KUpdatePath, "/browser9300.sis");            // localserver\browser9300.sis
 
 const TInt KHistoryMax = 40;
 // Pages kept in RAM for Back / Forward and stylesheets for the next pages of a site: as much as
@@ -312,6 +313,7 @@ void CBrAppUi::ConstructL()
     bw_cookies_init(&iCookies);
     LoadCookies();
     TRAP(err, LoadBookmarksL());
+    TRAP(err, LoadVisitsL());
     iFonts = CBrFonts::NewL(iSettings->iTextSize);
     iImages = CImageLoader::NewL(*this, iCookies);
     iImages->SetEnabled(iSettings->iImages);
@@ -351,6 +353,9 @@ CBrAppUi::~CBrAppUi()
     {
     if (iSettings) iSettings->Save();
     SaveCookies();
+    SaveVisits();
+    iVisitUrls.ResetAndDestroy();
+    iVisitTitles.ResetAndDestroy();
     if (iView) RemoveFromStack(iView);
     delete iView;
     if (iRefreshTimer) iRefreshTimer->Cancel();
@@ -395,7 +400,7 @@ CBrAppUi::~CBrAppUi()
 void CBrAppUi::HandleForegroundEventL(TBool aForeground)
     {
     CEikAppUi::HandleForegroundEventL(aForeground);
-    if (!aForeground) { IgLogFlush(); SaveCookies(); }
+    if (!aForeground) { IgLogFlush(); SaveCookies(); SaveVisits(); }
     if (iView) iView->SetForeground(aForeground);
     UpdateStatsTimer(aForeground);
     // the cursor's state is the window group's: switch it on again whenever we are in front
@@ -898,10 +903,9 @@ void CBrAppUi::GoToDialogL(TUint aFirstChar)
     // the addresses visited, newest first, each once (not the internal about: pages)
     CDesCArrayFlat* hist = new (ELeave) CDesCArrayFlat(16);
     CleanupStack::PushL(hist);
-    for (TInt i = iHistory.Count() - 1; i >= 0; i--)
+    for (TInt i = 0; i < iVisitUrls.Count(); i++)
         {
-        const TDesC8& u = *iHistory[i].iUrl;
-        if (u.Left(6) == _L8("about:")) continue;
+        const TDesC8& u = *iVisitUrls[i];
         HBufC* u16 = Utf8ToUnicodeL(u.Left(1000));
         CleanupStack::PushL(u16);
         TInt pos;
@@ -1356,6 +1360,8 @@ void CBrAppUi::ShowLoadedL(const TDesC8& aUrl, const TDesC8& aContentType, HBufC
     e2.iTitle = NULL;
     BwDoc* d = iView->Doc();
     if (d && d->titleLen) e2.iTitle = TPtrC((const TUint16*)d->title, d->titleLen).Alloc();
+    TRAPD(verr, RecordVisitL(aUrl, e2.iTitle));
+    (void)verr;
     IgTrace(_L("title kept"));
     TrimHistoryCache();
     IgTrace(_L("history trimmed"));
@@ -2012,7 +2018,7 @@ HBufC8* CBrAppUi::BookmarksPageLC(TBool aHistory)
     {
     TInt size = 2000;
     if (aHistory)
-        for (TInt i = 0; i < iHistory.Count(); i++) size += iHistory[i].iUrl->Length() * 2 + (iHistory[i].iTitle ? iHistory[i].iTitle->Length() * 6 : 0) + 60;
+        for (TInt i = 0; i < iVisitUrls.Count(); i++) size += iVisitUrls[i]->Length() * 2 + iVisitTitles[i]->Length() * 6 + 60;
     else
         for (TInt i = 0; i < iBookmarkUrls.Count(); i++) size += iBookmarkUrls[i]->Length() * 3 + iBookmarkTitles[i]->Length() * 6 + 80;
     HBufC8* b = HBufC8::NewLC(size);
@@ -2022,17 +2028,14 @@ HBufC8* CBrAppUi::BookmarksPageLC(TBool aHistory)
     p.Append(KPageStyle);
     if (aHistory)
         {
-        p.Append(_L8("<h1>History</h1><ol>"));
-        for (TInt i = iHistory.Count() - 1; i >= 0; i--)
+        p.Append(_L8("<h1>History</h1><p class=s>The pages visited, newest first (kept across restarts). <a href='about:clearhistory'>Clear the history</a></p><ol>"));
+        for (TInt i = 0; i < iVisitUrls.Count(); i++)
             {
-            const THistoryEntry& e = iHistory[i];
-            if (e.iUrl->Left(6) == _L8("about:")) continue;
             p.Append(_L8("<li><a href=\""));
-            AppendHtmlEscaped(p, *e.iUrl);
+            AppendHtmlEscaped(p, *iVisitUrls[i]);
             p.Append(_L8("\">"));
-            if (e.iTitle && e.iTitle->Length()) AppendHtmlEscaped(p, *e.iTitle); else AppendHtmlEscaped(p, *e.iUrl);
+            if (iVisitTitles[i]->Length()) AppendHtmlEscaped(p, *iVisitTitles[i]); else AppendHtmlEscaped(p, *iVisitUrls[i]);
             p.Append(_L8("</a>"));
-            if (e.iBody) p.Append(_L8(" <span class=s>(kept)</span>"));
             }
         p.Append(_L8("</ol>"));
         }
@@ -2089,6 +2092,16 @@ void CBrAppUi::ShowInternalL(const TDesC8& aUrl)
     else if (u.CompareF(_L8("about:history")) == 0) body = BookmarksPageLC(ETrue);
     else if (u.CompareF(_L8("about:blank")) == 0) { body = HBufC8::NewLC(1); }
     else if (u.CompareF(_L8("about:log")) == 0) body = LogPageLC(EFalse);
+    else if (u.CompareF(_L8("about:clearhistory")) == 0)
+        {
+        iVisitUrls.ResetAndDestroy();
+        iVisitTitles.ResetAndDestroy();
+        iVisitsDirty = ETrue;
+        SaveVisits();
+        CleanupStack::PopAndDestroy(url);
+        ShowInternalL(_L8("about:history"));
+        return;
+        }
     else if (u.CompareF(_L8("about:prevlog")) == 0) body = LogPageLC(ETrue);
     else body = StartPageLC();
     iNavigatingHistory = iNavigatingHistory && iHistoryPos >= 0;
@@ -2163,6 +2176,104 @@ void CBrAppUi::LoadBookmarksL()
         CleanupStack::Pop(2);
         }
     CleanupStack::PopAndDestroy(2);
+    }
+
+// ------------------------------------------------------------------ the saved history
+
+const TInt KVisitsMax = 200;
+
+void CBrAppUi::RecordVisitL(const TDesC8& aUrl, const TDesC* aTitle)
+    {
+    if (aUrl.Left(6).CompareF(_L8("about:")) == 0 || aUrl.Left(5).CompareF(_L8("data:")) == 0 || aUrl.Length() > 1000) return;
+    for (TInt i = 0; i < iVisitUrls.Count(); i++)
+        if (*iVisitUrls[i] == aUrl)
+            {
+            delete iVisitUrls[i]; delete iVisitTitles[i];
+            iVisitUrls.Remove(i); iVisitTitles.Remove(i);
+            break;
+            }
+    HBufC8* u = aUrl.AllocLC();
+    HBufC* t = aTitle ? aTitle->Left(200).AllocLC() : KNullDesC().AllocLC();
+    User::LeaveIfError(iVisitUrls.Insert(u, 0));
+    TInt err = iVisitTitles.Insert(t, 0);
+    if (err != KErrNone) { iVisitUrls.Remove(0); User::Leave(err); }
+    CleanupStack::Pop(2);
+    while (iVisitUrls.Count() > KVisitsMax)
+        {
+        TInt last = iVisitUrls.Count() - 1;
+        delete iVisitUrls[last]; delete iVisitTitles[last];
+        iVisitUrls.Remove(last); iVisitTitles.Remove(last);
+        }
+    iVisitsDirty = ETrue;
+    }
+
+// history.txt: URL TAB title per line (UTF-8), newest first
+void CBrAppUi::LoadVisitsL()
+    {
+    RFs& fs = iCoeEnv->FsSession();
+    RFile f;
+    if (f.Open(fs, KHistoryFile, EFileRead) != KErrNone) return;
+    CleanupClosePushL(f);
+    TInt size = 0;
+    f.Size(size);
+    if (size > 256 * 1024) size = 256 * 1024;
+    HBufC8* buf = HBufC8::NewLC(size);
+    TPtr8 p = buf->Des();
+    User::LeaveIfError(f.Read(p));
+    TInt i = 0;
+    while (i < p.Length() && iVisitUrls.Count() < KVisitsMax)
+        {
+        TInt e = i;
+        while (e < p.Length() && p[e] != '\n') e++;
+        TPtrC8 line = p.Mid(i, e - i);
+        if (line.Length() && line[line.Length() - 1] == '\r') line.Set(line.Left(line.Length() - 1));
+        i = e + 1;
+        TInt tab = line.Locate('\t');
+        TPtrC8 url = tab >= 0 ? line.Left(tab) : line;
+        TPtrC8 title = tab >= 0 ? line.Mid(tab + 1) : TPtrC8();
+        if (!url.Length()) continue;
+        HBufC8* u = url.AllocLC();
+        HBufC* t = Utf8ToUnicodeL(title);
+        CleanupStack::PushL(t);
+        PtrAppendL(iVisitUrls, u);
+        PtrAppendL(iVisitTitles, t);
+        CleanupStack::Pop(2);
+        }
+    CleanupStack::PopAndDestroy(2);
+    }
+
+void CBrAppUi::SaveVisits()
+    {
+    if (!iVisitsDirty) return;
+    RFs& fs = iCoeEnv->FsSession();
+    fs.MkDirAll(KHistoryFile);
+    RFile f;
+    if (f.Replace(fs, KHistoryFile, EFileWrite) != KErrNone) { IgLog(_L("history: cannot write")); return; }
+    // (one write: the flash takes ~15 ms a write whatever its size)
+    TInt size = 16;
+    for (TInt i = 0; i < iVisitUrls.Count(); i++) size += iVisitUrls[i]->Length() + iVisitTitles[i]->Length() * 3 + 3;
+    HBufC8* all = HBufC8::New(size);
+    if (all)
+        {
+        TPtr8 a = all->Des();
+        for (TInt i = 0; i < iVisitUrls.Count(); i++)
+            {
+            a.Append(*iVisitUrls[i]);
+            a.Append('\t');
+            HBufC8* t = NULL;
+            TRAPD(err, t = UnicodeToUtf8L(*iVisitTitles[i]));
+            if (err == KErrNone && t)
+                {
+                for (TInt k = 0; k < t->Length() && a.Length() + 3 < a.MaxLength(); k++) { TUint8 c = (*t)[k]; a.Append(c == '\t' || c == '\r' || c == '\n' ? ' ' : c); }
+                delete t;
+                }
+            a.Append(_L8("\r\n"));
+            }
+        f.Write(*all);
+        delete all;
+        }
+    f.Close();
+    iVisitsDirty = EFalse;
     }
 
 void CBrAppUi::SaveBookmarks()

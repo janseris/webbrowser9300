@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.20");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.20");
+_LIT(KBrVersion, "0.21");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.21");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -719,7 +719,14 @@ private:
     CHttpClient* iHelperHttp;
     TInt iHelperOp;                // 1 update, 2 log upload, 3 screenshot
     BwCookieJar iCookies;
-    RArray<THistoryEntry> iHistory;
+    RArray<THistoryEntry> iHistory;        // Back / Forward (this run)
+    // the pages visited, newest first, each once, kept across runs (history.txt)
+    RPointerArray<HBufC8> iVisitUrls;
+    RPointerArray<HBufC> iVisitTitles;
+    TBool iVisitsDirty;
+    void RecordVisitL(const TDesC8& aUrl, const TDesC* aTitle);
+    void LoadVisitsL();
+    void SaveVisits();
     TInt iHistoryPos;              // the entry on screen
     TBool iNavigatingHistory;      // the load comes from Back/Forward: no new entry
     TInt iRestoreScroll, iRestoreFocus;

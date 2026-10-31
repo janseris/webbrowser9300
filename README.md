@@ -19,6 +19,13 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.21** (not yet run on the phone): history across restarts; the update path.
+  - **The history is kept**: the pages visited, newest first, each once, up to 200, in
+    `C:\System\Data\browser9300\history.txt` (URL TAB title, UTF-8). It's saved when the
+    browser goes to the background or exits, in one write. The History page (with "Clear the
+    history") and the address bar's list use it. Back / Forward stay per run, as on a computer.
+  - Tools > Update from the PC fetches `/browser9300.sis` (the `.sis` in the local server's
+    folder itself, not in a `browser9300\` subfolder).
 - **0.20** (not yet run on the phone): downloads bigger than the RAM; the app icon fixed.
   - **Every accepted download now streams to its file.** Before, chunked replies (the common
     kind for generated files) were collected in RAM, and gzip replies would have been saved
@@ -340,10 +347,11 @@ receives logs (`localserver\ota_server.js`).
 ## Install
 
 1. The TLS 1.2 `ssladaptor.dll` must be in `C:\System\Libs` (it is on this phone) for https.
-2. Copy `bin\browser9300.sis` to `C:\Users\Jan\phoneapk\localserver\browser9300\browser9300.sis`
-   and start `node ota_server.js` there.
-3. First time: open `http://192.168.137.1:8000/browser9300/browser9300.sis` in the phone's own
-   browser (or install with PC Suite). Later versions: **Tools > Update from the PC**.
+2. Copy `bin\browser9300.sis` to `C:\Users\Jan\phoneapk\localserver\browser9300.sis` (the
+   server folder itself, no subfolder) and start `node ota_server.js` there.
+3. First time: open `http://192.168.137.1:8000/browser9300.sis` in the phone's own browser (or
+   install with PC Suite). Later versions: **Tools > Update from the PC** (0.21 and later fetch
+   `/browser9300.sis`; earlier versions looked in a `browser9300/` subfolder).
 4. Start **Browser 9300** from Desk.
 
 ## Keys
@@ -382,7 +390,7 @@ edge scrolls. A click opens a link; a click on the right edge jumps there.
 
 ## Files on the phone
 
-`C:\System\Data\browser9300\`: `settings.txt`, `bookmarks.txt` (URL TAB title per line, UTF-8),
+`C:\System\Data\browser9300\`: `settings.txt`, `bookmarks.txt` and `history.txt` (URL TAB title per line, UTF-8),
 `cookies.txt`, `log.txt` and `log_prev.txt` (the previous run). Downloads: `C:\System\Temp\`.
 
 ## Build
