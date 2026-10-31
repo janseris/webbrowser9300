@@ -19,6 +19,20 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.15** (not yet run on the phone): the crash on every page (KERN-EXEC 3) fixed, very likely
+  a stack overflow.
+  - **Cause**: an app's main thread on EKA1 has only ~8 KB of stack. A page arrived deep in the
+    network callbacks (HTTP client 324 B, page loader 1,088 B, ...) and was parsed, laid out and
+    *drawn* right there. 0.11-0.14 made the drawing deeper: the side bar 660 B, its text
+    wrapping 348 B, the icon row. Frames measured from `sub sp` in the ARM objects.
+  - **Fix**: drawing is asynchronous. `Render()` only asks; `DoRender` runs from a callback
+    right after the current event, from a shallow stack, and once for several requests. A
+    downloaded page, and the re-parse when its stylesheets arrive, are also shown from their
+    own callbacks instead of inside the network code.
+  - **Tools > Show the log / Show the previous log** show the log's last 48 KB as a page, so it
+    can be read on the phone without a cable. After a crash, start the browser again and open
+    the previous log. It's written only with Tools > Logging on. It's now also saved right
+    after a page arrives and after it's parsed, so it shows how far a crash got.
 - **0.14** (not yet run on the phone): the page's icon.
   - **Favicon**: shown in front of the site's name at the top of the side bar, or in front of the
     title in the top bar (16 px).

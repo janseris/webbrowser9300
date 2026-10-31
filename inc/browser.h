@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.14");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.14");
+_LIT(KBrVersion, "0.15");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.15");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -428,7 +428,9 @@ private:
     CBrView(CBrAppUi& aAppUi, CImageLoader& aImages, CBrFonts& aFonts);
     void ConstructL(const TRect& aRect);
     void EnsureBufferL();
-    void Render();                         // into iBuffer, then DrawDeferred
+    void Render();                         // asks for a redraw: DoRender runs from its own callback
+    void DoRender();                       // into iBuffer, then DrawDeferred
+    static TInt RenderCallback(TAny* aSelf);
     void RenderSide(CFbsBitGc& aGc);       // full screen: the bar at the right (title, link address, status)
     void RenderHeader(CFbsBitGc& aGc);     // otherwise the bar at the top
     TInt DrawWrapped(CFbsBitGc& aGc, const CFont* aFont, const TDesC& aText, TInt aX, TInt aY, TInt aW, TInt aMaxLines);
@@ -475,6 +477,7 @@ private:
     CFbsBitmap* iBuffer;
     CFbsBitmapDevice* iBufferDev;
     CFbsBitGc* iBufferGc;
+    CAsyncCallBack* iRender;               // drawing from a shallow stack (8 KB on EKA1) and once per burst
     CAsyncCallBack* iRelayout;             // image sizes arrive in bursts: one relayout per burst
     TBool iRelayoutPending;
     TInt iLayoutMs;
@@ -564,6 +567,7 @@ public:
     void StatsTick();
     void UpdateStatsTimer(TBool aForeground);
     void SetPageIconL(const TDesC8& aUrl, const BwDoc* aDoc);
+    HBufC8* LogPageLC(TBool aPrevious);   // about:log / about:prevlog: the log file's end as a page
     void ApplyCursor();                   // the phone's virtual cursor on / off as set (logged)
     void ReparseCurrentL();               // the page on the screen parsed again (hover, original size)
     void EditControlL(TInt aControl, TUint aFirstChar = 0);
@@ -576,6 +580,9 @@ public:
 
     // MPageObserver
     void PageLoaded(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8* aBody, TInt aStatus);
+    static TInt ShowCallback(TAny* aSelf);
+    void ShowPendingPage();               // the page that arrived, from a shallow stack
+    void DropPendingPage();
     void PageDownloaded(const TDesC& aFile, const TDesC8& aContentType);
     void PageFailed(const TDesC& aText);
     void PageProgress(const TDesC& aText);
@@ -651,6 +658,14 @@ private:
     HBufC8* iCurrentUrl;
     TInt iSelectControl;           // the <select> whose list is open
     CPeriodic* iRefreshTimer;
+    CAsyncCallBack* iShowCallback;
+    CAsyncCallBack* iStylesCallback;
+    static TInt StylesCallback(TAny* aSelf);
+    void ApplyArrivedStyles();
+    HBufC8* iPendUrl;
+    HBufC8* iPendCt;
+    HBufC8* iPendBody;
+    TInt iPendStatus;
     CPeriodic* iStatsTimer;             // CPU and RAM, once a second while in front
     TInt64 iStatsWall, iStatsApp, iStatsIdle;
     RThread iNullThread;                // the kernel's idle thread: its CPU time is the idle time

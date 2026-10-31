@@ -33,6 +33,9 @@ const TInt KCssCacheMin = 900 * 1024;             // kept even when RAM is short
 const TInt KCacheRamReserve = 2560 * 1024;        // the free RAM the caches leave for the system
 const TInt KStatsTickUs = 1000000;
 
+// the internal pages' start
+_LIT8(KPageHead, "<html><head><meta charset=utf-8><title>");
+_LIT8(KPageStyle, "</title><style>body{background:#f4f6fa} h1{color:#1c3a6e} .s{color:#777}</style></head><body>");
 enum { EListSelect = 1, EListInfo = 2 };
 enum { EHelperNone = 0, EHelperUpdate, EHelperLog, EHelperShot };
 
@@ -211,6 +214,8 @@ void CBrAppUi::ConstructL()
     iHelperHttp = CHttpClient::NewL();
     iStyles = CStyleFetcher::NewL(*this, iCookies);
     iRefreshTimer = CPeriodic::NewL(CActive::EPriorityStandard);
+    iShowCallback = new (ELeave) CAsyncCallBack(TCallBack(ShowCallback, this), CActive::EPriorityHigh);
+    iStylesCallback = new (ELeave) CAsyncCallBack(TCallBack(StylesCallback, this), CActive::EPriorityStandard);
     iStatsTimer = CPeriodic::NewL(CActive::EPriorityLow);
     {
     // the idle thread's CPU time is the idle time (if this kernel keeps CPU times)
@@ -245,6 +250,9 @@ CBrAppUi::~CBrAppUi()
     delete iRefreshTimer;
     if (iStatsTimer) iStatsTimer->Cancel();
     delete iStatsTimer;
+    DropPendingPage();
+    delete iShowCallback;
+    delete iStylesCallback;
     if (iNullOpen) iNullThread.Close();
     if (iProbeOn)
         {
@@ -427,6 +435,59 @@ void CBrAppUi::StatsTick()
     iView->SetStats(t);
     }
 
+// The last 48 KB of the log (this run's, or the previous run's: after a crash, what happened just
+// before it), one line per line, newest at the bottom
+HBufC8* CBrAppUi::LogPageLC(TBool aPrevious)
+    {
+    const TInt KTail = 48 * 1024;
+    RFs& fs = iCoeEnv->FsSession();
+    RFile f;
+    HBufC8* raw = NULL;
+    if (f.Open(fs, aPrevious ? LogPrevFileName() : LogFileName(), EFileRead | EFileShareAny) == KErrNone)
+        {
+        TInt size = 0;
+        f.Size(size);
+        TInt from = size > KTail ? size - KTail : 0;
+        raw = HBufC8::New(size - from);
+        if (raw)
+            {
+            TPtr8 rp = raw->Des();
+            f.Read(from, rp);
+            }
+        f.Close();
+        }
+    if (raw) CleanupStack::PushL(raw);
+    HBufC8* b = HBufC8::NewLC((raw ? raw->Length() * 6 : 0) + 1200);
+    TPtr8 p = b->Des();
+    p.Append(KPageHead);
+    p.Append(aPrevious ? _L8("The previous log") : _L8("The log"));
+    p.Append(KPageStyle);
+    p.Append(aPrevious ? _L8("<h1>The previous log</h1>") : _L8("<h1>The log</h1>"));
+    if (!raw || !raw->Length())
+        p.Append(_L8("<p>Empty. Turn on Tools &gt; Log (it is written only then); after a crash, start the browser again and open Tools &gt; Show the previous log.</p>"));
+    else
+        {
+        p.Append(_L8("<div style='font-size:small'>"));
+        TPtrC8 r(*raw);
+        TInt start = 0;
+        for (TInt i = 0; i <= r.Length(); i++)
+            {
+            if (i < r.Length() && r[i] != '\n') continue;
+            TPtrC8 line = r.Mid(start, i - start);
+            if (line.Length() && line[line.Length() - 1] == '\r') line.Set(line.Left(line.Length() - 1));
+            AppendHtmlEscaped(p, line);
+            p.Append(_L8("<br>"));
+            start = i + 1;
+            }
+        p.Append(_L8("</div>"));
+        }
+    p.Append(_L8("</body></html>"));
+    CleanupStack::Pop(b);
+    if (raw) CleanupStack::PopAndDestroy(raw);
+    CleanupStack::PushL(b);
+    return b;
+    }
+
 // The page's icon: its best <link rel=icon>, else /favicon.ico of its site (http / https only)
 void CBrAppUi::SetPageIconL(const TDesC8& aUrl, const BwDoc* aDoc)
     {
@@ -605,6 +666,8 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
         case EBrCmdBottom: iView->ScrollTo(iView->PageHeight()); break;
         case EBrCmdUpdate: UpdateFromPcL(); break;
         case EBrCmdSendLog: SendLogL(); break;
+        case EBrCmdShowLog: IgLogFlush(); OpenUrlL(_L8("about:log")); break;
+        case EBrCmdShowPrevLog: OpenUrlL(_L8("about:prevlog")); break;
         case EBrCmdSendPrevLog:
             {
             iHelperOp = EHelperLog;
@@ -759,6 +822,7 @@ void CBrAppUi::SaveHistoryPosition()
 void CBrAppUi::OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost, TBool aAddHistory)
     {
     iRefreshTimer->Cancel();
+    DropPendingPage();
     if (aUrl.Left(11).CompareF(_L8("javascript:")) == 0) { Say(_L("JavaScript links do not work here")); return; }
     if (aUrl.Left(7).CompareF(_L8("mailto:")) == 0 || aUrl.Left(4).CompareF(_L8("tel:")) == 0)
         {
@@ -1022,6 +1086,18 @@ void CBrAppUi::StyleArrived(const TDesC8& aUrl, const TDesC8* aCss)
 
 void CBrAppUi::StylesDone()
     {
+    // (called deep in the stylesheet fetcher's callbacks: the re-parse runs from its own)
+    if (iStylesCallback && !iStylesCallback->IsActive()) iStylesCallback->CallBack();
+    }
+
+TInt CBrAppUi::StylesCallback(TAny* aSelf)
+    {
+    ((CBrAppUi*)aSelf)->ApplyArrivedStyles();
+    return 0;
+    }
+
+void CBrAppUi::ApplyArrivedStyles()
+    {
     // the page on the screen again, with them (if it is still the page that asked)
     if (iHistoryPos < 0 || iHistoryPos >= iHistory.Count()) return;
     THistoryEntry& e = iHistory[iHistoryPos];
@@ -1073,6 +1149,7 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
                  doc->opCount, doc->linkCount, doc->imageCount, doc->cssRules);
         if (doc->failed) l.Append(KOom);
         IgLog(l);
+        IgLogFlush();
         }
     if (!aReparse) iImages->ClearAll();
     // the sizes of pictures already decoded (a new layout of the same page)
@@ -1152,13 +1229,48 @@ void CBrAppUi::ShowLoadedL(const TDesC8& aUrl, const TDesC8& aContentType, HBufC
     TrimHistoryCache();
     }
 
+// The page has arrived (deep in the HTTP client's callbacks): it is parsed, laid out and shown from
+// a callback of its own, with the stack nearly empty (EKA1 gives the app's thread ~8 KB).
 void CBrAppUi::PageLoaded(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8* aBody, TInt aStatus)
     {
     iDownloadMs = (TInt)TickMs() - iLoadStartMs;
     iPageBytes = aBody->Length();
     IgLogF2(_L("page: HTTP %d, %d bytes"), aStatus, aBody->Length());
-    TRAPD(err, ShowLoadedL(aUrl, aContentType, aBody));
+    IgLogFlush();                                   // (if the next steps crash, the log says how far it got)
+    DropPendingPage();
+    iPendUrl = aUrl.Alloc();
+    iPendCt = aContentType.Alloc();
+    iPendBody = aBody;
+    iPendStatus = aStatus;
+    if (!iPendUrl || !iPendCt) { DropPendingPage(); Say(_L("Out of memory: the page cannot be shown")); return; }
+    iShowCallback->CallBack();
+    }
+
+void CBrAppUi::DropPendingPage()
+    {
+    if (iShowCallback) iShowCallback->Cancel();
+    delete iPendUrl; iPendUrl = NULL;
+    delete iPendCt; iPendCt = NULL;
+    delete iPendBody; iPendBody = NULL;
+    }
+
+TInt CBrAppUi::ShowCallback(TAny* aSelf)
+    {
+    ((CBrAppUi*)aSelf)->ShowPendingPage();
+    return 0;
+    }
+
+void CBrAppUi::ShowPendingPage()
+    {
+    if (!iPendUrl || !iPendCt || !iPendBody) return;
+    HBufC8* url = iPendUrl; iPendUrl = NULL;
+    HBufC8* ct = iPendCt; iPendCt = NULL;
+    HBufC8* aBody = iPendBody; iPendBody = NULL;
+    TInt aStatus = iPendStatus;
+    TRAPD(err, ShowLoadedL(*url, *ct, aBody));
     delete aBody;
+    delete url;
+    delete ct;
     if (err != KErrNone)
         {
         TBuf<60> t;
@@ -1561,8 +1673,6 @@ void CBrAppUi::PageInfoL()
 
 // ------------------------------------------------------------------ internal pages
 
-_LIT8(KPageHead, "<html><head><meta charset=utf-8><title>");
-_LIT8(KPageStyle, "</title><style>body{background:#f4f6fa} h1{color:#1c3a6e} .s{color:#777}</style></head><body>");
 
 HBufC8* CBrAppUi::StartPageLC()
     {
@@ -1671,6 +1781,8 @@ void CBrAppUi::ShowInternalL(const TDesC8& aUrl)
     if (u.CompareF(_L8("about:bookmarks")) == 0) body = BookmarksPageLC(EFalse);
     else if (u.CompareF(_L8("about:history")) == 0) body = BookmarksPageLC(ETrue);
     else if (u.CompareF(_L8("about:blank")) == 0) { body = HBufC8::NewLC(1); }
+    else if (u.CompareF(_L8("about:log")) == 0) body = LogPageLC(EFalse);
+    else if (u.CompareF(_L8("about:prevlog")) == 0) body = LogPageLC(ETrue);
     else body = StartPageLC();
     iNavigatingHistory = iNavigatingHistory && iHistoryPos >= 0;
     AddHistoryL(u);

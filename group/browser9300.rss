@@ -124,6 +124,8 @@ RESOURCE MENU_PANE r_br_menu_tools
         MENU_ITEM { command = EBrCmdUpdate; txt = "Update from the PC"; },
         MENU_ITEM { command = EBrCmdSendLog; txt = "Send the log to the PC"; },
         MENU_ITEM { command = EBrCmdSendPrevLog; txt = "Send the previous log"; },
+        MENU_ITEM { command = EBrCmdShowLog; txt = "Show the log"; },
+        MENU_ITEM { command = EBrCmdShowPrevLog; txt = "Show the previous log"; },
         MENU_ITEM { command = EBrCmdScreenshot; txt = "Send a screenshot"; },
         MENU_ITEM { command = EBrCmdServer; txt = "PC server address..."; flags = EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdLogging; txt = "Logging"; flags = EEikMenuItemCheckBox; },

@@ -24,6 +24,8 @@ enum TBrCommands
     EBrCmdUpdate,
     EBrCmdSendLog,
     EBrCmdSendPrevLog,
+    EBrCmdShowPrevLog,
+    EBrCmdShowLog,
     EBrCmdScreenshot,
     EBrCmdServer,
     EBrCmdLogging,

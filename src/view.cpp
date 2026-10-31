@@ -85,6 +85,8 @@ TBool CBrView::Find(const TDesC& aText, TBool aNext)
 void CBrView::ConstructL(const TRect& aRect)
     {
     CreateWindowL();
+    // first: SetRect below draws
+    iRender = new (ELeave) CAsyncCallBack(TCallBack(RenderCallback, this), CActive::EPriorityHigh);
     iSideW = KSideW;
     iHeaderH = iEikonEnv->DenseFont()->HeightInPixels() + 5;
     iRelayout = new (ELeave) CAsyncCallBack(TCallBack(RelayoutCallback, this), CActive::EPriorityIdle);
@@ -97,6 +99,7 @@ void CBrView::ConstructL(const TRect& aRect)
 
 CBrView::~CBrView()
     {
+    delete iRender;
     delete iRelayout;
     delete iIconUrl;
     if (iPointerTimer) iPointerTimer->Cancel();
@@ -477,7 +480,21 @@ void CBrView::Draw(const TRect& /*aRect*/) const
         }
     }
 
+// The app's main thread has only ~8 KB of stack on EKA1, and a page arrives deep inside the network
+// code's callbacks: drawing there overflowed it (KERN-EXEC 3 in 0.14). Render only asks; the
+// drawing happens from the callback, right after the current event, once for several requests.
 void CBrView::Render()
+    {
+    if (iRender && !iRender->IsActive()) iRender->CallBack();
+    }
+
+TInt CBrView::RenderCallback(TAny* aSelf)
+    {
+    ((CBrView*)aSelf)->DoRender();
+    return 0;
+    }
+
+void CBrView::DoRender()
     {
     TRAPD(err, EnsureBufferL());
     if (err != KErrNone || !iBufferGc) return;
