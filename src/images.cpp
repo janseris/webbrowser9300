@@ -9,6 +9,7 @@
 #include <hal.h>
 #include "browser.h"
 
+const TUint16 KIconUnder565 = 0x19CD;              // the bar's blue (0x1C3A6E) in RGB565: under the icon
 const TInt KRamReserve = 3 * 1024 * 1024;
 const TInt KMaxImageFile = 700 * 1024;
 const TInt KMaxImageRedirects = 4;
@@ -294,6 +295,26 @@ void CImageLoader::DecodeL()
     delete iDecoder; iDecoder = NULL;
     delete iDecoded; iDecoded = NULL;
     IgTrace(_L("picture: decode"));
+    // an .ico never reaches the phone's ICO decoder (it crashed the app on modern favicons): a PNG
+    // inside goes to the PNG decoder, a bitmap one is decoded by bw_ico_pick
+    if (bw_ico_is(iData->Ptr(), iData->Length()))
+        {
+        BwIcoImage ico;
+        TInt kind = bw_ico_pick(iData->Ptr(), iData->Length(), 16, &ico);
+        IgTraceF(_L("picture: ico kind %d"), kind);
+        if (kind == BW_ICO_PNG)
+            {
+            HBufC8* png = iData->Mid(ico.pngOff, ico.pngLen).AllocL();
+            delete iData;
+            iData = png;
+            }
+        else if (kind == BW_ICO_PIXELS)
+            {
+            DecodeIcoL(ico);
+            return;
+            }
+        else User::Leave(KErrNotSupported);
+        }
     iDecoder = CImageDecoder::DataNewL(iFs, *iData, CImageDecoder::EOptionNoDither);
     IgTrace(_L("picture: decoder made"));
     const TFrameInfo& info = iDecoder->FrameInfo(0);
@@ -315,16 +336,50 @@ void CImageLoader::DecodeL()
     TrimFor(reduced.iWidth * reduced.iHeight * 3 + fit.iWidth * fit.iHeight * 2 + 512 * 1024);
     iDecoded = new (ELeave) CFbsBitmap;
     User::LeaveIfError(iDecoded->Create(reduced, EColor64K));
-    // transparent GIF/PNG: the pixels under the mask are undefined; paint them white first
+    // transparent GIF/PNG: the pixels under the mask are undefined; paint them white first (the
+    // bar's blue for the page's icon, which is drawn on it)
     iDecoded->LockHeap();
     {
     TUint16* p = (TUint16*)iDecoded->DataAddress();
     TInt words = CFbsBitmap::ScanLineLength(reduced.iWidth, EColor64K) / 2 * reduced.iHeight;
-    for (TInt i = 0; i < words; i++) p[i] = 0xFFFF;
+    TUint16 under = iCurrent && iCurrent->iPriority < 0 ? KIconUnder565 : 0xFFFF;
+    for (TInt i = 0; i < words; i++) p[i] = under;
     }
     iDecoded->UnlockHeap();
     iDecoder->Convert(&iStatus, *iDecoded, 0);
     SetActive();
+    }
+
+// A bitmap .ico: its pixels over the bar's blue (the icon) or white, into iDecoded; RunL scales it
+// as for any picture (the request is completed here)
+void CImageLoader::DecodeIcoL(BwIcoImage& aIco)
+    {
+    TInt w = aIco.width, h = aIco.height;
+    unsigned long* px = aIco.pixels;
+    TBool icon = iCurrent && iCurrent->iPriority < 0;
+    TUint ur = icon ? 0x1C : 0xFF, ug = icon ? 0x3A : 0xFF, ub = icon ? 0x6E : 0xFF;
+    iDecoded = new CFbsBitmap;
+    if (!iDecoded || iDecoded->Create(TSize(w, h), EColor64K) != KErrNone) { ig_free(px); User::Leave(KErrNoMemory); }
+    iDecoded->LockHeap();
+    TUint16* base = (TUint16*)iDecoded->DataAddress();
+    TInt stride = CFbsBitmap::ScanLineLength(w, EColor64K) / 2;
+    for (TInt y = 0; y < h; y++)
+        for (TInt x = 0; x < w; x++)
+            {
+            unsigned long c = px[y * w + x];
+            TUint a = (TUint)(c >> 24), r = (TUint)((c >> 16) & 255), g = (TUint)((c >> 8) & 255), b = (TUint)(c & 255);
+            r = (r * a + ur * (255 - a)) / 255;
+            g = (g * a + ug * (255 - a)) / 255;
+            b = (b * a + ub * (255 - a)) / 255;
+            base[y * stride + x] = (TUint16)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+            }
+    iDecoded->UnlockHeap();
+    ig_free(px);
+    iFullNow = TSize(w, h);
+    iStatus = KRequestPending;
+    SetActive();
+    TRequestStatus* s = &iStatus;
+    User::RequestComplete(s, KErrNone);
     }
 
 void CImageLoader::RunL()

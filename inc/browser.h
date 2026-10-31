@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.16");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.16");
+_LIT(KBrVersion, "0.17");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.17");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -50,7 +50,8 @@ void IgLogF(const TDesC& aFormat, TInt aValue);
 void IgLogF2(const TDesC& aFormat, TInt aValue1, TInt aValue2);
 void IgLogRotate();
 void IgLogFlush();
-void IgTrace(const TDesC& aStep);                 // with logging on: the step, saved at once (a crash after it shows it)
+void IgTrace(const TDesC& aStep);
+void IgTraceF(const TDesC& aFormat, TInt aValue);                 // with logging on: the step, saved at once (a crash after it shows it)
 void IgLogClose();
 const TDesC& LogFileName();
 const TDesC& LogPrevFileName();
@@ -300,6 +301,7 @@ private:
     void StartNextL();
     void FetchL(const TDesC8& aUrl);
     void DecodeL();
+    void DecodeIcoL(BwIcoImage& aIco);
     void Finish(CFbsBitmap* aBitmap);
     CEntry* Find(const TDesC8& aUrl);
     void TrimFor(TInt aBytes);

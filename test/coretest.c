@@ -808,6 +808,82 @@ static void fuzz(const char* name)
     free(data);
 }
 
+
+/* builds an .ico with one 2x2 DIB image of bpp bits (and an AND mask), into buf; its length */
+static unsigned int make_ico(unsigned char* b, int bpp)
+{
+    unsigned int n = 0, img, i;
+    unsigned int rowBytes = (2 * bpp + 31) / 32 * 4, palN = bpp <= 8 ? (1u << bpp) : 0;
+    unsigned int size = 40 + palN * 4 + rowBytes * 2 + 4 * 2;
+    memset(b, 0, 2000);
+    b[2] = 1; b[4] = 1;                                     /* ICONDIR: type 1, 1 image */
+    b[6] = 2; b[7] = 2; b[12] = (unsigned char)bpp;         /* 2x2, bit count */
+    b[14] = (unsigned char)(size & 255); b[15] = (unsigned char)(size >> 8);
+    img = 22; b[18] = (unsigned char)img;
+    n = img;
+    b[n] = 40; b[n + 4] = 2; b[n + 8] = 4; b[n + 12] = 1; b[n + 14] = (unsigned char)bpp;   /* header, height 2x */
+    n += 40;
+    for (i = 0; i < palN; i++) { b[n + i * 4] = (unsigned char)(i * 10); b[n + i * 4 + 1] = 0x20; b[n + i * 4 + 2] = 0x30; }
+    n += palN * 4;
+    /* rows bottom-up: bottom row first */
+    if (bpp == 24) {
+        b[n] = 0x01; b[n + 1] = 0x02; b[n + 2] = 0x03;          /* bottom-left: B G R */
+        b[n + rowBytes] = 0x0A; b[n + rowBytes + 1] = 0x0B; b[n + rowBytes + 2] = 0x0C;   /* top-left */
+    } else if (bpp == 8) { b[n] = 1; b[n + rowBytes] = 2; }
+    n += rowBytes * 2;
+    /* the AND mask: bottom row's right pixel transparent */
+    b[n] = 0x40;
+    n += 8;
+    return n;
+}
+
+static void test_ico(void)
+{
+    unsigned char b[2000];
+    BwIcoImage im;
+    unsigned int n;
+    /* 24 bpp: colours and the mask */
+    n = make_ico(b, 24);
+    CHECK(bw_ico_is(b, n));
+    CHECK(bw_ico_pick(b, n, 16, &im) == BW_ICO_PIXELS && im.width == 2 && im.height == 2);
+    if (im.pixels) {
+        CHECK(im.pixels[0] == 0xFF0C0B0AUL);     /* top-left (0xAARRGGBB) */
+        CHECK(im.pixels[2] == 0xFF030201UL);     /* bottom-left */
+        CHECK((im.pixels[3] >> 24) == 0);        /* bottom-right: masked */
+        CHECK((im.pixels[1] >> 24) == 0xFF);
+        free(im.pixels);
+    }
+    /* 8 bpp with a palette */
+    n = make_ico(b, 8);
+    CHECK(bw_ico_pick(b, n, 16, &im) == BW_ICO_PIXELS);
+    if (im.pixels) { CHECK(im.pixels[2] == 0xFF30200AUL); CHECK(im.pixels[0] == 0xFF302014UL); free(im.pixels); }
+    /* a PNG inside */
+    {
+        unsigned char p[60];
+        memset(p, 0, sizeof(p));
+        p[2] = 1; p[4] = 1; p[6] = 16; p[7] = 16; p[12] = 32; p[14] = 30; p[18] = 22;
+        memcpy(p + 22, "\x89PNG\r\n\x1a\n", 8);
+        CHECK(bw_ico_pick(p, 52, 16, &im) == BW_ICO_PNG && im.pngOff == 22 && im.pngLen == 30);
+        /* the entry says more bytes than there are: unusable */
+        p[14] = 60;
+        CHECK(bw_ico_pick(p, 52, 16, &im) == BW_ICO_NONE);
+    }
+    /* every truncation and junk bytes: no crash (ASan) */
+    {
+        unsigned int cut, k;
+        n = make_ico(b, 24);
+        for (cut = 0; cut <= n; cut++) { if (bw_ico_pick(b, cut, 16, &im) == BW_ICO_PIXELS) free(im.pixels); }
+        for (k = 0; k < 4000; k++) {
+            unsigned char c[2000];
+            unsigned int j;
+            memcpy(c, b, n);
+            for (j = 0; j < 3; j++) c[(k * 7 + j * 131) % n] = (unsigned char)(k * 37 + j);
+            if (bw_ico_pick(c, n, 16, &im) == BW_ICO_PIXELS) free(im.pixels);
+        }
+    }
+    CHECK(!bw_ico_is((const unsigned char*)"GIF89a", 6));
+}
+
 int main(int argc, char** argv)
 {
     if (argc == 2) { dump(argv[1]); return 0; }
@@ -829,6 +905,7 @@ int main(int argc, char** argv)
     test_layout();
     test_tables();
     test_cookies();
+    test_ico();
     printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
     return fails ? 1 : 0;
 }

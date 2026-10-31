@@ -19,6 +19,18 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.17** (not yet run on the phone): .ico files are never given to the phone's ICO decoder.
+  - **The likely crash**: since 0.14 every web page fetched its site's `/favicon.ico` right
+    after the download, and handed it to Symbian's own ICO decoder. Modern favicons often hold
+    PNG images (since Windows Vista), which a 2004 decoder misreads; a crash inside it takes the
+    app down with KERN-EXEC 3, on every page, just after the download.
+  - **Now `core/bwico.c` reads .ico files**: it picks the image nearest 16 px. A PNG inside
+    goes to the PNG decoder; a bitmap one (1/4/8/24/32 bpp, palette, AND mask or alpha) is
+    decoded there and blended over the bar's blue for the icon (white elsewhere). It's
+    bounds-checked and unit-tested under ASan, including every truncation and 4,000 corrupted
+    copies.
+  - The 0.16 trace stays (with Logging on). With View > Load pictures off, no icon is loaded
+    either, so that's a quick test if it still crashes.
 - **0.16** (not yet run on the phone): a trace for the crash after a page arrives (0.15 still
   crashed, so it wasn't only the stack). With Tools > Logging on, every step after a download
   writes a "trace: ..." line and saves the log at once. The steps: show the page, parsed and

@@ -316,6 +316,20 @@ int bw_layout_hit(const BwLayout* l, int x, int y);
 /* the box under a point (any kind), -1 none */
 int bw_layout_hit_box(const BwLayout* l, int x, int y);
 
+/* ---------------------------------------------------------------- .ico (favicons) */
+/* The phone's own ICO decoder crashes on modern icons, so they are read here. */
+enum { BW_ICO_NONE = 0, BW_ICO_PNG = 1, BW_ICO_PIXELS = 2 };
+typedef struct {
+    int kind;
+    unsigned int pngOff, pngLen;     /* BW_ICO_PNG: the PNG inside the file (for the PNG decoder) */
+    int width, height;               /* BW_ICO_PIXELS */
+    unsigned long* pixels;           /* 0xAARRGGBB rows top-down, ig_malloc'd (ig_free them) */
+} BwIcoImage;
+/* 1 if the bytes look like an .ico / .cur file */
+int bw_ico_is(const unsigned char* data, unsigned int len);
+/* the image nearest want px (from above) in it; the kind (BW_ICO_NONE if unusable) */
+int bw_ico_pick(const unsigned char* data, unsigned int len, int want, BwIcoImage* out);
+
 /* ---------------------------------------------------------------- cookies */
 typedef struct {
     char* domain;        /* without a leading dot */

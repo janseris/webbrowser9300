@@ -178,6 +178,14 @@ void IgTrace(const TDesC& aStep)
     IgLogFlush();
     }
 
+void IgTraceF(const TDesC& aFormat, TInt aValue)
+    {
+    if (!IgLogEnabled()) return;
+    TBuf<80> t;
+    t.Format(aFormat, aValue);
+    IgTrace(t);
+    }
+
 void IgLog(const TDesC& aText)
     {
     if (!IgLogEnabled()) return;
