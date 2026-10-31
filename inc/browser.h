@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.15");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.15");
+_LIT(KBrVersion, "0.16");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.16");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -50,6 +50,7 @@ void IgLogF(const TDesC& aFormat, TInt aValue);
 void IgLogF2(const TDesC& aFormat, TInt aValue1, TInt aValue2);
 void IgLogRotate();
 void IgLogFlush();
+void IgTrace(const TDesC& aStep);                 // with logging on: the step, saved at once (a crash after it shows it)
 void IgLogClose();
 const TDesC& LogFileName();
 const TDesC& LogPrevFileName();
@@ -477,6 +478,7 @@ private:
     CFbsBitmap* iBuffer;
     CFbsBitmapDevice* iBufferDev;
     CFbsBitGc* iBufferGc;
+    TInt iTraceRenders, iTraceDrawn;
     CAsyncCallBack* iRender;               // drawing from a shallow stack (8 KB on EKA1) and once per burst
     CAsyncCallBack* iRelayout;             // image sizes arrive in bursts: one relayout per burst
     TBool iRelayoutPending;

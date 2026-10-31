@@ -336,6 +336,7 @@ TInt CBrAppUi::ProbeThread(TAny* aProbe)
 
 void CBrAppUi::StartProbeL()
     {
+    IgTrace(_L("cpu probe: start"));
     iProbe = new (ELeave) TCpuProbe;
     Mem::FillZ(iProbe, sizeof(TCpuProbe));
     User::LeaveIfError(iProbe->iGo.CreateLocal(0));
@@ -344,6 +345,7 @@ void CBrAppUi::StartProbeL()
     iProbeThread.SetPriority(EPriorityAbsoluteVeryLow);
     iProbeThread.Resume();
     iProbeOn = ETrue;
+    IgTrace(_L("cpu probe: running"));
     }
 
 TInt CBrAppUi::StatsCallback(TAny* aSelf)
@@ -1137,6 +1139,7 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         doc = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), iForceCs,
                                  NULL, NULL, 0, (const int*)iHover, iHoverCount, iSettings->iFullSize ? BW_PARSE_FULLSIZE : 0);
         if (doc) doc = ApplyStylesL(doc, aBody, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse);
+        IgTrace(_L("parsed and styled"));
         }
     CleanupStack::PopAndDestroy(2);
     if (!doc) { Say(_L("Out of memory: the page cannot be shown")); return; }
@@ -1152,6 +1155,7 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         IgLogFlush();
         }
     if (!aReparse) iImages->ClearAll();
+    IgTrace(_L("pictures cleared"));
     // the sizes of pictures already decoded (a new layout of the same page)
     for (TUint i = 0; i < doc->imageCount; i++)
         {
@@ -1165,7 +1169,9 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
     // the same page again: what was typed and ticked stays
     if (aReparse && iView->Doc()) bw_doc_copy_form_state(doc, iView->Doc());
     if (!aReparse) SetPageIconL(aUrl, doc);        // (before the first draw, which asks for it)
+    IgTrace(_L("icon set"));
     iView->SetDocumentL(doc, aScrollY, aFocus);
+    IgTrace(_L("laid out"));
     IgLogF2(_L("layout %d ms, %d boxes"), iView->LayoutMs(), iView->BoxCount());
     UpdateTitle();
     // a #fragment
@@ -1226,7 +1232,9 @@ void CBrAppUi::ShowLoadedL(const TDesC8& aUrl, const TDesC8& aContentType, HBufC
     e2.iTitle = NULL;
     BwDoc* d = iView->Doc();
     if (d && d->titleLen) e2.iTitle = TPtrC((const TUint16*)d->title, d->titleLen).Alloc();
+    IgTrace(_L("title kept"));
     TrimHistoryCache();
+    IgTrace(_L("history trimmed"));
     }
 
 // The page has arrived (deep in the HTTP client's callbacks): it is parsed, laid out and shown from
@@ -1267,6 +1275,7 @@ void CBrAppUi::ShowPendingPage()
     HBufC8* ct = iPendCt; iPendCt = NULL;
     HBufC8* aBody = iPendBody; iPendBody = NULL;
     TInt aStatus = iPendStatus;
+    IgTrace(_L("show the page"));
     TRAPD(err, ShowLoadedL(*url, *ct, aBody));
     delete aBody;
     delete url;

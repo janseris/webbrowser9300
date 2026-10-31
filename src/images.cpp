@@ -210,6 +210,7 @@ void CImageLoader::StartNextL()
 
 void CImageLoader::FetchL(const TDesC8& aUrl)
     {
+    IgTrace(_L("picture: fetch"));
     HBufC8* z = HBufC8::NewLC(aUrl.Length() + 1);
     z->Des().Copy(aUrl);
     z->Des().ZeroTerminate();
@@ -292,7 +293,9 @@ void CImageLoader::DecodeL()
     {
     delete iDecoder; iDecoder = NULL;
     delete iDecoded; iDecoded = NULL;
+    IgTrace(_L("picture: decode"));
     iDecoder = CImageDecoder::DataNewL(iFs, *iData, CImageDecoder::EOptionNoDither);
+    IgTrace(_L("picture: decoder made"));
     const TFrameInfo& info = iDecoder->FrameInfo(0);
     TSize full = info.iOverallSizeInPixels;
     if (full.iWidth <= 0 || full.iHeight <= 0) User::Leave(KErrCorrupt);
@@ -363,6 +366,7 @@ void CImageLoader::DoCancel()
 
 void CImageLoader::Finish(CFbsBitmap* aBitmap)
     {
+    IgTrace(aBitmap ? _L("picture: done") : _L("picture: failed"));
     delete iDecoder; iDecoder = NULL;
     delete iDecoded; iDecoded = NULL;
     delete iData; iData = NULL;

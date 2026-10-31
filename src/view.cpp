@@ -158,6 +158,8 @@ void CBrView::SetDocumentL(BwDoc* aDoc, TInt aScrollY, TInt aFocus)
     iLayout = NULL;
     bw_doc_free(iDoc);
     iDoc = aDoc;
+    iTraceRenders = 3;          // the first draws of a page are traced (Logging on)
+    iTraceDrawn = 0;
     iScrollY = 0;
     iFocus = -1;
     iListOpen = EFalse;
@@ -496,6 +498,7 @@ TInt CBrView::RenderCallback(TAny* aSelf)
 
 void CBrView::DoRender()
     {
+    if (iTraceRenders > 0) { iTraceRenders--; IgTrace(_L("draw")); }
     TRAPD(err, EnsureBufferL());
     if (err != KErrNone || !iBufferGc) return;
     CFbsBitGc& gc = *iBufferGc;
@@ -505,6 +508,7 @@ void CBrView::DoRender()
     if (iListOpen) RenderList(gc);
     gc.DiscardFont();
     DrawDeferred();
+    if (iTraceRenders >= 0 && iTraceDrawn < 3) { iTraceDrawn++; IgTrace(_L("drawn")); }
     }
 
 void CBrView::RenderHeader(CFbsBitGc& aGc)

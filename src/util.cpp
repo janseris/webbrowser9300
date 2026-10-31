@@ -169,6 +169,15 @@ void IgLogClose()
     }
 
 // (heap buffers: the log is used deep in call chains and the stack is small)
+void IgTrace(const TDesC& aStep)
+    {
+    if (!IgLogEnabled()) return;
+    TBuf<80> t(_L("trace: "));
+    t.Append(aStep.Left(72));
+    IgLog(t);
+    IgLogFlush();
+    }
+
 void IgLog(const TDesC& aText)
     {
     if (!IgLogEnabled()) return;

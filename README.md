@@ -19,6 +19,13 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.16** (not yet run on the phone): a trace for the crash after a page arrives (0.15 still
+  crashed, so it wasn't only the stack). With Tools > Logging on, every step after a download
+  writes a "trace: ..." line and saves the log at once. The steps: show the page, parsed and
+  styled, pictures cleared, icon set, laid out, the first draws, title kept, history trimmed,
+  each picture's fetch / decode / done, the CPU probe's start. After a crash, start the
+  browser again and open Tools > Show the previous log: the last trace line is the last step
+  that worked.
 - **0.15** (not yet run on the phone): the crash on every page (KERN-EXEC 3) fixed, very likely
   a stack overflow.
   - **Cause**: an app's main thread on EKA1 has only ~8 KB of stack. A page arrived deep in the
