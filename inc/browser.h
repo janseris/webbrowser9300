@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.6");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.6");
+_LIT(KBrVersion, "0.7");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.7");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -351,6 +351,7 @@ public:
     TBool iMouseOn;
     TBool iFullScreen;
     TInt iTextSize;                 // -1, 0, 1
+    TBool iFullSize;                // View > Original size: laid out 1024 px wide, scrolls sideways
     TBool iPromptAccessPoint;
     TBuf<256> iHome;
     TBuf8<64> iServerHost;
@@ -392,6 +393,7 @@ public:
     void SetTitle(const TDesC& aText);     // the header's left part (title or address)
     void SetLoading(TBool aLoading);
     TInt ScrollY() const { return iScrollY; }
+    void ScrollXBy(TInt aDx);             // sideways (the original size is wider than the screen)
     TInt Focus() const { return iFocus; }
     void ScrollToAnchor(const TDesC8& aName);
     void ScrollTo(TInt aY);
@@ -400,7 +402,7 @@ public:
     TBool ListOpen() const { return iListOpen; }
     void SetPointerOn(TBool aOn);
     void SetForeground(TBool aForeground);
-    void ResetHover();                     // a new page: the old element numbers mean nothing
+    void ResetHover();                     // a new page: the old element numbers mean nothing; at the left
     CFbsBitmap* Buffer() const { return iBuffer; }
     TInt LayoutMs() const { return iLayoutMs; }
     TInt BoxCount() const { return iLayout ? (TInt)iLayout->boxCount : 0; }
@@ -426,6 +428,7 @@ private:
     TInt PageTop() const { return iHeaderH; }
     TInt PageHeightOnScreen() const { return Rect().Height() - iHeaderH; }
     void ClampScroll();
+    TInt PageWidthOnScreen() const;
     TBool TargetVisible(TInt aTarget, TBool aFully) const;
     void JumpFocus(TInt aDir);             // Tab: the next link wherever it is
     void EnsureFocusVisible();
@@ -442,6 +445,8 @@ private:
     BwDoc* iDoc;
     BwLayout* iLayout;
     TInt iScrollY;
+    TInt iScrollX;                         // > 0 only at the original size
+    TInt iLayoutW;                         // the width the page was laid out at
     TInt iFocus;                           // target index, -1 none
     TInt iHeaderH;
     TBuf<160> iTitle;
@@ -529,6 +534,8 @@ public:
     // navigation
     void OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost = NULL, TBool aAddHistory = ETrue);
     void GoToDialogL(TUint aFirstChar = 0);
+    void ZoomL(TInt aDir);                // Ctrl+Plus / Minus (+1 / -1) / 0: the text size
+    void ReparseCurrentL();               // the page on the screen parsed again (hover, original size)
     void EditControlL(TInt aControl, TUint aFirstChar = 0);
     void HoverElementL(TInt aElem);       // the pointer rests on this element (-1 none)
     void BackL();

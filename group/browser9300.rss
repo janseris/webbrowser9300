@@ -97,6 +97,7 @@ RESOURCE MENU_PANE r_br_menu_view
         MENU_ITEM { command = EBrCmdImages; txt = "Load pictures"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdStyles; txt = "Load stylesheets"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdFullScreen; txt = "Full screen"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdFullSize; txt = "Original size"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdMouse; txt = "Mouse pointer"; flags = EEikMenuItemCheckBox | EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdTextSmaller; txt = "Text: small"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdTextNormal; txt = "Text: normal"; flags = EEikMenuItemCheckBox; },

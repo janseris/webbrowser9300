@@ -19,6 +19,7 @@ CBrSettings::CBrSettings(RFs& aFs) : iFs(aFs)
     iMouseOn = ETrue;
     iFullScreen = EFalse;
     iTextSize = 0;
+    iFullSize = EFalse;
     iPromptAccessPoint = EFalse;
     iHome.Copy(_L("about:start"));
     iServerHost.Copy(_L8("192.168.137.1"));
@@ -53,6 +54,7 @@ void CBrSettings::LoadL()
         else if (key == _L8("log")) iLogOn = val != _L8("0");
         else if (key == _L8("mouse")) iMouseOn = val == _L8("1");
         else if (key == _L8("fullscreen")) iFullScreen = val == _L8("1");
+        else if (key == _L8("fullsize")) iFullSize = val == _L8("1");
         else if (key == _L8("prompt")) iPromptAccessPoint = val == _L8("1");
         else if (key == _L8("textsize")) { TLex8 l(val); TInt v; if (l.Val(v) == KErrNone && v >= -1 && v <= 1) iTextSize = v; }
         else if (key == _L8("home")) { HBufC* h = Utf8ToUnicodeL(val); iHome.Copy(h->Left(iHome.MaxLength())); delete h; }
@@ -72,6 +74,7 @@ void CBrSettings::Save()
     d.Append(_L8("\r\nlog=")); d.AppendNum(iLogOn ? 1 : 0);
     d.Append(_L8("\r\nmouse=")); d.AppendNum(iMouseOn ? 1 : 0);
     d.Append(_L8("\r\nfullscreen=")); d.AppendNum(iFullScreen ? 1 : 0);
+    d.Append(_L8("\r\nfullsize=")); d.AppendNum(iFullSize ? 1 : 0);
     d.Append(_L8("\r\nprompt=")); d.AppendNum(iPromptAccessPoint ? 1 : 0);
     d.Append(_L8("\r\ntextsize=")); d.AppendNum(iTextSize);
     d.Append(_L8("\r\nhome="));

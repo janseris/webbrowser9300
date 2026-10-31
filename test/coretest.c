@@ -458,7 +458,7 @@ static void test_css3(void)
         CHECK(prod && help && bw_doc_hover_matters(d, prod->elem));
         n = bw_doc_hover_chain(d, prod->elem, chain, 64);
         CHECK(n >= 3);
-        d2 = bw_doc_parse_hover(h, (unsigned int)strlen(h), "http://x/", 0, -1, 0, 0, 0, chain, n);
+        d2 = bw_doc_parse_hover(h, (unsigned int)strlen(h), "http://x/", 0, -1, 0, 0, 0, chain, n, 0);
         {
             BwLayout* l2 = bw_layout(d2, 500, &kM);
             const BwBox* sub = box_of(d2, l2, 'P');
@@ -474,6 +474,24 @@ static void test_css3(void)
         bw_doc_free(d2);
         bw_layout_free(l);
         bw_doc_free(d);
+    }
+    /* the original size: desktop margins as they are, a wide layout */
+    {
+        const char* h = "<div style='margin-left:60px;padding-left:20px'>Wide</div><img src=a.png width=900 height=50>";
+        BwDoc* a = bw_doc_parse(h, (unsigned int)strlen(h), "http://x/", 0, -1);
+        BwDoc* f = bw_doc_parse_hover(h, (unsigned int)strlen(h), "http://x/", 0, -1, 0, 0, 0, 0, 0, BW_PARSE_FULLSIZE);
+        BwLayout* la = bw_layout(a, 500, &kM);
+        BwLayout* lf = bw_layout(f, 1024, &kM);
+        const BwBox* wa = box_of(a, la, 'W');
+        const BwBox* wf = box_of(f, lf, 'W');
+        unsigned int i;
+        int imgW = 0;
+        CHECK(f->fullSize && !a->fullSize);
+        CHECK(wa && wf && wa->x == 4 + 30 + 10 && wf->x == 4 + 60 + 20);   /* halved vs as given */
+        for (i = 0; i < lf->boxCount; i++) if (lf->boxes[i].kind == BW_BOX_IMAGE) imgW = lf->boxes[i].w;
+        CHECK(imgW == 900);
+        bw_layout_free(la); bw_layout_free(lf);
+        bw_doc_free(a); bw_doc_free(f);
     }
     /* form state carries over a re-parse */
     {

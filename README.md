@@ -19,6 +19,15 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.7** (not yet run on the phone): zoom and the original size.
+  - **View > Original size** lays the page out 1024 px wide, as on a computer: CSS margins and
+    paddings as given (not halved), list indents at 40 px, pictures and tables up to their real
+    width. Left/Right (Shift: a screen) scroll sideways, with a bar at the bottom. Tab, Find and
+    Enter bring the link or match into view sideways too. Resting the pointer on the left or
+    right edge scrolls sideways. Fitted to the screen (the default), Left/Right still move
+    between links.
+  - **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom like a desktop browser, through the three text
+    sizes. The page reflows to the width, so zooming never needs sideways scrolling.
 - **0.6** (not yet run on the phone): speed.
   - **A quadratic copy fixed**: the element numbering for `:hover` (0.5) copied a whole array on
     every start tag. On the 490 KB test page it took 81 % of the work. The page now needs
@@ -186,6 +195,8 @@ receives logs (`localserver\ota_server.js`).
 | Ctrl+Up / Ctrl+Down, Home / End | top / end of the page |
 | Tab / Shift+Tab, Right / Left | next / previous link or field (scrolls to it) |
 | Ctrl+Left / Ctrl+Right | back / forward |
+| Left / Right at View > Original size | scroll sideways (Shift: a screen) |
+| Ctrl+Plus / Ctrl+Minus / Ctrl+0 | zoom: bigger / smaller / normal text |
 | Space on a box or button | tick it / press it |
 | a letter | into the focused text field, else opens the address bar with it |
 | Enter | open the focused link; edit the field; tick the box; choose from the list |

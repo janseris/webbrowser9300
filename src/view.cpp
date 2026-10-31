@@ -13,6 +13,8 @@
 
 const TInt KScrollStep = 36;
 const TInt KScrollBarW = 4;
+const TInt KFullWidth = 1024;              // the original size: a desktop window's width
+const TInt KScrollBarH = 3;                // the sideways bar at the bottom
 const TInt KListMaxRows = 10;
 
 static TRgb Rgb(TInt c) { return TRgb((c >> 16) & 255, (c >> 8) & 255, c & 255); }
@@ -64,6 +66,7 @@ TBool CBrView::Find(const TDesC& aText, TBool aNext)
                 iFindLen = m;
                 TInt h = PageHeightOnScreen();
                 if (b.y < iScrollY || b.y + b.h > iScrollY + h) iScrollY = b.y - h / 3;
+                if (b.x < iScrollX || b.x + b.w > iScrollX + PageWidthOnScreen()) iScrollX = b.x - 20;
                 ClampScroll();
                 break;
                 }
@@ -164,7 +167,8 @@ void CBrView::Relayout()
     {
     iRelayoutPending = EFalse;
     if (!iDoc) { Render(); return; }
-    TInt width = Rect().Width() - KScrollBarW;
+    TInt width = iDoc->fullSize ? KFullWidth : Rect().Width() - KScrollBarW;
+    if (!iDoc->fullSize) iScrollX = 0;
     // keep the first text on the screen where it is
     TInt anchorOff = -1, anchorDy = 0;
     if (iLayout && iScrollY > 0)
@@ -182,6 +186,7 @@ void CBrView::Relayout()
     if (!l) { Render(); return; }
     bw_layout_free(iLayout);
     iLayout = l;
+    iLayoutW = width;
     iImages.SetMaxSize(TSize(width - 8, 1200));
     if (anchorOff >= 0)
         {
@@ -262,6 +267,21 @@ void CBrView::ClampScroll()
     TInt max = iLayout ? iLayout->height - h : 0;
     if (iScrollY > max) iScrollY = max;
     if (iScrollY < 0) iScrollY = 0;
+    TInt maxX = iLayout ? iLayoutW - PageWidthOnScreen() : 0;
+    if (iScrollX > maxX) iScrollX = maxX;
+    if (iScrollX < 0) iScrollX = 0;
+    }
+
+TInt CBrView::PageWidthOnScreen() const
+    {
+    return Rect().Width() - KScrollBarW;
+    }
+
+void CBrView::ScrollXBy(TInt aDx)
+    {
+    iScrollX += aDx;
+    ClampScroll();
+    Render();
     }
 
 void CBrView::ScrollTo(TInt aY)
@@ -306,6 +326,7 @@ void CBrView::ResetHover()
     iHoverElem = -1;
     iHoverSent = -1;
     iHoverQuiet = 0;
+    iScrollX = 0;
     }
 
 void CBrView::UpdatePointerTimer()
@@ -343,7 +364,26 @@ void CBrView::HoverAt(TPoint aPos, TBool aTick)
             if (aPos.iY < PageTop() + 3) dir = -1;
             else if (aPos.iY >= hgt - 3) dir = 1;
             }
-        if (dir && ((dir < 0 && iScrollY > 0) || (dir > 0 && iScrollY + PageHeightOnScreen() < iLayout->height)))
+        // sideways at the original size: the left and right edges
+        TInt dirX = 0;
+        if (iLayoutW > PageWidthOnScreen() && aPos.iY >= PageTop() && aPos.iY < hgt - 3)
+            {
+            if (aPos.iX < 3 && iScrollX > 0) dirX = -1;
+            else if (aPos.iX >= w - 3 && iScrollX + PageWidthOnScreen() < iLayoutW) dirX = 1;
+            }
+        if (dirX)
+            {
+            iEdgeTicks++;
+            if (iEdgeTicks > 2)
+                {
+                TInt step = 8 + (iEdgeTicks - 3) * 8;
+                if (step > 120) step = 120;
+                iScrollX += dirX * step;
+                ClampScroll();
+                redraw = ETrue;
+                }
+            }
+        else if (dir && ((dir < 0 && iScrollY > 0) || (dir > 0 && iScrollY + PageHeightOnScreen() < iLayout->height)))
             {
             iEdgeTicks++;
             if (iEdgeTicks > 2)
@@ -362,8 +402,8 @@ void CBrView::HoverAt(TPoint aPos, TBool aTick)
     if (iLayout && !iListOpen && aPos.iY >= PageTop() && aPos.iY < hgt && aPos.iX >= 0 && aPos.iX < w - KScrollBarW - 4)
         {
         TInt y = aPos.iY - PageTop() + iScrollY;
-        t = bw_layout_hit(iLayout, aPos.iX, y);
-        TInt bi = bw_layout_hit_box(iLayout, aPos.iX, y);
+        t = bw_layout_hit(iLayout, aPos.iX + iScrollX, y);
+        TInt bi = bw_layout_hit_box(iLayout, aPos.iX + iScrollX, y);
         if (bi >= 0) elem = iLayout->boxes[bi].elem;
         }
     if (t != iHoverTarget) { iHoverTarget = t; redraw = ETrue; }
@@ -620,7 +660,8 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
         {
         const BwFill& f = iLayout->fills[i];
         if (f.h <= 0 || f.y + f.h <= iScrollY || f.y >= iScrollY + h) continue;
-        TRect fr(TPoint(f.x, top + f.y - iScrollY), TSize(f.w, f.h));
+        if (f.x + f.w <= iScrollX || f.x - iScrollX >= w) continue;
+        TRect fr(TPoint(f.x - iScrollX, top + f.y - iScrollY), TSize(f.w, f.h));
         if (f.outline)
             {
             aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
@@ -649,7 +690,7 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
         while (line < iLayout->lineCount && i >= (line + 1 < iLayout->lineCount ? iLayout->lines[line + 1].first : iLayout->boxCount)) line++;
         if (line < iLayout->lineCount && iLayout->lines[line].top > viewBottom + 2 * h) break;
         const BwBox& b = iLayout->boxes[i];
-        TBool visible = b.y < viewBottom && b.y + b.h > iScrollY;
+        TBool visible = b.y < viewBottom && b.y + b.h > iScrollY && b.x + b.w > iScrollX && b.x - iScrollX < w;
         if (!visible)
             {
             // near the screen: only ask for its picture, farther = later
@@ -664,7 +705,7 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
                 }
             continue;
             }
-        TRect r(TPoint(b.x, top + b.y - iScrollY), TSize(b.w, b.h));
+        TRect r(TPoint(b.x - iScrollX, top + b.y - iScrollY), TSize(b.w, b.h));
         TBool focused = b.target >= 0 && b.target == iFocus;
         switch (b.kind)
             {
@@ -751,6 +792,19 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
         aGc.DrawRect(TRect(TPoint(w - KScrollBarW, top), TSize(KScrollBarW, h)));
         aGc.SetBrushColor(TRgb(0x60, 0x70, 0x90));
         aGc.DrawRect(TRect(TPoint(w - KScrollBarW, ty), TSize(KScrollBarW, th)));
+        }
+    // sideways
+    TInt pw = PageWidthOnScreen();
+    if (iLayoutW > pw)
+        {
+        TInt tw = pw * pw / iLayoutW;
+        TInt tx = (pw - tw) * iScrollX / Max(1, iLayoutW - pw);
+        aGc.SetPenStyle(CGraphicsContext::ENullPen);
+        aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+        aGc.SetBrushColor(TRgb(0xDD, 0xDD, 0xDD));
+        aGc.DrawRect(TRect(TPoint(0, top + h - KScrollBarH), TSize(pw, KScrollBarH)));
+        aGc.SetBrushColor(TRgb(0x60, 0x70, 0x90));
+        aGc.DrawRect(TRect(TPoint(tx, top + h - KScrollBarH), TSize(tw, KScrollBarH)));
         }
     }
 
@@ -883,6 +937,18 @@ void CBrView::EnsureFocusVisible()
         iScrollY = p.y1 - h + 8;
         if (iScrollY > p.y0 - 8) iScrollY = p.y0 - 8;
         }
+    // sideways: its first box
+    if (iLayoutW > PageWidthOnScreen())
+        {
+        for (TUint i = bw_layout_first_box(iLayout, p.y0); i < iLayout->boxCount && iLayout->boxes[i].y <= p.y1; i++)
+            {
+            const BwBox& b = iLayout->boxes[i];
+            if (b.target != iFocus) continue;
+            TInt pw = PageWidthOnScreen();
+            if (b.x < iScrollX || b.x + Min((TInt)b.w, pw - 16) > iScrollX + pw) iScrollX = b.x - 16;
+            break;
+            }
+        }
     ClampScroll();
     }
 
@@ -953,6 +1019,7 @@ TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aTyp
             ScrollTo(iScrollY - page);
             return EKeyWasConsumed;
         case EKeyHome:
+            iScrollX = 0;
             ScrollTo(0);
             return EKeyWasConsumed;
         case EKeyEnd:
@@ -960,10 +1027,12 @@ TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aTyp
             return EKeyWasConsumed;
         case EKeyRightArrow:
             if (ctrl) iAppUi.HandleCommandL(EBrCmdForward);
+            else if (iLayoutW > PageWidthOnScreen()) ScrollXBy(shift ? PageWidthOnScreen() - 40 : KScrollStep * 2);
             else JumpFocus(1);
             return EKeyWasConsumed;
         case EKeyLeftArrow:
             if (ctrl) iAppUi.HandleCommandL(EBrCmdBack);
+            else if (iLayoutW > PageWidthOnScreen()) ScrollXBy(-(shift ? PageWidthOnScreen() - 40 : KScrollStep * 2));
             else JumpFocus(-1);
             return EKeyWasConsumed;
         case EKeyTab:
@@ -995,6 +1064,10 @@ TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aTyp
         {
         // Ctrl+L: the address (the code may come as the letter or as control-L)
         if (code == 'l' || code == 'L' || code == 12) { iAppUi.GoToDialogL(); return EKeyWasConsumed; }
+        // Ctrl+Plus / Ctrl+Minus / Ctrl+0: zoom (the text size steps)
+        if (code == '+' || code == '=') { iAppUi.ZoomL(1); return EKeyWasConsumed; }
+        if (code == '-' || code == '_') { iAppUi.ZoomL(-1); return EKeyWasConsumed; }
+        if (code == '0') { iAppUi.ZoomL(0); return EKeyWasConsumed; }
         return EKeyWasNotConsumed;
         }
     if (code >= ' ' && code < 0xF700 && code != 0x7F && !(aKeyEvent.iModifiers & EModifierFunc))
@@ -1030,7 +1103,7 @@ void CBrView::HandlePointerEventL(const TPointerEvent& aPointerEvent)
         return;
         }
     if (!iLayout) return;
-    TInt t = bw_layout_hit(iLayout, p.iX, p.iY - PageTop() + iScrollY);
+    TInt t = bw_layout_hit(iLayout, p.iX + iScrollX, p.iY - PageTop() + iScrollY);
     if (t >= 0)
         {
         SetFocusTarget(t);

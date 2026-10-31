@@ -231,6 +231,7 @@ typedef struct {
     int curElemNum;                /* the number of the element being styled */
     const int* hover;              /* the elements under the pointer (innermost first) */
     unsigned int hoverN;
+    int full;                      /* BW_PARSE_FULLSIZE: desktop lengths as they are */
     int inlineCss;                 /* parsing a <style> block (its @import counts) */
     /* rules by the key of their subject: bucket b holds idx[start[b] .. start[b+1]) */
     unsigned int* idx;
@@ -2052,18 +2053,20 @@ static int indent_of(int tag)
     }
 }
 
-/* a margin / padding in screen px: desktop lengths halved for the small screen, then capped */
-static int css_px(const CssLen* l, int px100, int horizontal, int cap)
+/* a margin / padding in screen px: desktop lengths halved for the small screen, then capped;
+ * at the original size (full) as they are, capped only against nonsense */
+static int css_px(const CssLen* l, int px100, int horizontal, int cap, int full)
 {
     long v;
     switch (l->unit) {
-    case 0: v = l->v / 2; break;                                  /* px * 100, halved */
-    case 1: v = (long)l->v * px100 / 100 / 2; break;              /* em */
-    case 2: v = horizontal ? (long)l->v * 3 / 2 : 0; break;       /* % of about 300 px */
+    case 0: v = full ? l->v : l->v / 2; break;                    /* px * 100, halved */
+    case 1: v = (long)l->v * px100 / 100 / (full ? 1 : 2); break; /* em */
+    case 2: v = horizontal ? (long)l->v * (full ? 10 : 3) / (full ? 1 : 2) : 0; break;   /* % of about 300 (1000) px */
     default: v = 0; break;                                        /* auto */
     }
     v /= 100;
     if (v < 0) v = 0;
+    if (full) cap = 300;
     if (v > cap) v = cap;
     return (int)v;
 }
@@ -2083,7 +2086,7 @@ static int css_size(const CssLen* l, int px100)
     return (int)v;
 }
 
-static void apply_props(Elem* e, const CssProps* pr, int parentPx)
+static void apply_props(Elem* e, const CssProps* pr, int parentPx, int full)
 {
     if (pr->mask & CSS_DISPLAY) { e->display = pr->display; e->isFlex = pr->flexRow; }
     if (pr->mask & CSS_FLEXDIR) e->flexCol = pr->flexCol;
@@ -2116,12 +2119,12 @@ static void apply_props(Elem* e, const CssProps* pr, int parentPx)
         for (k = 0; k < 4; k++) {
             if (pr->boxMask & BX_M(k)) {
                 const CssLen* l = &pr->m[k];
-                int v = css_px(l, e->px100, k == 1 || k == 3, k == 0 || k == 2 ? 16 : 40);
+                int v = css_px(l, e->px100, k == 1 || k == 3, k == 0 || k == 2 ? 16 : 40, full);
                 if (k == 0) e->mt = (short)v; else if (k == 1) e->mr = (short)v; else if (k == 2) e->mb = (short)v; else e->ml = (short)v;
                 if (k == 1 || k == 3) e->autoSides = (unsigned char)(l->unit == 3 ? (e->autoSides | (k == 1 ? 1 : 2)) : (e->autoSides & ~(k == 1 ? 1 : 2)));
             }
             if (pr->boxMask & BX_P(k)) {
-                int v = css_px(&pr->pd[k], e->px100, k == 1 || k == 3, k == 0 || k == 2 ? 10 : 16);
+                int v = css_px(&pr->pd[k], e->px100, k == 1 || k == 3, k == 0 || k == 2 ? 10 : 16, full);
                 if (k == 0) e->pt = (short)v; else if (k == 1) e->pr = (short)v; else if (k == 2) e->pb = (short)v; else e->pl = (short)v;
             }
             if (pr->boxMask & BX_B(k)) e->bw[k] = pr->bw[k];
@@ -2343,8 +2346,8 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     /* the box: the tag's defaults, which the CSS may change */
     e->mt = e->mb = (short)margin_top(tag, parent->listDepth);
     e->ml = e->mr = e->pt = e->pb = e->pr = e->pl = 0;
-    if (tag == T_UL || tag == T_OL || tag == T_MENU || tag == T_DIR) e->pl = (short)indent_of(tag);
-    else e->ml = (short)indent_of(tag);
+    if (tag == T_UL || tag == T_OL || tag == T_MENU || tag == T_DIR) e->pl = (short)(indent_of(tag) * (p->full ? 2 : 1));
+    else e->ml = (short)(indent_of(tag) * (p->full ? 2 : 1));
     e->width = e->maxw = 0;
     e->autoSides = 0;
     e->bw[0] = e->bw[1] = e->bw[2] = e->bw[3] = 0;
@@ -2492,7 +2495,7 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
             }
         }
         for (k = 0; k < nm; k++) {
-            apply_props(e, &p->rules[matched[k]].props, parent->px100);
+            apply_props(e, &p->rules[matched[k]].props, parent->px100, p->full);
             p->lastCssMask |= p->rules[matched[k]].props.mask;
         }
         nImp = nm;
@@ -2505,7 +2508,7 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
         parse_decls(p, v, ig_strlen(v), &inl, &inlImp);
         ig_free(inl.content); inl.content = 0;
         ig_free(inlImp.content); inlImp.content = 0;
-        apply_props(e, &inl, parent->px100);
+        apply_props(e, &inl, parent->px100, p->full);
         p->lastCssMask |= inl.mask;
     }
     /* !important: the rules' (in the same order), then the style attribute's */
@@ -2513,9 +2516,9 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
         unsigned int k;
         for (k = 0; k < nImp; k++) {
             const CssProps* ip = p->rules[impMatched[k]].imp;
-            if (ip) { apply_props(e, ip, parent->px100); p->lastCssMask |= ip->mask; }
+            if (ip) { apply_props(e, ip, parent->px100, p->full); p->lastCssMask |= ip->mask; }
         }
-        if (v && inlImp.mask) { apply_props(e, &inlImp, parent->px100); p->lastCssMask |= inlImp.mask; }
+        if (v && inlImp.mask) { apply_props(e, &inlImp, parent->px100, p->full); p->lastCssMask |= inlImp.mask; }
     }
     /* floated blocks flow side by side (a horizontal menu); a closed <dialog> is not shown */
     if (e->isFloat && (e->display == D_BLOCK || e->display == D_LISTITEM) && tag != T_TABLE) e->display = D_INLINE;
@@ -3796,12 +3799,12 @@ BwDoc* bw_doc_parse(const char* data, unsigned int len, const char* url, const c
 BwDoc* bw_doc_parse_ex(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
                        const char* const* css, const unsigned int* cssLen, unsigned int cssCount)
 {
-    return bw_doc_parse_hover(data, len, url, contentType, cs, css, cssLen, cssCount, 0, 0);
+    return bw_doc_parse_hover(data, len, url, contentType, cs, css, cssLen, cssCount, 0, 0, 0);
 }
 
 BwDoc* bw_doc_parse_hover(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
                           const char* const* css, const unsigned int* cssLen, unsigned int cssCount,
-                          const int* hover, unsigned int hoverCount)
+                          const int* hover, unsigned int hoverCount, unsigned int options)
 {
     BwDoc* d;
     P* p;
@@ -3829,6 +3832,8 @@ BwDoc* bw_doc_parse_hover(const char* data, unsigned int len, const char* url, c
     init_parser(p, d, data, len, cs);
     p->hover = hover;
     p->hoverN = hover ? hoverCount : 0;
+    p->full = (options & BW_PARSE_FULLSIZE) != 0;
+    d->fullSize = p->full;
     {
         unsigned int k;
         for (k = 0; k < cssCount; k++) if (css[k]) parse_css(p, css[k], cssLen[k], 0);

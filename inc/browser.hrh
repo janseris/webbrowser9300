@@ -42,7 +42,8 @@ enum TBrCommands
     EBrCmdCsUtf8,
     EBrCmdCs1250,
     EBrCmdCs88592,
-    EBrCmdCs1252
+    EBrCmdCs1252,
+    EBrCmdFullSize
     };
 
 enum TBrControls

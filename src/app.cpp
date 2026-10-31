@@ -345,6 +345,13 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
             iSettings->Save();
             ApplyFullScreenL();
             break;
+        case EBrCmdFullSize:
+            iSettings->iFullSize = !iSettings->iFullSize;
+            iSettings->Save();
+            iHoverCount = 0;
+            ReparseCurrentL();
+            Say(iSettings->iFullSize ? _L("Original size: Left / Right scroll sideways") : _L("Fitted to the screen"));
+            break;
         case EBrCmdMouse:
             iSettings->iMouseOn = !iSettings->iMouseOn;
             iSettings->Save();
@@ -436,6 +443,7 @@ void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
             aMenuPane->SetItemButtonState(EBrCmdCsAuto + k, iForceCs == kCs[k] ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         }
         aMenuPane->SetItemButtonState(EBrCmdFullScreen, iSettings->iFullScreen ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdFullSize, iSettings->iFullSize ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdMouse, iSettings->iMouseOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextSmaller, iSettings->iTextSize < 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextNormal, iSettings->iTextSize == 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
@@ -734,7 +742,7 @@ BwDoc* CBrAppUi::ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl
         }
     if (!cached) return aDoc;
     BwDoc* d = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, iForceCs, css, len, aDoc->styleCount,
-                                  (const int*)iHover, iHoverCount);
+                                  (const int*)iHover, iHoverCount, iSettings->iFullSize ? BW_PARSE_FULLSIZE : 0);
     if (!d) return aDoc;
     bw_doc_free(aDoc);
     return d;
@@ -805,7 +813,7 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
     else
         {
         doc = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), iForceCs,
-                                 NULL, NULL, 0, (const int*)iHover, iHoverCount);
+                                 NULL, NULL, 0, (const int*)iHover, iHoverCount, iSettings->iFullSize ? BW_PARSE_FULLSIZE : 0);
         if (doc) doc = ApplyStylesL(doc, aBody, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse);
         }
     CleanupStack::PopAndDestroy(2);
@@ -1049,9 +1057,27 @@ void CBrAppUi::HoverElementL(TInt aElem)
         }
     for (TUint i = 0; i < n; i++) iHover[i] = chain[i];
     iHoverCount = n;
+    ReparseCurrentL();
+    }
+
+void CBrAppUi::ReparseCurrentL()
+    {
+    if (iHistoryPos < 0 || iHistoryPos >= iHistory.Count()) return;
+    THistoryEntry& e = iHistory[iHistoryPos];
+    if (!e.iBody || !iCurrentUrl || *e.iUrl != *iCurrentUrl || iLoader->Busy()) return;
     HBufC8* ct = e.iContentType ? e.iContentType->AllocLC() : KNullDesC8().AllocLC();
     ShowPageL(*e.iUrl, *ct, *e.iBody, iView->ScrollY(), iView->Focus(), ETrue);
     CleanupStack::PopAndDestroy(ct);
+    }
+
+void CBrAppUi::ZoomL(TInt aDir)
+    {
+    TInt step = aDir == 0 ? 0 : iSettings->iTextSize + aDir;
+    if (step < -1) step = -1;
+    if (step > 1) step = 1;
+    if (step == iSettings->iTextSize) { Say(step > 0 ? _L("Largest text") : step < 0 ? _L("Smallest text") : _L("Normal text")); return; }
+    HandleCommandL(step < 0 ? EBrCmdTextSmaller : step > 0 ? EBrCmdTextBigger : EBrCmdTextNormal);
+    Say(step > 0 ? _L("Text: large") : step < 0 ? _L("Text: small") : _L("Text: normal"));
     }
 
 void CBrAppUi::EditControlL(TInt aControl, TUint aFirstChar)

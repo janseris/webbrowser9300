@@ -209,6 +209,7 @@ typedef struct {
     unsigned int cssRules;   /* how many CSS rules were read (for the page info) */
     char** styleUrls;        /* <link rel=stylesheet> for this screen, absolute, in order */
     unsigned int styleCount, styleCap;
+    int fullSize;                /* parsed with BW_PARSE_FULLSIZE */
     unsigned int externalCss;    /* how many stylesheet texts were given to the parse */
 } BwDoc;
 
@@ -228,7 +229,10 @@ void bw_doc_free(BwDoc* doc);
  * bw_doc_hover_chain of an earlier parse of the page), so :hover rules apply to them. */
 BwDoc* bw_doc_parse_hover(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
                           const char* const* css, const unsigned int* cssLen, unsigned int cssCount,
-                          const int* hover, unsigned int hoverCount);
+                          const int* hover, unsigned int hoverCount, unsigned int options);
+/* options: lay the page out as on a computer (margins and paddings as they are), for a wide
+ * layout that scrolls sideways */
+#define BW_PARSE_FULLSIZE 1
 /* the element and its ancestors, innermost first; the count */
 unsigned int bw_doc_hover_chain(const BwDoc* doc, int elem, int* out, unsigned int max);
 /* 1 if a :hover rule could apply to the chain of this element (cheap, may say yes wrongly) */
