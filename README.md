@@ -27,8 +27,8 @@ receives logs (`localserver\ota_server.js`).
       last second) and the browser's own thread (`RThread::GetCpuTime`). If the kernel keeps
       no CPU times, it shows "?"; the log records the errors.
     - "RAM free 18.2 MB".
-    - "App 6.1 MB of 80": the browser's heap allocations plus its pictures, of the phone's
-      total RAM.
+    - "App 6.1 MB of N": the browser's heap allocations plus its pictures, of the phone's total
+      RAM as the system reports it (`HAL EMemoryRAM`, in whole MB).
   - **Caches grow with the free RAM** instead of fixed sizes.
     - Pages kept for Back / Forward: was 6 pages / 1.5 MB, now as many as fit, up to 16 MB
       (4 MB per page).
