@@ -427,6 +427,34 @@ void CBrAppUi::StatsTick()
     iView->SetStats(t);
     }
 
+// The page's icon: its best <link rel=icon>, else /favicon.ico of its site (http / https only)
+void CBrAppUi::SetPageIconL(const TDesC8& aUrl, const BwDoc* aDoc)
+    {
+    TBool web = aUrl.Left(7).CompareF(_L8("http://")) == 0 || aUrl.Left(8).CompareF(_L8("https://")) == 0;
+    if (!web) { iView->SetIconL(KNullDesC8); return; }
+    char* icon = NULL;
+    if (aDoc->iconUrl) icon = ig_strdup(aDoc->iconUrl);
+    else
+        {
+        HBufC8* z = ZeroTermLC(aUrl);
+        icon = bw_url_resolve((const char*)z->Ptr(), "/favicon.ico", 12);
+        CleanupStack::PopAndDestroy(z);
+        }
+    if (!icon) { iView->SetIconL(KNullDesC8); return; }
+    TPtrC8 ip((const TUint8*)icon);
+    TRAPD(err, iView->SetIconL(ip));
+    ig_free(icon);
+    User::LeaveIfError(err);
+    // the site's name for the side bar: the host without "www."
+    TInt s = aUrl.Find(_L8("//"));
+    TPtrC8 rest = s >= 0 ? aUrl.Mid(s + 2) : aUrl;
+    TInt e = 0;
+    while (e < rest.Length() && rest[e] != '/' && rest[e] != ':' && rest[e] != '?' && rest[e] != '#') e++;
+    TPtrC8 host = rest.Left(e);
+    if (host.Left(4).CompareF(_L8("www.")) == 0) host.Set(host.Mid(4));
+    iView->SetHost(host);
+    }
+
 void CBrAppUi::ApplyCursor()
     {
     TEikVirtualCursor& vc = iEikonEnv->VirtualCursor();
@@ -1059,6 +1087,7 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
     iView->SetLoading(EFalse);
     // the same page again: what was typed and ticked stays
     if (aReparse && iView->Doc()) bw_doc_copy_form_state(doc, iView->Doc());
+    if (!aReparse) SetPageIconL(aUrl, doc);        // (before the first draw, which asks for it)
     iView->SetDocumentL(doc, aScrollY, aFocus);
     IgLogF2(_L("layout %d ms, %d boxes"), iView->LayoutMs(), iView->BoxCount());
     UpdateTitle();

@@ -3093,6 +3093,31 @@ static char* content_text(P* p, const CssRule* r)
     return ig_buf_detach(&b);
 }
 
+/* how good a <link rel=...icon> is for a 16 px icon on the phone: 0 = unusable (SVG). PNG / GIF
+ * decode for sure, ICO maybe; sizes near 16-32 px scale down cleanly; apple-touch-icon is big. */
+static int icon_score(const char* rel, const char* href, const char* type, const char* sizes)
+{
+    unsigned int hl = ig_strlen(href), q = 0;
+    int sc, n = 0;
+    while (q < hl && href[q] != '?' && href[q] != '#') q++;            /* the path's end */
+    if ((type && contains_ci(type, ig_strlen(type), "svg")) || (q >= 4 && ig_strieq_n(href + q - 4, ".svg", 4)) ||
+        ig_strieq_n(href, "data:image/svg", 14))
+        return 0;
+    sc = contains_ci(rel, ig_strlen(rel), "apple-touch") ? 5 : 10;
+    if ((type && (contains_ci(type, ig_strlen(type), "png") || contains_ci(type, ig_strlen(type), "gif"))) ||
+        (q >= 4 && (ig_strieq_n(href + q - 4, ".png", 4) || ig_strieq_n(href + q - 4, ".gif", 4))))
+        sc += 4;
+    else if (!type && q >= 4 && ig_strieq_n(href + q - 4, ".ico", 4)) sc += 1;
+    if (sizes) {
+        const char* s = sizes;
+        while (*s >= '0' && *s <= '9') { n = n * 10 + (*s - '0'); if (n > 10000) break; s++; }
+        if (n > 0 && n <= 16) sc += 3;
+        else if (n > 16 && n <= 32) sc += 4;
+        else if (n > 32 && n <= 64) sc += 2;
+    }
+    return sc;
+}
+
 static void start_tag(P* p, int tag, int selfClose)
 {
     Elem* parent;
@@ -3186,6 +3211,13 @@ static void start_tag(P* p, int tag, int selfClose)
             const char* rel = attr(p, "rel");
             const char* href = attr(p, "href");
             const char* media = attr(p, "media");
+            if (rel && href && href[0] && contains_ci(rel, ig_strlen(rel), "icon") && !contains_ci(rel, ig_strlen(rel), "mask")) {
+                int sc = icon_score(rel, href, attr(p, "type"), attr(p, "sizes"));
+                if (sc > d->iconScore) {
+                    char* u = bw_url_resolve(d->baseUrl, href, ig_strlen(href));
+                    if (u) { ig_free(d->iconUrl); d->iconUrl = u; d->iconScore = sc; }
+                }
+            }
             if (rel && href && href[0] && contains_ci(rel, ig_strlen(rel), "stylesheet") && !contains_ci(rel, ig_strlen(rel), "alternate") &&
                 (!media || media_matches(media, ig_strlen(media))) && d->styleCount < BW_MAX_STYLESHEETS &&
                 grow((void**)&d->styleUrls, &d->styleCap, d->styleCount, sizeof(char*))) {
@@ -3903,6 +3935,7 @@ void bw_doc_free(BwDoc* d)
     ig_free(d->title);
     ig_free(d->baseUrl);
     ig_free(d->refreshUrl);
+    ig_free(d->iconUrl);
     ig_free(d);
 }
 

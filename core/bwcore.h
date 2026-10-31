@@ -206,6 +206,8 @@ typedef struct {
     unsigned short* title; unsigned int titleLen;
     char* baseUrl;       /* the page URL, or <base href> */
     char* refreshUrl;    /* <meta http-equiv=refresh>, may be NULL */
+    char* iconUrl;       /* the best <link rel=icon> for a 16 px icon (PNG/GIF first, no SVG), absolute, may be NULL */
+    int iconScore;
     int refreshDelay;
     int charset;
     int bgColor, textColor, linkColor;

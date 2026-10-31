@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.13");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.13");
+_LIT(KBrVersion, "0.14");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.14");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -264,7 +264,7 @@ public:
     void ClearAll();              // a new page: the queue and the cache go
     void SetMaxSize(const TSize& aSize) { iMax = aSize; }
     void SetEnabled(TBool aOn) { iEnabled = aOn; }
-    TInt Pending() const { return iQueue.Count() + (iCurrent ? 1 : 0); }
+    TInt Pending() const;         // the page's pictures still to load (not the icon: priority < 0)
     TInt LoadedCount() const { return iLoadedCount; }   // this page's pictures so far
     TInt FailedCount() const { return iFailedCount; }
     TInt CachedKb() const { return iBytes / 1024; }
@@ -398,6 +398,8 @@ public:
     void SetStatus(const TDesC& aText);    // the header's right part
     void SetStats(const TDesC& aText);     // CPU and RAM (lines separated by '\n'); redraws only the bar
     void SetTitle(const TDesC& aText);     // the header's left part (title or address)
+    void SetIconL(const TDesC8& aUrl);     // the page's icon (favicon); empty: none
+    void SetHost(const TDesC8& aHost) { iHost.Copy(aHost.Left(iHost.MaxLength())); }
     void SetLoading(TBool aLoading);
     TInt ScrollY() const { return iScrollY; }
     void ScrollXBy(TInt aDx);             // sideways (the original size is wider than the screen)
@@ -466,6 +468,9 @@ private:
     TBuf<160> iTitle;
     TBuf<200> iStatusText;                 // lines separated by '\n'
     TBuf<80> iStats;
+    HBufC8* iIconUrl;                      // zero-terminated; NULL: none
+    TBuf<64> iHost;                        // shown by the icon in the side bar
+    void DrawIcon(CFbsBitGc& aGc, const TRect& aRect);
     TBool iLoading;
     CFbsBitmap* iBuffer;
     CFbsBitmapDevice* iBufferDev;
@@ -558,6 +563,7 @@ public:
     static TInt StatsCallback(TAny* aSelf);
     void StatsTick();
     void UpdateStatsTimer(TBool aForeground);
+    void SetPageIconL(const TDesC8& aUrl, const BwDoc* aDoc);
     void ApplyCursor();                   // the phone's virtual cursor on / off as set (logged)
     void ReparseCurrentL();               // the page on the screen parsed again (hover, original size)
     void EditControlL(TInt aControl, TUint aFirstChar = 0);

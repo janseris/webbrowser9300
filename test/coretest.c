@@ -488,6 +488,20 @@ static void test_css3(void)
         bw_layout_free(l);
         bw_doc_free(d);
     }
+    /* the favicon: PNG near 16-32 px first, no SVG */
+    {
+        BwDoc* d = parse("<link rel=icon href=/i.svg><link rel='shortcut icon' href=/favicon.ico>"
+                         "<link rel=apple-touch-icon href=/apple.png sizes=180x180><link rel=icon type=image/png sizes=32x32 href=/f32.png>"
+                         "<link rel=icon type=image/png sizes=192x192 href=/f192.png><link rel=mask-icon href=/m.png>");
+        CHECK(d->iconUrl && strcmp(d->iconUrl, "http://test.cz/f32.png") == 0);
+        bw_doc_free(d);
+        d = parse("<link rel=icon href=/only.svg><p>x");
+        CHECK(!d->iconUrl);
+        bw_doc_free(d);
+        d = parse("<link rel='shortcut icon' href='/favicon.ico?v=2'>");
+        CHECK(d->iconUrl && strcmp(d->iconUrl, "http://test.cz/favicon.ico?v=2") == 0);
+        bw_doc_free(d);
+    }
     /* the original size: desktop margins as they are, a wide layout */
     {
         const char* h = "<div style='margin-left:60px;padding-left:20px'>Wide</div><img src=a.png width=900 height=50>";

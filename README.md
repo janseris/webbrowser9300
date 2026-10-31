@@ -19,6 +19,16 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.14** (not yet run on the phone): the page's icon.
+  - **Favicon**: shown in front of the site's name at the top of the side bar, or in front of the
+    title in the top bar (16 px).
+    - The parser picks the best `<link rel=icon>` (`shortcut icon`, `apple-touch-icon`): PNG / GIF
+      over ICO, sizes near 16-32 px over big ones, never SVG (the phone can't decode it).
+      Unit-tested.
+    - Without one, the site's `/favicon.ico` is tried; if the phone can't decode it, there's
+      no icon.
+    - It's fetched first, before the page's pictures, and isn't counted in "Pictures: ...".
+      With pictures off, it isn't loaded either.
 - **0.13** (not yet run on the phone): CPU without CPU times, the bar's place and width, the
   pointer's top.
   - **CPU works without the kernel's CPU times** (the phone showed "?"). Once a second, a thread

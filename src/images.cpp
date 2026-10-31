@@ -112,6 +112,13 @@ void CImageLoader::BeginPass()
     iGen++;
     }
 
+TInt CImageLoader::Pending() const
+    {
+    TInt n = iCurrent && iCurrent->iPriority >= 0 ? 1 : 0;
+    for (TInt i = 0; i < iQueue.Count(); i++) if (iQueue[i]->iPriority >= 0) n++;
+    return n;
+    }
+
 void CImageLoader::EndPass()
     {
     for (TInt i = iQueue.Count() - 1; i >= 0; i--)
@@ -362,7 +369,7 @@ void CImageLoader::Finish(CFbsBitmap* aBitmap)
     if (iCurrent)
         {
         TBool ok = aBitmap != NULL;
-        if (ok) iLoadedCount++; else iFailedCount++;
+        if (iCurrent->iPriority >= 0) { if (ok) iLoadedCount++; else iFailedCount++; }   // (not the icon)
         TSize full = ok ? iFullNow : TSize(0, 0);
         CEntry* e = new CEntry;
         HBufC8* url = iCurrent->iUrl;

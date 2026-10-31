@@ -98,6 +98,7 @@ void CBrView::ConstructL(const TRect& aRect)
 CBrView::~CBrView()
     {
     delete iRelayout;
+    delete iIconUrl;
     if (iPointerTimer) iPointerTimer->Cancel();
     delete iPointerTimer;
     bw_layout_free(iLayout);
@@ -217,6 +218,7 @@ TInt CBrView::RelayoutCallback(TAny* aSelf)
 
 void CBrView::ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize)
     {
+    if (iIconUrl && iIconUrl->Length() && TPtrC8(iIconUrl->Ptr(), iIconUrl->Length() - 1) == aUrl) { Render(); return; }
     if (!iDoc) return;
     TBool sizeChanged = EFalse, any = EFalse;
     for (TUint i = 0; i < iDoc->imageCount; i++)
@@ -244,6 +246,28 @@ void CBrView::ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize)
         iRelayoutPending = ETrue;
         }
     else if (!iRelayoutPending) Render();
+    }
+
+void CBrView::SetIconL(const TDesC8& aUrl)
+    {
+    delete iIconUrl;
+    iIconUrl = NULL;
+    iHost.Zero();
+    if (!aUrl.Length()) return;
+    iIconUrl = HBufC8::NewL(aUrl.Length() + 1);
+    iIconUrl->Des().Copy(aUrl);
+    iIconUrl->Des().ZeroTerminate();
+    iIconUrl->Des().SetLength(aUrl.Length() + 1);      // (the zero counts: Ptr() is a C string)
+    }
+
+// The icon in aRect (scaled), or nothing while it loads / if there is none
+void CBrView::DrawIcon(CFbsBitGc& aGc, const TRect& aRect)
+    {
+    if (!iIconUrl) return;
+    CFbsBitmap* bmp = iImages.Get((const char*)iIconUrl->Ptr(), -1);
+    if (!bmp) return;
+    if (bmp->SizeInPixels() == aRect.Size()) aGc.BitBlt(aRect.iTl, bmp);
+    else aGc.DrawBitmap(aRect, bmp);
     }
 
 void CBrView::SetStats(const TDesC& aText)
@@ -500,10 +524,18 @@ void CBrView::RenderHeader(CFbsBitGc& aGc)
         left.Copy(h.Left(left.MaxLength()));
         }
     else left.Copy(iTitle);
-    TInt n = f->TextCount(left, r.Width() - statusW - 6);
+    TInt tx = 3;
+    if (iIconUrl)
+        {
+        TInt is = Min(16, iHeaderH - 2);
+        DrawIcon(aGc, TRect(TPoint(3, (iHeaderH - is) / 2), TSize(is, is)));
+        aGc.UseFont(f);
+        tx += is + 4;
+        }
+    TInt n = f->TextCount(left, r.Width() - statusW - tx - 3);
     aGc.SetPenStyle(CGraphicsContext::ESolidPen);
     aGc.SetPenColor(KRgbWhite);
-    aGc.DrawText(left.Left(n), TPoint(3, base));
+    aGc.DrawText(left.Left(n), TPoint(tx, base));
     if (statusW)
         {
         aGc.SetPenColor(TRgb(0xFF, 0xE0, 0x80));
@@ -574,6 +606,18 @@ void CBrView::RenderSide(CFbsBitGc& aGc)
     if (link.Length() && titleLines > 3) titleLines = 3;
     TInt y = r.iTl.iY + 2;
     aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+    // the icon and the site's name
+    if (iIconUrl && titleLines > 1)
+        {
+        TInt ih = Max(16, lh);
+        DrawIcon(aGc, TRect(TPoint(x, y), TSize(16, 16)));
+        aGc.UseFont(f);
+        aGc.SetPenColor(TRgb(0xC0, 0xD0, 0xE8));
+        TInt hn = f->TextCount(iHost, w - 20);
+        aGc.DrawText(iHost.Left(hn), TPoint(x + 20, y + (ih - f->HeightInPixels()) / 2 + f->AscentInPixels()));
+        y += ih + 2;
+        titleLines -= ih > lh ? 2 : 1;
+        }
     aGc.SetPenColor(KRgbWhite);
     y = DrawWrapped(aGc, f, iTitle, x, y, w, titleLines);
     if (link.Length() && linkLines > 0)
@@ -944,6 +988,7 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
                 break;
             }
         }
+    if (iIconUrl) iImages.Get((const char*)iIconUrl->Ptr(), -1);   // the icon first (it's tiny)
     iImages.EndPass();
     aGc.CancelClippingRect();
     // the scroll bar
