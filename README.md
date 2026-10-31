@@ -19,6 +19,24 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.5** (not yet run on the phone): the mouse pointer and desktop-style keys.
+  - **Hover**: the joystick's pointer is on by default (View > Mouse pointer). The cursor is
+    polled about 8 times a second, because move events don't always arrive. The link under it
+    is underlined (pictures get a frame) and its address shows in the header. When the pointer
+    rests on an element for about 0.35 s, the page is styled again with `:hover` applied to it
+    and its ancestors, so dropdown menus open and links change colour. Typed text and ticks are
+    kept. This only happens on pages that have `:hover` rules and that parse and lay out in under
+    0.9 s.
+  - **Edge scrolling**: rest the pointer on the header or the bottom edge and the page scrolls,
+    faster the longer it stays.
+  - **Keys as on a computer**: Up/Down scroll a step, PgUp/PgDn and Space/Shift+Space a page,
+    Home/End the top/end, and Tab/Shift+Tab move between links and fields. Enter opens the
+    focused one even when it is off the screen. Space ticks a focused box or presses a button.
+    A letter typed with a text field focused goes into it. The 9300 has no
+    Home/End/PgUp/PgDn/Alt keys, so it also has: Shift+Up/Down for a page, Ctrl+Up/Down for
+    top/end, Left/Right for the previous/next link, and Ctrl+Left/Right for back/forward.
+  - Core: `:hover` selectors, element numbers on ops/boxes, `bw_doc_parse_hover`,
+    `bw_doc_hover_chain`, `bw_doc_copy_form_state` and `bw_layout_hit_box` (unit-tested).
 - **0.4** (not yet run on the phone): more HTML5 and CSS, all on the phone.
   - **Address bar only**: the start page has no search boxes; typing a letter or digit on a
     page opens the address bar with it, and the bar opens with the page's address selected.
@@ -149,11 +167,14 @@ receives logs (`localserver\ota_server.js`).
 
 | | |
 |---|---|
-| Up / Down | next / previous link or field when it is on the screen, otherwise scroll |
-| Left / Right, Tab / Shift+Tab | previous / next link or field (scrolls to it) |
-| Shift+Up / Shift+Down, Space / Shift+Space | page up / down |
-| Ctrl+Up / Ctrl+Down | top / end of the page |
-| Enter | open the link; edit the field; tick the box; choose from the list |
+| Up / Down | scroll a step |
+| Shift+Up / Shift+Down, Space / Shift+Space, PgUp / PgDn | page up / down |
+| Ctrl+Up / Ctrl+Down, Home / End | top / end of the page |
+| Tab / Shift+Tab, Right / Left | next / previous link or field (scrolls to it) |
+| Ctrl+Left / Ctrl+Right | back / forward |
+| Space on a box or button | tick it / press it |
+| a letter | into the focused text field, else opens the address bar with it |
+| Enter | open the focused link; edit the field; tick the box; choose from the list |
 | Esc, Backspace | stop loading; otherwise back |
 | Ctrl+L | go to an address (side button **Go to**) |
 | Ctrl+B / Ctrl+D / Ctrl+H | bookmarks / add this page / history |
@@ -166,9 +187,10 @@ receives logs (`localserver\ota_server.js`).
 
 The header shows the page title (or the focused link's address) and the status on the right:
 the request stages, "34 KB, 1.2 s" when a page is done, pictures still to load. View > Full
-screen hides the side buttons (the menu still works); View > Mouse pointer turns the phone's
-virtual cursor on (a click opens a link; a click in the header pages up, at the bottom pages
-down, on the right edge jumps there).
+screen hides the side buttons (the menu still works); View > Mouse pointer (on by default) turns
+the phone's cursor on or off. The link under the cursor is underlined and its address shows in
+the header; resting on an element applies `:hover` styles. Resting on the header or the bottom
+edge scrolls. A click opens a link; a click on the right edge jumps there.
 
 ## Files on the phone
 

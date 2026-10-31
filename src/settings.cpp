@@ -16,7 +16,7 @@ CBrSettings::CBrSettings(RFs& aFs) : iFs(aFs)
     iImages = ETrue;
     iStyles = ETrue;
     iLogOn = ETrue;
-    iMouseOn = EFalse;
+    iMouseOn = ETrue;
     iFullScreen = EFalse;
     iTextSize = 0;
     iPromptAccessPoint = EFalse;

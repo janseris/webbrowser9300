@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.4");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.4");
+_LIT(KBrVersion, "0.5");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.5");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -399,6 +399,8 @@ public:
     void ShowListL(TInt aId, const TDesC& aTitle, const RPointerArray<HBufC>& aItems, TInt aSelected, MListObserver& aObserver);
     TBool ListOpen() const { return iListOpen; }
     void SetPointerOn(TBool aOn);
+    void SetForeground(TBool aForeground);
+    void ResetHover();                     // a new page: the old element numbers mean nothing
     CFbsBitmap* Buffer() const { return iBuffer; }
     TInt LayoutMs() const { return iLayoutMs; }
     TInt BoxCount() const { return iLayout ? (TInt)iLayout->boxCount : 0; }
@@ -425,12 +427,14 @@ private:
     TInt PageHeightOnScreen() const { return Rect().Height() - iHeaderH; }
     void ClampScroll();
     TBool TargetVisible(TInt aTarget, TBool aFully) const;
-    void MoveFocus(TInt aDir);             // Up/Down: the next link if it is on screen, else scroll
     void JumpFocus(TInt aDir);             // Tab: the next link wherever it is
     void EnsureFocusVisible();
     void SetFocusTarget(TInt aTarget);
     TKeyResponse ListKeyL(const TKeyEvent& aKeyEvent);
     static TInt RelayoutCallback(TAny* aSelf);
+    static TInt PointerTick(TAny* aSelf);
+    void UpdatePointerTimer();
+    void HoverAt(TPoint aPos, TBool aTick); // the pointer is here (view coordinates)
 
     CBrAppUi& iAppUi;
     CImageLoader& iImages;
@@ -450,6 +454,14 @@ private:
     TBool iRelayoutPending;
     TInt iLayoutMs;
     TBool iPointerOn;
+    TBool iForeground;
+    CPeriodic* iPointerTimer;              // polls the cursor: move events do not always come
+    TPoint iPointerPos;
+    TInt iHoverTarget;                     // the link under the pointer, -1 none
+    TInt iHoverElem;                       // the element under it (for :hover), -1 none
+    TInt iHoverSent;                       // the element the page was last styled for
+    TInt iHoverQuiet;                      // ticks it has rested on iHoverElem
+    TInt iEdgeTicks;                       // ticks at the top / bottom edge (scrolling speeds up)
     TInt iFindBox, iFindOff, iFindLen;     // the last match (box index; -1 none)
     // the list
     TBool iListOpen;
@@ -517,6 +529,8 @@ public:
     // navigation
     void OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost = NULL, TBool aAddHistory = ETrue);
     void GoToDialogL(TUint aFirstChar = 0);
+    void EditControlL(TInt aControl, TUint aFirstChar = 0);
+    void HoverElementL(TInt aElem);       // the pointer rests on this element (-1 none)
     void BackL();
     void ForwardL();
     void ReloadL();
@@ -549,6 +563,8 @@ private:
     void FindL(TBool aNext);
     void CopyAddressL();
     TInt iForceCs;                      // the encoding chosen by hand for this page (-1: automatic)
+    TInt iHover[32];                    // the element under the pointer and its ancestors (:hover)
+    TUint iHoverCount;
     void ShowInternalL(const TDesC8& aUrl);
     void ShowLoadedL(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8*& aBody);
     HBufC8* StartPageLC();
@@ -563,7 +579,6 @@ private:
     void DeleteBookmark(TInt aIndex);
     void LoadCookies();
     void SaveCookies();
-    void EditControlL(TInt aControl);
     void SubmitL(TInt aForm, TInt aSubmitter);
     void SelectOptionL(TInt aControl);
     void PageInfoL();

@@ -240,6 +240,7 @@ void CBrAppUi::HandleForegroundEventL(TBool aForeground)
     {
     CEikAppUi::HandleForegroundEventL(aForeground);
     if (!aForeground) { IgLogFlush(); SaveCookies(); }
+    if (iView) iView->SetForeground(aForeground);
     }
 
 void CBrAppUi::ApplySettingsL()
@@ -732,7 +733,8 @@ BwDoc* CBrAppUi::ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl
         (void)err;
         }
     if (!cached) return aDoc;
-    BwDoc* d = bw_doc_parse_ex((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, iForceCs, css, len, aDoc->styleCount);
+    BwDoc* d = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, iForceCs, css, len, aDoc->styleCount,
+                                  (const int*)iHover, iHoverCount);
     if (!d) return aDoc;
     bw_doc_free(aDoc);
     return d;
@@ -782,7 +784,7 @@ void CBrAppUi::StylesDone()
 
 void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus, TBool aReparse)
     {
-    if (!aReparse) iStyles->Stop();
+    if (!aReparse) { iStyles->Stop(); iHoverCount = 0; iView->ResetHover(); }
     TUint32 t0 = TickMs();
     HBufC8* zurl = ZeroTermLC(aUrl);
     HBufC8* zct = ZeroTermLC(aContentType);
@@ -802,7 +804,8 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         doc = bw_doc_plain((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), iForceCs >= 0 ? iForceCs : bw_charset_sniff((const char*)zct->Ptr(), "", 0));
     else
         {
-        doc = bw_doc_parse((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), iForceCs);
+        doc = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), iForceCs,
+                                 NULL, NULL, 0, (const int*)iHover, iHoverCount);
         if (doc) doc = ApplyStylesL(doc, aBody, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse);
         }
     CleanupStack::PopAndDestroy(2);
@@ -828,6 +831,8 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
     delete iCurrentUrl;
     iCurrentUrl = cur;
     iView->SetLoading(EFalse);
+    // the same page again: what was typed and ticked stays
+    if (aReparse && iView->Doc()) bw_doc_copy_form_state(doc, iView->Doc());
     iView->SetDocumentL(doc, aScrollY, aFocus);
     IgLogF2(_L("layout %d ms, %d boxes"), iView->LayoutMs(), iView->BoxCount());
     UpdateTitle();
@@ -1021,7 +1026,35 @@ void CBrAppUi::ActivateTargetL(TInt aTarget)
         }
     }
 
-void CBrAppUi::EditControlL(TInt aControl)
+// The pointer rests on an element: if a :hover rule is about it (or was about the last one), the
+// page is styled again for it. Skipped on pages too slow to parse and lay out again.
+const TInt KHoverMaxMs = 900;
+
+void CBrAppUi::HoverElementL(TInt aElem)
+    {
+    BwDoc* d = iView->Doc();
+    if (!d || !d->hoverCount || iLoader->Busy() || iView->ListOpen()) return;
+    if (iParseMs + iView->LayoutMs() > KHoverMaxMs) return;
+    if (iHistoryPos < 0 || iHistoryPos >= iHistory.Count()) return;
+    THistoryEntry& e = iHistory[iHistoryPos];
+    if (!e.iBody || !iCurrentUrl || *e.iUrl != *iCurrentUrl) return;
+    int chain[32];
+    TUint n = 0;
+    if (aElem >= 0 && bw_doc_hover_matters(d, aElem)) n = bw_doc_hover_chain(d, aElem, chain, 32);
+    if (n == iHoverCount)
+        {
+        TUint i = 0;
+        while (i < n && chain[i] == iHover[i]) i++;
+        if (i == n) return;
+        }
+    for (TUint i = 0; i < n; i++) iHover[i] = chain[i];
+    iHoverCount = n;
+    HBufC8* ct = e.iContentType ? e.iContentType->AllocLC() : KNullDesC8().AllocLC();
+    ShowPageL(*e.iUrl, *ct, *e.iBody, iView->ScrollY(), iView->Focus(), ETrue);
+    CleanupStack::PopAndDestroy(ct);
+    }
+
+void CBrAppUi::EditControlL(TInt aControl, TUint aFirstChar)
     {
     BwDoc* d = iView->Doc();
     BwControl& c = d->controls[aControl];
@@ -1029,7 +1062,8 @@ void CBrAppUi::EditControlL(TInt aControl)
     HBufC* buf = HBufC::NewLC(max);
     TPtr t = buf->Des();
     if (c.value) t.Copy(TPtrC((const TUint16*)c.value, Min((TInt)c.valueLen, max)));
-    if (c.type == BW_CTL_TEXTAREA && !t.Length()) { }
+    // typed on the page with the field focused: that key goes on the end, as on a computer
+    if (aFirstChar && t.Length() < max) t.Append((TChar)aFirstChar);
     TBuf<60> title;
     if (c.labelLen) title.Copy(TPtrC((const TUint16*)c.label, Min((TInt)c.labelLen, 60)));
     else if (c.name) title.Copy(TPtrC8((const TUint8*)c.name).Left(60));

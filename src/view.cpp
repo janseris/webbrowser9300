@@ -9,6 +9,7 @@
 #include <eikenv.h>
 #include <fbs.h>
 #include "browser.h"
+#include "browser.hrh"
 
 const TInt KScrollStep = 36;
 const TInt KScrollBarW = 4;
@@ -26,7 +27,8 @@ CBrView* CBrView::NewL(const TRect& aRect, CBrAppUi& aAppUi, CImageLoader& aImag
     }
 
 CBrView::CBrView(CBrAppUi& aAppUi, CImageLoader& aImages, CBrFonts& aFonts)
-    : iAppUi(aAppUi), iImages(aImages), iFonts(&aFonts), iFocus(-1), iFindBox(-1)
+    : iAppUi(aAppUi), iImages(aImages), iFonts(&aFonts), iFocus(-1), iForeground(ETrue), iPointerPos(-1, -1),
+      iHoverTarget(-1), iHoverElem(-1), iHoverSent(-1), iFindBox(-1)
     {
     }
 
@@ -79,6 +81,9 @@ void CBrView::ConstructL(const TRect& aRect)
     CreateWindowL();
     iHeaderH = iEikonEnv->DenseFont()->HeightInPixels() + 5;
     iRelayout = new (ELeave) CAsyncCallBack(TCallBack(RelayoutCallback, this), CActive::EPriorityIdle);
+    iPointerTimer = CPeriodic::NewL(CActive::EPriorityLow);
+    // moves too, not only taps
+    Window().PointerFilter(EPointerFilterMove | EPointerFilterDrag, 0);
     SetRect(aRect);
     ActivateL();
     }
@@ -86,6 +91,8 @@ void CBrView::ConstructL(const TRect& aRect)
 CBrView::~CBrView()
     {
     delete iRelayout;
+    if (iPointerTimer) iPointerTimer->Cancel();
+    delete iPointerTimer;
     bw_layout_free(iLayout);
     bw_doc_free(iDoc);
     delete iBufferGc;
@@ -147,6 +154,9 @@ void CBrView::SetDocumentL(BwDoc* aDoc, TInt aScrollY, TInt aFocus)
     iScrollY = aScrollY;
     ClampScroll();
     if (aFocus >= 0 && iDoc && (TUint)aFocus < iDoc->targetCount && TargetVisible(aFocus, EFalse)) iFocus = aFocus;
+    // the link under the pointer in the new layout (a :hover style may have moved things)
+    iHoverTarget = -1;
+    if (iPointerOn && iPointerPos.iX >= 0) HoverAt(iPointerPos, EFalse);
     Render();
     }
 
@@ -274,9 +284,98 @@ void CBrView::ScrollToAnchor(const TDesC8& aName)
     else if (aName.Length() == 0 || aName == _L8("top")) ScrollTo(0);
     }
 
+const TInt KPointerTickUs = 120000;
+const TInt KHoverRestTicks = 3;            // ~0.35 s at rest before the page is styled for :hover
+
 void CBrView::SetPointerOn(TBool aOn)
     {
     iPointerOn = aOn;
+    if (!aOn && iHoverTarget >= 0) { iHoverTarget = -1; Render(); }
+    UpdatePointerTimer();
+    }
+
+void CBrView::SetForeground(TBool aForeground)
+    {
+    iForeground = aForeground;
+    UpdatePointerTimer();
+    }
+
+void CBrView::ResetHover()
+    {
+    iHoverTarget = -1;
+    iHoverElem = -1;
+    iHoverSent = -1;
+    iHoverQuiet = 0;
+    }
+
+void CBrView::UpdatePointerTimer()
+    {
+    if (!iPointerTimer) return;
+    TBool run = iPointerOn && iForeground;
+    if (run && !iPointerTimer->IsActive()) iPointerTimer->Start(KPointerTickUs, KPointerTickUs, TCallBack(PointerTick, this));
+    else if (!run) iPointerTimer->Cancel();
+    }
+
+TInt CBrView::PointerTick(TAny* aSelf)
+    {
+    CBrView* v = (CBrView*)aSelf;
+    if (!v->IsVisible() || v->iListOpen) return 1;
+    TPoint p = v->iCoeEnv->WsSession().PointerCursorPosition() - v->PositionRelativeToScreen();
+    TRAPD(err, v->HoverAt(p, ETrue));
+    (void)err;
+    return 1;
+    }
+
+// What is under the pointer: the link is highlighted and its address shown in the header; resting
+// on an element styles the page for :hover; resting at the top or bottom edge scrolls, faster and
+// faster.
+void CBrView::HoverAt(TPoint aPos, TBool aTick)
+    {
+    iPointerPos = aPos;
+    TInt w = Rect().Width();
+    TInt hgt = Rect().Height();
+    TBool redraw = EFalse;
+    if (aTick && iLayout)
+        {
+        TInt dir = 0;
+        if (aPos.iX >= 0 && aPos.iX < w)
+            {
+            if (aPos.iY < PageTop() + 3) dir = -1;
+            else if (aPos.iY >= hgt - 3) dir = 1;
+            }
+        if (dir && ((dir < 0 && iScrollY > 0) || (dir > 0 && iScrollY + PageHeightOnScreen() < iLayout->height)))
+            {
+            iEdgeTicks++;
+            if (iEdgeTicks > 2)
+                {
+                TInt step = 8 + (iEdgeTicks - 3) * 6;
+                if (step > 90) step = 90;
+                iScrollY += dir * step;
+                ClampScroll();
+                redraw = ETrue;
+                }
+            }
+        else iEdgeTicks = 0;
+        }
+    TInt t = -1;
+    TInt elem = -1;
+    if (iLayout && !iListOpen && aPos.iY >= PageTop() && aPos.iY < hgt && aPos.iX >= 0 && aPos.iX < w - KScrollBarW - 4)
+        {
+        TInt y = aPos.iY - PageTop() + iScrollY;
+        t = bw_layout_hit(iLayout, aPos.iX, y);
+        TInt bi = bw_layout_hit_box(iLayout, aPos.iX, y);
+        if (bi >= 0) elem = iLayout->boxes[bi].elem;
+        }
+    if (t != iHoverTarget) { iHoverTarget = t; redraw = ETrue; }
+    if (elem != iHoverElem) { iHoverElem = elem; iHoverQuiet = 0; }
+    else if (aTick && elem != iHoverSent && ++iHoverQuiet >= KHoverRestTicks && iEdgeTicks <= 2)
+        {
+        iHoverSent = elem;
+        if (redraw) Render();
+        iAppUi.HoverElementL(elem);       // may lay the page out again
+        return;
+        }
+    if (redraw) Render();
     }
 
 // ------------------------------------------------------------------ drawing
@@ -320,9 +419,10 @@ void CBrView::RenderHeader(CFbsBitGc& aGc)
     if (statusW > r.Width() / 2) statusW = r.Width() / 2;
     // left: the focused link's address, else the title
     TBuf<160> left;
-    if (!iLoading && iDoc && iFocus >= 0 && (TUint)iFocus < iDoc->targetCount && iDoc->targets[iFocus].kind == BW_TGT_LINK)
+    TInt shown = iHoverTarget >= 0 ? iHoverTarget : iFocus;
+    if (!iLoading && iDoc && shown >= 0 && (TUint)shown < iDoc->targetCount && iDoc->targets[shown].kind == BW_TGT_LINK)
         {
-        const char* href = iDoc->links[iDoc->targets[iFocus].index].href;
+        const char* href = iDoc->links[iDoc->targets[shown].index].href;
         TPtrC8 h((const TUint8*)href);
         left.Copy(h.Left(left.MaxLength()));
         }
@@ -357,6 +457,13 @@ void CBrView::DrawImage(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect, T
             aGc.SetPenSize(TSize(2, 2));
             aGc.DrawRect(aRect);
             aGc.SetPenSize(TSize(1, 1));
+            }
+        else if (aBox.target >= 0 && aBox.target == iHoverTarget)
+            {
+            aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+            aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+            aGc.SetPenColor(TRgb(0x40, 0x80, 0xFF));
+            aGc.DrawRect(aRect);
             }
         return;
         }
@@ -602,7 +709,8 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
                 aGc.SetPenColor(focused ? TRgb(0x00, 0x00, 0x60) : Rgb(b.color));
                 TInt base = r.iTl.iY + current->AscentInPixels() + 1;
                 aGc.DrawText(t, TPoint(r.iTl.iX, base));
-                if (b.flags & BW_OPF_UNDERLINE) aGc.DrawLine(TPoint(r.iTl.iX, base + 1), TPoint(r.iBr.iX, base + 1));
+                if ((b.flags & BW_OPF_UNDERLINE) || (b.target >= 0 && b.target == iHoverTarget))
+                    aGc.DrawLine(TPoint(r.iTl.iX, base + 1), TPoint(r.iBr.iX, base + 1));
                 if (b.flags & BW_OPF_STRIKE)
                     {
                     TInt my = base - current->AscentInPixels() / 3;
@@ -778,49 +886,6 @@ void CBrView::EnsureFocusVisible()
     ClampScroll();
     }
 
-void CBrView::MoveFocus(TInt aDir)
-    {
-    if (!iDoc || !iLayout) return;
-    TInt h = PageHeightOnScreen();
-    TInt n = (TInt)iDoc->targetCount;
-    if (iFocus >= 0 && !TargetVisible(iFocus, EFalse)) iFocus = -1;
-    TInt cand = -1;
-    if (iFocus < 0)
-        {
-        // the first (last) link that is fully on the screen
-        if (aDir > 0) { for (TInt t = 0; t < n; t++) if (TargetVisible(t, ETrue)) { cand = t; break; } }
-        else { for (TInt t = n - 1; t >= 0; t--) if (TargetVisible(t, ETrue)) { cand = t; break; } }
-        }
-    else
-        {
-        for (TInt t = iFocus + aDir; t >= 0 && t < n; t += aDir)
-            {
-            const BwTargetPos& p = iLayout->targets[t];
-            if (p.y0 < 0) continue;
-            // the next one counts if its top (bottom) is on the screen
-            if (aDir > 0 && p.y0 >= iScrollY && p.y0 < iScrollY + h - 4) cand = t;
-            if (aDir < 0 && p.y1 > iScrollY + 4 && p.y1 <= iScrollY + h) cand = t;
-            break;
-            }
-        }
-    if (cand >= 0)
-        {
-        SetFocusTarget(cand);
-        // if it reaches past the edge, bring it in, but not more than one step
-        const BwTargetPos& p = iLayout->targets[cand];
-        if (aDir > 0 && p.y1 > iScrollY + h) iScrollY += Min(KScrollStep, p.y1 - (iScrollY + h) + 4);
-        if (aDir < 0 && p.y0 < iScrollY) iScrollY -= Min(KScrollStep, iScrollY - p.y0 + 4);
-        ClampScroll();
-        Render();
-        return;
-        }
-    TInt before = iScrollY;
-    iScrollY += aDir * KScrollStep;
-    ClampScroll();
-    if (iFocus >= 0 && !TargetVisible(iFocus, EFalse)) SetFocusTarget(-1);
-    if (iScrollY != before || cand < 0) Render();
-    }
-
 void CBrView::JumpFocus(TInt aDir)
     {
     if (!iDoc || !iLayout || !iDoc->targetCount) return;
@@ -851,6 +916,12 @@ void CBrView::JumpFocus(TInt aDir)
 
 // ------------------------------------------------------------------ input
 
+// Keys as in a desktop browser: Up/Down scroll a step, PgUp/PgDn and Space/Shift+Space a page,
+// Home/End and Ctrl+Home/End the top/end, Tab/Shift+Tab the next/previous link or field, Enter opens
+// it, Space ticks a focused box or presses a focused button, Ctrl+L the address. The 9300 has no
+// Home/End/PgUp/PgDn keys, so also: Shift+Up/Down page, Ctrl+Up/Down top/end; Left/Right step
+// through links (pages never scroll sideways); Ctrl+Left/Right back/forward (no Alt key); a letter
+// typed on the page opens the address bar with it, or the focused text field.
 TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType)
     {
     if (aType != EEventKey) return EKeyWasNotConsumed;
@@ -858,54 +929,83 @@ TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aTyp
     TBool shift = (aKeyEvent.iModifiers & EModifierShift) != 0;
     TBool ctrl = (aKeyEvent.iModifiers & EModifierCtrl) != 0;
     TInt h = PageHeightOnScreen();
+    TInt page = h - 20;
+    TInt end = iLayout ? iLayout->height : 0;
+    TBool fieldFocused = EFalse;
+    const BwControl* fc = NULL;
+    if (iDoc && iFocus >= 0 && (TUint)iFocus < iDoc->targetCount && iDoc->targets[iFocus].kind == BW_TGT_CONTROL)
+        {
+        fc = &iDoc->controls[iDoc->targets[iFocus].index];
+        fieldFocused = fc->type == BW_CTL_TEXT || fc->type == BW_CTL_PASSWORD || fc->type == BW_CTL_TEXTAREA;
+        }
     switch (aKeyEvent.iCode)
         {
         case EKeyDownArrow:
-            if (ctrl) { ScrollTo(iLayout ? iLayout->height : 0); SetFocusTarget(-1); }
-            else if (shift) { ScrollTo(iScrollY + h - 20); if (!TargetVisible(iFocus, EFalse)) SetFocusTarget(-1); Render(); }
-            else MoveFocus(1);
+            ScrollTo(ctrl ? end : iScrollY + (shift ? page : KScrollStep));
             return EKeyWasConsumed;
         case EKeyUpArrow:
-            if (ctrl) { ScrollTo(0); SetFocusTarget(-1); Render(); }
-            else if (shift) { ScrollTo(iScrollY - h + 20); if (!TargetVisible(iFocus, EFalse)) SetFocusTarget(-1); Render(); }
-            else MoveFocus(-1);
+            ScrollTo(ctrl ? 0 : iScrollY - (shift ? page : KScrollStep));
             return EKeyWasConsumed;
         case EKeyPageDown:
-            ScrollTo(iScrollY + h - 20);
+            ScrollTo(iScrollY + page);
             return EKeyWasConsumed;
         case EKeyPageUp:
-            ScrollTo(iScrollY - h + 20);
-            return EKeyWasConsumed;
-        case EKeyRightArrow:
-            JumpFocus(1);
-            return EKeyWasConsumed;
-        case EKeyLeftArrow:
-            JumpFocus(-1);
-            return EKeyWasConsumed;
-        case EKeyTab:
-            JumpFocus(shift ? -1 : 1);
-            return EKeyWasConsumed;
-        case ' ':
-            ScrollTo(iScrollY + (shift ? -(h - 20) : h - 20));
-            if (!TargetVisible(iFocus, EFalse)) SetFocusTarget(-1);
-            Render();
+            ScrollTo(iScrollY - page);
             return EKeyWasConsumed;
         case EKeyHome:
             ScrollTo(0);
             return EKeyWasConsumed;
         case EKeyEnd:
-            ScrollTo(iLayout ? iLayout->height : 0);
+            ScrollTo(end);
+            return EKeyWasConsumed;
+        case EKeyRightArrow:
+            if (ctrl) iAppUi.HandleCommandL(EBrCmdForward);
+            else JumpFocus(1);
+            return EKeyWasConsumed;
+        case EKeyLeftArrow:
+            if (ctrl) iAppUi.HandleCommandL(EBrCmdBack);
+            else JumpFocus(-1);
+            return EKeyWasConsumed;
+        case EKeyTab:
+            JumpFocus(shift ? -1 : 1);
+            return EKeyWasConsumed;
+        case ' ':
+            if (fc && !fieldFocused && !shift && fc->type != BW_CTL_SELECT)
+                {
+                // a box ticks, a button presses
+                iAppUi.ActivateTargetL(iFocus);
+                return EKeyWasConsumed;
+                }
+            if (fieldFocused && !shift && TargetVisible(iFocus, EFalse)) break;   // typed into the field
+            ScrollTo(iScrollY + (shift ? -page : page));
             return EKeyWasConsumed;
         case EKeyEnter: case EKeyDevice3:
-            if (iFocus >= 0 && TargetVisible(iFocus, EFalse)) iAppUi.ActivateTargetL(iFocus);
+            if (iFocus >= 0)
+                {
+                if (!TargetVisible(iFocus, EFalse)) { EnsureFocusVisible(); Render(); }
+                iAppUi.ActivateTargetL(iFocus);
+                }
+            else if (iHoverTarget >= 0) iAppUi.ActivateTargetL(iHoverTarget);
             return EKeyWasConsumed;
         default:
             break;
         }
-    // a letter or digit typed on the page: the address bar opens with it
-    if (!ctrl && aKeyEvent.iCode > ' ' && aKeyEvent.iCode < 0xF700 && aKeyEvent.iCode != 0x7F && !(aKeyEvent.iModifiers & EModifierFunc))
+    TUint code = aKeyEvent.iCode;
+    if (ctrl)
         {
-        iAppUi.GoToDialogL(aKeyEvent.iCode);
+        // Ctrl+L: the address (the code may come as the letter or as control-L)
+        if (code == 'l' || code == 'L' || code == 12) { iAppUi.GoToDialogL(); return EKeyWasConsumed; }
+        return EKeyWasNotConsumed;
+        }
+    if (code >= ' ' && code < 0xF700 && code != 0x7F && !(aKeyEvent.iModifiers & EModifierFunc))
+        {
+        // typed into the focused text field (if it is on the screen), else the address bar
+        if (fieldFocused && TargetVisible(iFocus, EFalse))
+            {
+            if (fc->disabled) iAppUi.ActivateTargetL(iFocus);    // says why not
+            else iAppUi.EditControlL(iDoc->targets[iFocus].index, code);
+            }
+        else if (code > ' ') iAppUi.GoToDialogL(code);
         return EKeyWasConsumed;
         }
     return EKeyWasNotConsumed;
@@ -913,8 +1013,13 @@ TKeyResponse CBrView::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aTyp
 
 void CBrView::HandlePointerEventL(const TPointerEvent& aPointerEvent)
     {
-    if (aPointerEvent.iType != TPointerEvent::EButton1Up) return;
     TPoint p = aPointerEvent.iPosition - Rect().iTl;
+    if (aPointerEvent.iType == TPointerEvent::EMove || aPointerEvent.iType == TPointerEvent::EDrag)
+        {
+        if (iPointerOn) HoverAt(p, EFalse);
+        return;
+        }
+    if (aPointerEvent.iType != TPointerEvent::EButton1Up) return;
     TInt h = PageHeightOnScreen();
     if (iListOpen) return;
     if (p.iY < PageTop()) { ScrollTo(iScrollY - h + 20); return; }        // the header: page up

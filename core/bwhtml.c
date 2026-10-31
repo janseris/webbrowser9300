@@ -73,6 +73,7 @@ typedef struct {
     unsigned char flexItem;          /* a block in a flex row: flows inline after a gap */
     unsigned int afterOff;           /* ::after text in P.ancBuf (~0u none) */
     int labelIndex;                  /* a <label>: its doc label, -1 */
+    int num;                         /* its number in the document (BwDoc.elemParent), -1 the root */
     int firstControl;                /* a <label>: the controls made inside it start here */
     int ibg;                      /* the background of an inline element around the text (-1) */
     int childCount;               /* element children opened so far (for :nth-child) */
@@ -162,6 +163,7 @@ typedef struct {
     CssAttrCond attr[MAX_ATTR_CONDS];   /* only on the subject (ancestors keep no attributes) */
     unsigned char attrCount;
     unsigned char hasNth;          /* :first-child / :nth-child(An+B) */
+    unsigned char hover;           /* :hover */
     short nthA, nthB;
     int notTag;                    /* :not(tag) */
     char* notClass;                /* :not(.x) */
@@ -226,6 +228,9 @@ typedef struct {
     char* picSrc;                  /* <picture>: the srcset of the <source> chosen for its <img> */
     int curChildIndex;             /* the new element's place among its siblings */
     const CssRule* pseudoRule[2];  /* the ::before / ::after rule of the element just styled */
+    int curElemNum;                /* the number of the element being styled */
+    const int* hover;              /* the elements under the pointer (innermost first) */
+    unsigned int hoverN;
     int inlineCss;                 /* parsing a <style> block (its @import counts) */
     /* rules by the key of their subject: bucket b holds idx[start[b] .. start[b+1]) */
     unsigned int* idx;
@@ -298,6 +303,7 @@ static BwOp* add_op(P* p, int type)
     op->ref = -1;
     op->color = 0;
     op->bg = -1;
+    op->elem = p->depth > 0 ? p->stack[p->depth - 1].num : -1;
     return op;
 }
 
@@ -1557,6 +1563,7 @@ static int parse_compound(const char* s, unsigned int n, CssCompound* c, int* nI
                 if (word_is(ps, pl, "link") || word_is(ps, pl, "visited") || word_is(ps, pl, "any-link")) { (*nCls)++; continue; }
                 if (word_is(ps, pl, "root")) { if (c->tag && c->tag != T_HTML) goto fail; c->tag = T_HTML; c->bloom |= 1u << (T_HTML & 31); (*nCls)++; continue; }
                 if (word_is(ps, pl, "first-child")) { c->hasNth = 1; c->nthA = 0; c->nthB = 1; (*nCls)++; continue; }
+                if (word_is(ps, pl, "hover")) { c->hover = 1; (*nCls)++; continue; }
                 if (i < n && s[i] == '(' && (word_is(ps, pl, "nth-child") || word_is(ps, pl, "not"))) {
                     unsigned int e = group_end(s, n, i);
                     const char* as = s + i + 1;
@@ -1600,7 +1607,7 @@ static int parse_compound(const char* s, unsigned int n, CssCompound* c, int* nI
             }
         } else goto fail;
     }
-    if (!c->tag && !c->id && !cls.len && te == ts && !c->attrCount && !c->hasNth && !c->notClass && !c->notId && !c->notTag) goto fail;
+    if (!c->tag && !c->id && !cls.len && te == ts && !c->attrCount && !c->hasNth && !c->notClass && !c->notId && !c->notTag && !c->hover) goto fail;
     if (cls.len) {
         ig_buf_putc(&cls, 0);
         ig_buf_putc(&cls, 0);
@@ -1721,7 +1728,18 @@ static void add_selector(P* p, const char* s, unsigned int n, const CssProps* pr
                     r->ancCount = (unsigned int)(count - 1);
                 }
             }
-            if (ok) { p->ruleCount++; p->doc->cssRules++; return; }
+            if (ok) {
+                /* the hover parts, so the app can tell when a re-style could change anything */
+                int q;
+                for (q = 0; q < count; q++) if (comp[q].hover) {
+                    BwDoc* d = p->doc;
+                    if (d->hoverCount < 256 && grow((void**)&d->hoverBlooms, &d->hoverCap, d->hoverCount, sizeof(unsigned int)))
+                        d->hoverBlooms[d->hoverCount++] = comp[q].bloom;
+                }
+                p->ruleCount++;
+                p->doc->cssRules++;
+                return;
+            }
         }
     }
     for (k = 0; k < count; k++) free_compound(&comp[k]);
@@ -2203,9 +2221,17 @@ static int nth_matches(int a, int b, int index)
     return (index - b) / a >= 0;
 }
 
+static int hovered(P* p, int num)
+{
+    unsigned int k;
+    for (k = 0; k < p->hoverN; k++) if (p->hover[k] == num) return 1;
+    return 0;
+}
+
 static int compound_matches(P* p, const CssCompound* c, const Elem* e)
 {
     const char* buf = p->ancBuf.data;
+    if (c->hover && !hovered(p, e->num)) return 0;
     if (c->bloom & ~e->bloom) return 0;
     if (c->tag && c->tag != e->tag) return 0;
     if (c->id && (e->idOff == ~0u || !buf || !ig_streq(buf + e->idOff, c->id))) return 0;
@@ -2226,6 +2252,7 @@ static int lower_eq(const char* a, const char* b, unsigned int n)
 static int subject_extra_matches(P* p, const CssCompound* c, int tag, const char* id, const char* cls)
 {
     int k;
+    if (c->hover && !hovered(p, p->curElemNum)) return 0;
     if (c->hasNth && !nth_matches(c->nthA, c->nthB, p->curChildIndex)) return 0;
     if (c->notTag && c->notTag == tag) return 0;
     if (c->notClass && cls && has_class(cls, c->notClass)) return 0;
@@ -2308,6 +2335,7 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     e->flexItem = 0;
     e->afterOff = ~0u;
     e->labelIndex = -1;
+    e->num = p->curElemNum;
     e->childCount = 0;
     e->childIndex = p->curChildIndex;
     e->labelOff = ~0u;
@@ -2442,7 +2470,7 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
                 if (rule->subj.tag && rule->subj.tag != tag) continue;
                 if (rule->subj.id && (!id || !ig_streq(rule->subj.id, id))) continue;
                 if (rule->subj.classes && !classes_match(cls, rule->subj.classes)) continue;
-                if ((rule->subj.attrCount || rule->subj.hasNth || rule->subj.notTag || rule->subj.notClass || rule->subj.notId) &&
+                if ((rule->subj.attrCount || rule->subj.hasNth || rule->subj.notTag || rule->subj.notClass || rule->subj.notId || rule->subj.hover) &&
                     !subject_extra_matches(p, &rule->subj, tag, id, cls)) continue;
                 if (rule->ancCount && !ancestors_match(p, rule)) continue;
                 if (rule->pseudo) {
@@ -2933,7 +2961,7 @@ static void handle_image(P* p, int tag, int cssW, int cssH)
     im->altLen = d->poolLen - im->altOff;
     if (!im->src) im->failed = 1;
     op = add_op(p, BW_OP_IMAGE);
-    if (op) { op->ref = (int)d->imageCount; op->target = e->target; op->font = e->font; op->color = e->color; }
+    if (op) { op->ref = (int)d->imageCount; op->target = e->target; op->font = e->font; op->color = e->color; op->elem = p->curElemNum; }
     d->imageCount++;
     p->lastSpace = 0;
     ig_free(chosen);
@@ -2980,7 +3008,7 @@ static void handle_input(P* p)
     c->target = add_target(p, BW_TGT_CONTROL, idx);
     {
         BwOp* op = add_op(p, BW_OP_CONTROL);
-        if (op) { op->ref = idx; op->target = c->target; op->font = e->font; }
+        if (op) { op->ref = idx; op->target = c->target; op->font = e->font; op->elem = p->curElemNum; }
     }
     p->lastSpace = 0;
 }
@@ -3095,6 +3123,18 @@ static void start_tag(P* p, int tag, int selfClose)
     /* its place among its siblings (for :nth-child) */
     parent->childCount++;
     p->curChildIndex = parent->childCount;
+    /* its number: the same in every parse of the page, so a hover chain carries over */
+    p->curElemNum = -1;
+    if (grow((void**)&d->elemParent, &d->elemCap, d->elemCount, sizeof(int))) {
+        unsigned int* nb = (unsigned int*)ig_malloc(d->elemCap * sizeof(unsigned int));
+        if (nb) {
+            if (d->elemBloom) { ig_memcpy(nb, d->elemBloom, d->elemCount * sizeof(unsigned int)); ig_free(d->elemBloom); }
+            d->elemBloom = nb;
+            d->elemParent[d->elemCount] = parent->num;
+            d->elemBloom[d->elemCount] = elem_bloom(tag, attr(p, "id"), attr(p, "class"));
+            p->curElemNum = (int)d->elemCount++;
+        }
+    }
 
     /* elements that are not pushed */
     switch (tag) {
@@ -3728,6 +3768,7 @@ static void init_parser(P* p, BwDoc* d, const char* data, unsigned int len, int 
     root->ibg = -1;
     root->labelOff = ~0u;
     root->afterOff = ~0u;
+    root->num = -1;
     root->color = d->textColor;
     root->bg = -1;
     root->target = -1;
@@ -3759,6 +3800,13 @@ BwDoc* bw_doc_parse(const char* data, unsigned int len, const char* url, const c
 BwDoc* bw_doc_parse_ex(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
                        const char* const* css, const unsigned int* cssLen, unsigned int cssCount)
 {
+    return bw_doc_parse_hover(data, len, url, contentType, cs, css, cssLen, cssCount, 0, 0);
+}
+
+BwDoc* bw_doc_parse_hover(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
+                          const char* const* css, const unsigned int* cssLen, unsigned int cssCount,
+                          const int* hover, unsigned int hoverCount)
+{
     BwDoc* d;
     P* p;
     if (cs < 0) cs = bw_charset_sniff(contentType, data, len);
@@ -3783,6 +3831,8 @@ BwDoc* bw_doc_parse_ex(const char* data, unsigned int len, const char* url, cons
     p = (P*)ig_malloc(sizeof(P));
     if (!p) { bw_doc_free(d); return 0; }
     init_parser(p, d, data, len, cs);
+    p->hover = hover;
+    p->hoverN = hover ? hoverCount : 0;
     {
         unsigned int k;
         for (k = 0; k < cssCount; k++) if (css[k]) parse_css(p, css[k], cssLen[k], 0);
@@ -3838,6 +3888,9 @@ void bw_doc_free(BwDoc* d)
     ig_free(d->controls);
     for (i = 0; i < d->formCount; i++) ig_free(d->forms[i].action);
     ig_free(d->forms);
+    ig_free(d->elemParent);
+    ig_free(d->elemBloom);
+    ig_free(d->hoverBlooms);
     for (i = 0; i < d->labelCount; i++) ig_free(d->labels[i].forId);
     ig_free(d->labels);
     for (i = 0; i < d->styleCount; i++) ig_free(d->styleUrls[i]);
@@ -3858,4 +3911,41 @@ int bw_doc_find_anchor(const BwDoc* d, const char* name)
     if (!name) return -1;
     for (i = 0; i < d->anchorCount; i++) if (ig_streq(d->anchors[i].name, name)) return (int)i;
     return -1;
+}
+
+unsigned int bw_doc_hover_chain(const BwDoc* d, int elem, int* out, unsigned int max)
+{
+    unsigned int n = 0;
+    while (elem >= 0 && (unsigned int)elem < d->elemCount && n < max) {
+        out[n++] = elem;
+        elem = d->elemParent[elem];
+    }
+    return n;
+}
+
+int bw_doc_hover_matters(const BwDoc* d, int elem)
+{
+    unsigned int depth = 0, k;
+    if (!d->hoverCount) return 0;
+    while (elem >= 0 && (unsigned int)elem < d->elemCount && depth < 200) {
+        unsigned int have = d->elemBloom[elem];
+        for (k = 0; k < d->hoverCount; k++) if (!(d->hoverBlooms[k] & ~have)) return 1;
+        elem = d->elemParent[elem];
+        depth++;
+    }
+    return 0;
+}
+
+void bw_doc_copy_form_state(BwDoc* to, const BwDoc* from)
+{
+    unsigned int i, n = to->controlCount < from->controlCount ? to->controlCount : from->controlCount;
+    for (i = 0; i < n; i++) {
+        BwControl* t = &to->controls[i];
+        const BwControl* f = &from->controls[i];
+        if (t->type != f->type) continue;
+        t->checked = f->checked;
+        if ((unsigned int)f->selected < t->optionCount) t->selected = f->selected;
+        if (t->type == BW_CTL_TEXT || t->type == BW_CTL_PASSWORD || t->type == BW_CTL_TEXTAREA)
+            bw_control_set_value(t, f->value ? f->value : (const unsigned short*)"\0\0", f->valueLen);
+    }
 }

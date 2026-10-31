@@ -442,6 +442,51 @@ static void test_css3(void)
         bw_doc_free(d);
         ig_buf_free(&b);
     }
+    /* :hover: the chain under the pointer gets the hover rules; numbering is stable */
+    {
+        const char* h = "<style>.menu ul{display:none} .menu li:hover > ul{display:block} a:hover{color:#ff0000}</style>"
+                        "<ul class=menu><li><a href=/a>Products</a><ul><li><a href=/a1>Phones</a></ul><li><a href=/b>Help</a></ul>";
+        BwDoc* d = bw_doc_parse(h, (unsigned int)strlen(h), "http://x/", 0, -1);
+        BwLayout* l = bw_layout(d, 500, &kM);
+        const BwBox* prod = box_of(d, l, 'P');
+        const BwBox* help = box_of(d, l, 'H');
+        int chain[64];
+        unsigned int n;
+        BwDoc* d2;
+        CHECK(d->hoverCount == 2);
+        CHECK(prod && !box_of(d, l, 'h') && prod->elem >= 0);
+        CHECK(prod && help && bw_doc_hover_matters(d, prod->elem));
+        n = bw_doc_hover_chain(d, prod->elem, chain, 64);
+        CHECK(n >= 3);
+        d2 = bw_doc_parse_hover(h, (unsigned int)strlen(h), "http://x/", 0, -1, 0, 0, 0, chain, n);
+        {
+            BwLayout* l2 = bw_layout(d2, 500, &kM);
+            const BwBox* sub = box_of(d2, l2, 'P');
+            unsigned int i;
+            int phones = 0;
+            for (i = 0; i < l2->boxCount; i++) if (l2->boxes[i].kind == BW_BOX_TEXT && d2->pool[l2->boxes[i].off] == 'P' && d2->pool[l2->boxes[i].off + 1] == 'h') phones = 1;
+            CHECK(phones);                          /* the submenu is shown */
+            CHECK(sub && sub->color == 0xFF0000);  /* the hovered link is red */
+            CHECK(d2->elemCount == d->elemCount);
+            CHECK(bw_layout_hit_box(l2, sub->x + 1, sub->y + 1) >= 0);
+            bw_layout_free(l2);
+        }
+        bw_doc_free(d2);
+        bw_layout_free(l);
+        bw_doc_free(d);
+    }
+    /* form state carries over a re-parse */
+    {
+        BwDoc* a = parse("<form><input name=q><input type=checkbox name=c></form>");
+        BwDoc* b = parse("<form><input name=q><input type=checkbox name=c></form>");
+        unsigned short v[3] = { 'h', 'i', 0 };
+        bw_control_set_value(&a->controls[0], v, 2);
+        a->controls[1].checked = 1;
+        bw_doc_copy_form_state(b, a);
+        CHECK(b->controls[0].valueLen == 2 && b->controls[0].value[1] == 'i' && b->controls[1].checked);
+        bw_doc_free(a);
+        bw_doc_free(b);
+    }
     /* media features */
     expect_text("<style>@media (prefers-color-scheme: dark){.l{display:none}} @media (hover: hover){.h{display:none}} "
                 "@media (-webkit-min-device-pixel-ratio: 2){.r{display:none}}</style><p class=l>L</p><p class=h>H</p><p class=r>R</p>", "|L|H|R");

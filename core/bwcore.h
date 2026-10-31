@@ -101,6 +101,7 @@ typedef struct {
     int ref;
     int target;          /* the link / control the text belongs to, -1 none */
     int bg;              /* text: the background of an inline element (-1 none) */
+    int elem;            /* the element it belongs to (its number, see BwDoc.elemParent), -1 */
 } BwOp;
 
 typedef struct {
@@ -191,6 +192,13 @@ typedef struct {
     BwTarget* targets; unsigned int targetCount, targetCap;
     BwBlockBox* blocks; unsigned int blockCount, blockCap;     /* BLOCK_START op->ref */
     BwLabel* labels; unsigned int labelCount, labelCap;
+    /* every element by number (document order, the same in every parse of the same page) */
+    int* elemParent;             /* its parent's number, -1 at the top */
+    unsigned int* elemBloom;     /* bits of its tag / id / classes */
+    unsigned int elemCount, elemCap;
+    /* the :hover compounds of the stylesheet (their blooms): is a re-style worth it? */
+    unsigned int* hoverBlooms;
+    unsigned int hoverCount, hoverCap;
     unsigned short* title; unsigned int titleLen;
     char* baseUrl;       /* the page URL, or <base href> */
     char* refreshUrl;    /* <meta http-equiv=refresh>, may be NULL */
@@ -216,6 +224,17 @@ BwDoc* bw_doc_plain(const char* data, unsigned int len, const char* url, int cs)
 BwDoc* bw_doc_parse_ex(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
                        const char* const* css, const unsigned int* cssLen, unsigned int cssCount);
 void bw_doc_free(BwDoc* doc);
+/* The same with the pointer resting on an element: hover lists it and its ancestors (from
+ * bw_doc_hover_chain of an earlier parse of the page), so :hover rules apply to them. */
+BwDoc* bw_doc_parse_hover(const char* data, unsigned int len, const char* url, const char* contentType, int cs,
+                          const char* const* css, const unsigned int* cssLen, unsigned int cssCount,
+                          const int* hover, unsigned int hoverCount);
+/* the element and its ancestors, innermost first; the count */
+unsigned int bw_doc_hover_chain(const BwDoc* doc, int elem, int* out, unsigned int max);
+/* 1 if a :hover rule could apply to the chain of this element (cheap, may say yes wrongly) */
+int bw_doc_hover_matters(const BwDoc* doc, int elem);
+/* typed values, ticks and choices from an earlier parse of the same page (by control order) */
+void bw_doc_copy_form_state(BwDoc* to, const BwDoc* from);
 /* The anchor index for a fragment name, -1 if none */
 int bw_doc_find_anchor(const BwDoc* doc, const char* name);
 
@@ -246,6 +265,7 @@ typedef struct {
     int ref;                 /* image / control index */
     int target;
     int bg;                  /* text: a background behind it (-1 none) */
+    int elem;                /* the element (for :hover), -1 */
 } BwBox;
 
 typedef struct {
@@ -283,6 +303,8 @@ unsigned int bw_layout_first_box(const BwLayout* l, int y);
 unsigned int bw_layout_first_line(const BwLayout* l, int y);
 /* the target under a point (document coordinates), -1 none */
 int bw_layout_hit(const BwLayout* l, int x, int y);
+/* the box under a point (any kind), -1 none */
+int bw_layout_hit_box(const BwLayout* l, int x, int y);
 
 /* ---------------------------------------------------------------- cookies */
 typedef struct {

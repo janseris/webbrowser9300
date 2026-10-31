@@ -109,6 +109,7 @@ static BwBox* new_box(S* s, int kind, int asc)
     b->target = -1;
     b->ref = -1;
     b->bg = -1;
+    b->elem = -1;
     b->y = s->y;
     s->asc[l->boxCount] = (unsigned char)(asc > 255 ? 255 : asc < 0 ? 0 : asc);
     l->boxCount++;
@@ -230,6 +231,7 @@ static void place_word(S* s, const BwOp* op, int opIndex, unsigned int ws, unsig
             b->flags = op->flags & (BW_OPF_UNDERLINE | BW_OPF_STRIKE);
             b->color = readable_on(s, op->color, op->bg);
             b->bg = op->bg;
+            b->elem = op->elem;
             b->target = op->target;
             b->x = s->x;
             b->w = pw;
@@ -260,6 +262,7 @@ static void place_word(S* s, const BwOp* op, int opIndex, unsigned int ws, unsig
         b->flags = op->flags & (BW_OPF_UNDERLINE | BW_OPF_STRIKE);
         b->color = readable_on(s, op->color, op->bg);
         b->bg = op->bg;
+        b->elem = op->elem;
         b->target = op->target;
         b->x = s->x + sw;
         b->w = w;
@@ -351,7 +354,7 @@ static void place_image(S* s, const BwOp* op)
                 int tw = s->m->textWidth(s->m->ctx, f, s->d->pool + im->altOff, (int)im->altLen) + 6;
                 if (tw > maxW) tw = maxW;
                 b = place_inline(s, BW_BOX_IMAGE, tw, font_h(s, f) + 4);
-                if (b) { b->ref = op->ref; b->target = op->target; b->font = (unsigned char)f; b->color = readable(s, op->color); }
+                if (b) { b->ref = op->ref; b->target = op->target; b->font = (unsigned char)f; b->color = readable(s, op->color); b->elem = op->elem; }
                 return;
             }
             place_text(s, &t, -2);
@@ -372,7 +375,7 @@ static void place_image(S* s, const BwOp* op)
     if (w > maxW) { h = h * maxW / w; w = maxW; if (h < 1) h = 1; }
     if (h > 2000) h = 2000;
     b = place_inline(s, BW_BOX_IMAGE, w, h);
-    if (b) { b->ref = op->ref; b->target = op->target; b->font = op->font; b->color = op->color; }
+    if (b) { b->ref = op->ref; b->target = op->target; b->font = op->font; b->color = op->color; b->elem = op->elem; }
 }
 
 /* the width a picture takes before it is fitted (for measuring table columns) */
@@ -457,7 +460,7 @@ static void place_control(S* s, const BwOp* op)
     control_size(s, op, &w, &h, &f);
     if (w > maxW) w = maxW;
     b = place_inline(s, BW_BOX_CONTROL, w, h);
-    if (b) { b->ref = op->ref; b->target = op->target; b->font = (unsigned char)f; b->color = readable(s, s->d->textColor); }
+    if (b) { b->ref = op->ref; b->target = op->target; b->font = (unsigned char)f; b->color = readable(s, s->d->textColor); b->elem = op->elem; }
 }
 
 static int add_fill(S* s, int x, int y, int w, int h, int color, int outline);
@@ -1120,6 +1123,20 @@ int bw_layout_hit(const BwLayout* l, int x, int y)
         for (i = l->lines[li].first; i < e; i++) {
             const BwBox* b = &l->boxes[i];
             if (b->target >= 0 && x >= b->x - 2 && x < b->x + b->w + 2 && y >= b->y - 1 && y < b->y + b->h + 1) best = b->target;
+        }
+    }
+    return best;
+}
+
+int bw_layout_hit_box(const BwLayout* l, int x, int y)
+{
+    unsigned int li = bw_layout_first_line(l, y - 2);
+    int best = -1;
+    for (; li < l->lineCount && l->lines[li].top <= y + 2; li++) {
+        unsigned int i, e = li + 1 < l->lineCount ? l->lines[li + 1].first : l->boxCount;
+        for (i = l->lines[li].first; i < e; i++) {
+            const BwBox* b = &l->boxes[i];
+            if (x >= b->x && x < b->x + b->w && y >= b->y && y < b->y + b->h) best = (int)i;
         }
     }
     return best;
