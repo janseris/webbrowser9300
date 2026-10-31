@@ -19,6 +19,28 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.3** (not yet run on the phone):
+  - **Tables with columns**: rows and cells are now in the op stream (TABLE / ROW / CELL
+    start and end); the layout measures every cell's narrowest and widest form (min / max
+    content, long words capped at 150 px since they are broken anyway), sizes the columns as
+    browsers do (the widest form if it fits, else min plus a share of the rest), honours
+    `colspan`, `rowspan` (the spanned columns stay free in the rows below; the cell's height
+    counts for its first row), `cellpadding`, `border` (cell and table frames), `bgcolor` / CSS backgrounds of
+    tables, rows and cells, `align` of cells and of the table, `<th>` centred and bold, a
+    `<caption>` above. Up to 10 columns and 6 nested levels; a table that does not fit even
+    at its narrowest stacks its rows as before (cells one after another). CSS `display:
+    table / table-row / table-cell` builds the same structure; `display: block` on cells
+    (responsive tables) stacks them.
+  - A table row is one line of the layout, and the screen is now drawn and clicked line by
+    line, so a short sidebar next to a long column is drawn too.
+  - **View > Encoding**: automatic, UTF-8, windows-1250, ISO-8859-2, windows-1252 for pages
+    that name the wrong one; the page is shown again from its kept copy (no new download),
+    until the next page.
+  - **Page > Copy the address** (Ctrl+C): the focused link's address, else the page's, to the
+    clipboard (paste it in Messaging, Notes...).
+  - Measured on the PC: 390 KB of random nested tables (58,000 ops, 18,000 boxes) parse and lay
+    out in 24 ms.
+
 - **0.2** (not yet run on the phone):
   - **External stylesheets**: `<link rel=stylesheet>` (with its `media`) and `@import` in
     `<style>` are loaded on the phone after the page is on the screen, one at a time over a
@@ -64,6 +86,7 @@ receives logs (`localserver\ota_server.js`).
     bold x italic x mono, headings, lists with bullets / numbers (`<ol start>`, `<li value>`),
     blockquote / dd indents, `<pre>`, `<hr>`, tables as rows of cells with a gap (fits 640 px),
     pictures scaled to the width (width/height attributes honoured), anchors for `#links`.
+    (0.3: tables get real columns, see above.)
   - Forms: text, password, hidden, checkbox, radio, select, textarea, submit, image, reset,
     `<button>`; GET and POST (urlencoded, in the page's charset); a form with one text field
     is sent as soon as the field is edited (like Enter in a search box).
@@ -104,6 +127,7 @@ receives logs (`localserver\ota_server.js`).
 | Ctrl+R | reload (Forward: Page menu) |
 | Ctrl+F / Ctrl+N | find in page / find the next one |
 | Ctrl+I | page info |
+| Ctrl+C | copy the focused link's address (else the page's) |
 | Ctrl+G | pictures on / off |
 | Ctrl+S | the start page |
 
@@ -145,6 +169,7 @@ adds to that). Page info shows the real parse / layout times on the phone.
 ## Next
 
 - Measure on the phone: parse / layout times on real pages, memory, picture speed.
-- Text selection and copy (Instagram's `textsel.cpp`), choosing the charset by hand.
+- Text selection and copy (Instagram's `textsel.cpp`).
+- Table cell `width` attributes / CSS widths, vertical-align, rowspan heights.
 - `@import` inside external stylesheets, `:first-child`-style pseudo-classes, `+` / `~`.
 - Faster picture decoding with Mapy's own PNG/JPEG decoders.

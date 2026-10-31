@@ -73,7 +73,12 @@ enum {
     BW_OP_CONTROL,       /* ref: control index */
     BW_OP_ANCHOR,        /* ref: anchor index (a name / id to jump to) */
     BW_OP_MARKER,        /* a list item's bullet or number: text in the pool */
-    BW_OP_CELL           /* a table cell starts: a gap if the line is not empty */
+    BW_OP_TABLE_START,   /* a: margin, b: 1 = borders, align: of the table, color: background, ref: cellpadding (-1) */
+    BW_OP_TABLE_END,
+    BW_OP_ROW_START,     /* color: background */
+    BW_OP_ROW_END,
+    BW_OP_CELL_START,    /* a: colspan, b: 1 = th, ref: rowspan, align, color: background */
+    BW_OP_CELL_END
 };
 
 #define BW_OPF_UNDERLINE 1
@@ -222,7 +227,13 @@ typedef struct {
 typedef struct {
     int x, y, w, h;
     int color;
+    int outline;             /* 1: only the frame (a table border), else filled */
 } BwFill;
+
+typedef struct {
+    unsigned int first;      /* its first box; the line's boxes run to the next line's first */
+    int top, bottom;         /* a table row is one line (its cells side by side) */
+} BwLine;
 
 typedef struct {
     int x0, y0, x1, y1;      /* bounding box of the target's boxes (y0 = -1: not laid out) */
@@ -231,6 +242,7 @@ typedef struct {
 typedef struct {
     BwBox* boxes; unsigned int boxCount, boxCap;
     BwFill* fills; unsigned int fillCount, fillCap;
+    BwLine* lines; unsigned int lineCount, lineCap;   /* top to bottom, bottoms increasing */
     BwTargetPos* targets;    /* one per doc target */
     int* anchorY;            /* one per doc anchor */
     int width, height;
@@ -243,6 +255,8 @@ void bw_layout_free(BwLayout* l);
 /* the first box whose bottom is below y (boxes are in reading order, which is top to bottom
  * for the start of every line) */
 unsigned int bw_layout_first_box(const BwLayout* l, int y);
+/* the first line whose bottom is below y */
+unsigned int bw_layout_first_line(const BwLayout* l, int y);
 /* the target under a point (document coordinates), -1 none */
 int bw_layout_hit(const BwLayout* l, int x, int y);
 

@@ -8,6 +8,8 @@
 #include <eikbtgpc.h>
 #include <eikedwin.h>
 #include <eikseced.h>
+#include <baclipb.h>
+#include <txtetext.h>
 #include <eikvcurs.h>
 #include <apgcli.h>
 #include <hal.h>
@@ -197,6 +199,7 @@ void CBrAppUi::ConstructL()
     AddToStackL(iView);
     iHistoryPos = -1;
     iSelectControl = -1;
+    iForceCs = -1;
     ApplySettingsL();
     IgLogFlush();
     HomeL();
@@ -305,6 +308,21 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
         case EBrCmdAddBookmark: AddBookmarkL(); break;
         case EBrCmdPageInfo: PageInfoL(); break;
         case EBrCmdFind: FindL(EFalse); break;
+        case EBrCmdCopyLink: CopyAddressL(); break;
+        case EBrCmdCsAuto: case EBrCmdCsUtf8: case EBrCmdCs1250: case EBrCmdCs88592: case EBrCmdCs1252:
+            {
+            static const TInt kCs[] = { -1, BW_CS_UTF8, BW_CS_1250, BW_CS_8859_2, BW_CS_1252 };
+            iForceCs = kCs[aCommand - EBrCmdCsAuto];
+            // the page again from its kept copy, in that encoding
+            if (iHistoryPos >= 0 && iHistoryPos < iHistory.Count() && iHistory[iHistoryPos].iBody)
+                {
+                THistoryEntry& e = iHistory[iHistoryPos];
+                HBufC8* ct = e.iContentType ? e.iContentType->AllocLC() : KNullDesC8().AllocLC();
+                ShowPageL(*e.iUrl, *ct, *e.iBody, iView->ScrollY(), -1, ETrue);
+                CleanupStack::PopAndDestroy(ct);
+                }
+            }
+            break;
         case EBrCmdFindNext: FindL(ETrue); break;
         case EBrCmdStyles:
             iSettings->iStyles = !iSettings->iStyles;
@@ -409,6 +427,11 @@ void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
         {
         aMenuPane->SetItemButtonState(EBrCmdImages, iSettings->iImages ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdStyles, iSettings->iStyles ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        {
+        static const TInt kCs[] = { -1, BW_CS_UTF8, BW_CS_1250, BW_CS_8859_2, BW_CS_1252 };
+        for (TInt k = 0; k < 5; k++)
+            aMenuPane->SetItemButtonState(EBrCmdCsAuto + k, iForceCs == kCs[k] ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        }
         aMenuPane->SetItemButtonState(EBrCmdFullScreen, iSettings->iFullScreen ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdMouse, iSettings->iMouseOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextSmaller, iSettings->iTextSize < 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
@@ -498,6 +521,7 @@ void CBrAppUi::OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost, TBool aAddHisto
             }
         }
     SaveHistoryPosition();
+    iForceCs = -1;
     iNavigatingHistory = !aAddHistory;
     iRestoreScroll = 0;
     iRestoreFocus = -1;
@@ -560,6 +584,7 @@ void CBrAppUi::BackL()
     if (iView->ListOpen()) return;
     if (iHistoryPos <= 0) { Say(_L("No earlier page")); return; }
     SaveHistoryPosition();
+    iForceCs = -1;
     iHistoryPos--;
     THistoryEntry& e = iHistory[iHistoryPos];
     if (e.iUrl->Left(6) == _L8("about:")) { iNavigatingHistory = ETrue; ShowInternalL(*e.iUrl); iView->ScrollTo(e.iScrollY); return; }
@@ -583,6 +608,7 @@ void CBrAppUi::ForwardL()
     if (iLoader->Busy()) return;
     if (iHistoryPos + 1 >= iHistory.Count()) { Say(_L("No later page")); return; }
     SaveHistoryPosition();
+    iForceCs = -1;
     iHistoryPos++;
     THistoryEntry& e = iHistory[iHistoryPos];
     if (e.iUrl->Left(6) == _L8("about:")) { iNavigatingHistory = ETrue; ShowInternalL(*e.iUrl); iView->ScrollTo(e.iScrollY); return; }
@@ -695,7 +721,7 @@ BwDoc* CBrAppUi::ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl
         (void)err;
         }
     if (!cached) return aDoc;
-    BwDoc* d = bw_doc_parse_ex((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, -1, css, len, aDoc->styleCount);
+    BwDoc* d = bw_doc_parse_ex((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, iForceCs, css, len, aDoc->styleCount);
     if (!d) return aDoc;
     bw_doc_free(aDoc);
     return d;
@@ -762,10 +788,10 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         }
     else if (aContentType.Left(10).CompareF(_L8("text/plain")) == 0 || aContentType.Left(8).CompareF(_L8("text/css")) == 0 ||
              aContentType.FindF(_L8("javascript")) >= 0)
-        doc = bw_doc_plain((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), bw_charset_sniff((const char*)zct->Ptr(), "", 0));
+        doc = bw_doc_plain((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), iForceCs >= 0 ? iForceCs : bw_charset_sniff((const char*)zct->Ptr(), "", 0));
     else
         {
-        doc = bw_doc_parse((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), -1);
+        doc = bw_doc_parse((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), iForceCs);
         if (doc) doc = ApplyStylesL(doc, aBody, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse);
         }
     CleanupStack::PopAndDestroy(2);
@@ -1087,6 +1113,30 @@ void CBrAppUi::ListChosen(TInt aListId, TInt aIndex)
         iView->Relayout();
         }
     iSelectControl = -1;
+    }
+
+// the focused link's address, else the page's, to the clipboard
+void CBrAppUi::CopyAddressL()
+    {
+    HBufC* t = NULL;
+    BwDoc* d = iView->Doc();
+    TInt f = iView->Focus();
+    if (d && f >= 0 && (TUint)f < d->targetCount && d->targets[f].kind == BW_TGT_LINK)
+        t = Utf8ToUnicodeL(d->links[d->targets[f].index].href);
+    else
+        t = Utf8ToUnicodeL(*iCurrentUrl);
+    CleanupStack::PushL(t);
+    CClipboard* cb = CClipboard::NewForWritingLC(iCoeEnv->FsSession());
+    CPlainText* text = CPlainText::NewL();
+    CleanupStack::PushL(text);
+    text->InsertL(0, *t);
+    text->CopyToStoreL(cb->Store(), cb->StreamDictionary(), 0, text->DocumentLength());
+    cb->CommitL();
+    CleanupStack::PopAndDestroy(2);
+    TBuf<100> m(_L("Copied: "));
+    m.Append(t->Left(80));
+    Say(m);
+    CleanupStack::PopAndDestroy(t);
     }
 
 void CBrAppUi::FindL(TBool aNext)

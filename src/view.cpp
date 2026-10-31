@@ -513,18 +513,35 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
         {
         const BwFill& f = iLayout->fills[i];
         if (f.h <= 0 || f.y + f.h <= iScrollY || f.y >= iScrollY + h) continue;
-        aGc.SetBrushColor(Rgb(f.color));
-        aGc.DrawRect(TRect(TPoint(f.x, top + f.y - iScrollY), TSize(f.w, f.h)));
+        TRect fr(TPoint(f.x, top + f.y - iScrollY), TSize(f.w, f.h));
+        if (f.outline)
+            {
+            aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
+            aGc.SetPenStyle(CGraphicsContext::ESolidPen);
+            aGc.SetPenColor(Rgb(f.color));
+            aGc.DrawRect(fr);
+            aGc.SetPenStyle(CGraphicsContext::ENullPen);
+            aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
+            }
+        else
+            {
+            aGc.SetBrushColor(Rgb(f.color));
+            aGc.DrawRect(fr);
+            }
         }
     const CFont* current = NULL;
     TInt currentId = -1;
     iImages.BeginPass();
     TInt viewBottom = iScrollY + h;
-    TInt first = (TInt)bw_layout_first_box(iLayout, iScrollY - h);     // a screen above: their pictures load too
-    for (TUint i = (TUint)first; i < iLayout->boxCount; i++)
+    // by lines (a table row is one line, its cells side by side): from a screen above (their
+    // pictures load too) to two screens below
+    TUint line = bw_layout_first_line(iLayout, iScrollY - h);
+    TUint lineEnd = line < iLayout->lineCount ? iLayout->lines[line].first : iLayout->boxCount;
+    for (TUint i = lineEnd; i < iLayout->boxCount; i++)
         {
+        while (line < iLayout->lineCount && i >= (line + 1 < iLayout->lineCount ? iLayout->lines[line + 1].first : iLayout->boxCount)) line++;
+        if (line < iLayout->lineCount && iLayout->lines[line].top > viewBottom + 2 * h) break;
         const BwBox& b = iLayout->boxes[i];
-        if (b.y > viewBottom + 2 * h) break;
         TBool visible = b.y < viewBottom && b.y + b.h > iScrollY;
         if (!visible)
             {

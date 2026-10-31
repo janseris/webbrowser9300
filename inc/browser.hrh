@@ -36,7 +36,13 @@ enum TBrCommands
     EBrCmdStartPage,
     EBrCmdFind,
     EBrCmdFindNext,
-    EBrCmdStyles
+    EBrCmdStyles,
+    EBrCmdCopyLink,
+    EBrCmdCsAuto,
+    EBrCmdCsUtf8,
+    EBrCmdCs1250,
+    EBrCmdCs88592,
+    EBrCmdCs1252
     };
 
 enum TBrControls

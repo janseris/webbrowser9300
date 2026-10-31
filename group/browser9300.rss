@@ -42,6 +42,7 @@ RESOURCE HOTKEYS r_br_hotkeys
         HOTKEY { command = EBrCmdPageInfo; key = 'i'; },
         HOTKEY { command = EBrCmdFind; key = 'f'; },
         HOTKEY { command = EBrCmdFindNext; key = 'n'; },
+        HOTKEY { command = EBrCmdCopyLink; key = 'c'; },
         HOTKEY { command = EBrCmdStartPage; key = 's'; },
         HOTKEY { command = EBrCmdImages; key = 'g'; },
         HOTKEY { command = EEikCmdExit; key = 'e'; }
@@ -72,7 +73,8 @@ RESOURCE MENU_PANE r_br_menu_page
         MENU_ITEM { command = EBrCmdFindNext; txt = "Find next"; flags = EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdHome; txt = "Home page"; },
         MENU_ITEM { command = EBrCmdStartPage; txt = "Start page"; },
-        MENU_ITEM { command = EBrCmdPageInfo; txt = "Page info"; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdPageInfo; txt = "Page info"; },
+        MENU_ITEM { command = EBrCmdCopyLink; txt = "Copy the address"; flags = EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EEikCmdExit; txt = "Close"; }
         };
     }
@@ -99,6 +101,11 @@ RESOURCE MENU_PANE r_br_menu_view
         MENU_ITEM { command = EBrCmdTextSmaller; txt = "Text: small"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdTextNormal; txt = "Text: normal"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdTextBigger; txt = "Text: large"; flags = EEikMenuItemCheckBox | EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdCsAuto; txt = "Encoding: automatic"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdCsUtf8; txt = "Encoding: UTF-8"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdCs1250; txt = "Encoding: windows-1250"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdCs88592; txt = "Encoding: ISO-8859-2"; flags = EEikMenuItemCheckBox; },
+        MENU_ITEM { command = EBrCmdCs1252; txt = "Encoding: windows-1252"; flags = EEikMenuItemCheckBox | EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdTop; txt = "Top of the page"; },
         MENU_ITEM { command = EBrCmdBottom; txt = "End of the page"; }
         };

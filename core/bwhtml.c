@@ -41,7 +41,7 @@ static const char* const kTagNames[T_COUNT] = {
     "ul", "var", "video", "wbr", "xmp"
 };
 
-enum { D_INLINE = 0, D_BLOCK, D_LISTITEM, D_NONE, D_CELL, D_ROW };
+enum { D_INLINE = 0, D_BLOCK, D_LISTITEM, D_NONE, D_CELL, D_ROW, D_TABLE, D_ROWGROUP };
 
 #define MAX_DEPTH 160
 #define MAX_ATTRS 40
@@ -54,7 +54,7 @@ typedef struct {
     unsigned char flags;          /* BW_OPF_* */
     unsigned char align;
     unsigned char hidden;
-    unsigned char blockOpen;      /* a BLOCK_START went out for it */
+    unsigned char blockOpen;      /* what went out for it: 1 BLOCK_START, 2 TABLE_START, 3 ROW_START, 4 CELL_START */
     unsigned char listKind;       /* this element is a list: 1 ul, 2 ol */
     int color;
     int bg;
@@ -598,7 +598,10 @@ static void parse_decls(const char* s, unsigned int n, CssProps* pr)
                 pr->mask |= CSS_DISPLAY;
                 if (word_is(v, vl, "none")) pr->display = D_NONE;
                 else if (word_is(v, vl, "inline") || word_is(v, vl, "inline-block") || word_is(v, vl, "inline-flex") ||
-                         word_is(v, vl, "contents") || word_is(v, vl, "inline-table")) pr->display = D_INLINE;
+                         word_is(v, vl, "contents")) pr->display = D_INLINE;
+                else if (word_is(v, vl, "table") || word_is(v, vl, "inline-table")) pr->display = D_TABLE;
+                else if (word_is(v, vl, "table-row-group") || word_is(v, vl, "table-header-group") ||
+                         word_is(v, vl, "table-footer-group")) pr->display = D_ROWGROUP;
                 else if (word_is(v, vl, "list-item")) pr->display = D_LISTITEM;
                 else if (word_is(v, vl, "table-cell")) pr->display = D_CELL;
                 else if (word_is(v, vl, "table-row")) pr->display = D_ROW;
@@ -1125,9 +1128,11 @@ static int default_display(int tag)
     case T_FIELDSET: case T_FIGCAPTION: case T_FIGURE: case T_FOOTER: case T_FORM: case T_FRAMESET:
     case T_H1: case T_H2: case T_H3: case T_H4: case T_H5: case T_H6: case T_HEADER: case T_HGROUP:
     case T_HTML: case T_LEGEND: case T_LISTING: case T_MAIN: case T_MENU: case T_NAV: case T_NOFRAMES:
-    case T_OL: case T_P: case T_PLAINTEXT: case T_PRE: case T_SECTION: case T_SUMMARY: case T_TABLE:
-    case T_UL: case T_XMP: case T_NOSCRIPT: case T_TBODY: case T_THEAD: case T_TFOOT:
+    case T_OL: case T_P: case T_PLAINTEXT: case T_PRE: case T_SECTION: case T_SUMMARY:
+    case T_UL: case T_XMP: case T_NOSCRIPT:
         return D_BLOCK;
+    case T_TABLE: return D_TABLE;
+    case T_TBODY: case T_THEAD: case T_TFOOT: return D_ROWGROUP;
     case T_TR: return D_ROW;
     case T_TD: case T_TH: return D_CELL;
     case T_LI: return D_LISTITEM;
@@ -1353,7 +1358,8 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
     }
     /* legacy presentation attributes */
     v = attr(p, "align");
-    if (v && (e->display == D_BLOCK || e->display == D_ROW || tag == T_TD || tag == T_TH)) {
+    if (tag == T_TH) e->align = BW_ALIGN_CENTER;
+    if (v && tag != T_TABLE && (e->display == D_BLOCK || e->display == D_ROW || tag == T_TD || tag == T_TH)) {
         unsigned int vl = ig_strlen(v);
         if (word_is(v, vl, "center") || word_is(v, vl, "middle")) e->align = BW_ALIGN_CENTER;
         else if (word_is(v, vl, "right")) e->align = BW_ALIGN_RIGHT;
@@ -1379,7 +1385,7 @@ static void compute_style(P* p, Elem* e, const Elem* parent, int tag)
         }
     }
     v = attr(p, "bgcolor");
-    if (v && tag != T_BODY && (e->display == D_BLOCK)) {
+    if (v && tag != T_BODY && (e->display == D_BLOCK || e->display == D_TABLE || e->display == D_ROW || e->display == D_CELL)) {
         int c = parse_color(v, ig_strlen(v));
         if (c >= 0) e->bg = c;
     }
@@ -1495,7 +1501,8 @@ static void pop(P* p)
     }
     if (e->tag == T_FORM) p->curForm = -1;
     if (e->blockOpen) {
-        BwOp* op = add_op(p, BW_OP_BLOCK_END);
+        static const unsigned char kEnd[5] = { 0, BW_OP_BLOCK_END, BW_OP_TABLE_END, BW_OP_ROW_END, BW_OP_CELL_END };
+        BwOp* op = add_op(p, kEnd[e->blockOpen]);
         if (op) op->a = e->marginBottom;
         p->lastSpace = 1;
     }
@@ -2061,7 +2068,7 @@ static void start_tag(P* p, int tag, int selfClose)
     }
 
     /* blocks */
-    if (e->display == D_BLOCK || e->display == D_LISTITEM || e->display == D_ROW) {
+    if (e->display == D_BLOCK || e->display == D_LISTITEM) {
         int depthLists = parent->listDepth;
         int m = margin_top(tag, depthLists);
         emit_block_start(p, e, m);
@@ -2090,8 +2097,43 @@ static void start_tag(P* p, int tag, int selfClose)
                 op->len = d->poolLen - op->off;
             }
         }
+    } else if (e->display == D_TABLE && !e->hidden && !capturing(p)) {
+        BwOp* op = add_op(p, BW_OP_TABLE_START);
+        if (op) {
+            const char* al = attr(p, "align");
+            int border = attr_int(p, "border", has_attr(p, "border") ? 1 : 0);
+            op->a = 4;
+            op->b = border > 0 ? 1 : 0;
+            op->align = (unsigned char)(al && ig_strieq_n(al, "center", 6) ? BW_ALIGN_CENTER : al && ig_strieq_n(al, "right", 5) ? BW_ALIGN_RIGHT : BW_ALIGN_LEFT);
+            op->color = e->bg >= 0 ? e->bg : -1;
+            op->ref = attr_int(p, "cellpadding", -1);
+            op->font = e->font;
+            e->blockOpen = 2;
+            e->marginBottom = 4;
+        }
+        e->bg = -1;
+        p->lastSpace = 1;
+    } else if (e->display == D_ROW && !e->hidden && !capturing(p)) {
+        BwOp* op = add_op(p, BW_OP_ROW_START);
+        if (op) { op->color = e->bg >= 0 ? e->bg : -1; op->align = e->align; e->blockOpen = 3; }
+        e->bg = -1;
+        p->lastSpace = 1;
     } else if (e->display == D_CELL && !e->hidden && !capturing(p)) {
-        add_op(p, BW_OP_CELL);
+        BwOp* op = add_op(p, BW_OP_CELL_START);
+        if (op) {
+            int span = attr_int(p, "colspan", 1);
+            op->a = span < 1 ? 1 : span > 20 ? 20 : span;
+            op->b = tag == T_TH;
+            {
+                int rs = attr_int(p, "rowspan", 1);
+                op->ref = rs < 1 ? 1 : rs > 50 ? 50 : rs;
+            }
+            op->align = e->align;
+            op->color = e->bg >= 0 ? e->bg : -1;
+            op->font = e->font;
+            e->blockOpen = 4;
+        }
+        e->bg = -1;
         p->lastSpace = 1;
     }
     if (tag == T_DT && e->blockOpen) e->font |= BW_FONT_BOLD;

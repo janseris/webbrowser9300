@@ -110,7 +110,8 @@ static void doc_text(const BwDoc* d, char* out, unsigned int max)
             char t[2048];
             to8(d->pool + op->off, op->len, t, sizeof(t));
             o += (unsigned int)sprintf(out + o, "%s", t);
-        } else if (op->type == BW_OP_BLOCK_START || op->type == BW_OP_BLOCK_END || op->type == BW_OP_BR) {
+        } else if (op->type == BW_OP_BLOCK_START || op->type == BW_OP_BLOCK_END || op->type == BW_OP_BR ||
+                   op->type == BW_OP_ROW_START || op->type == BW_OP_ROW_END || op->type == BW_OP_TABLE_START || op->type == BW_OP_TABLE_END) {
             if (!o || out[o - 1] != '|') { out[o++] = '|'; out[o] = 0; }
         } else if (op->type == BW_OP_IMAGE) o += (unsigned int)sprintf(out + o, "[img]");
         else if (op->type == BW_OP_CONTROL) o += (unsigned int)sprintf(out + o, "[ctl%d]", d->controls[op->ref].type);
@@ -329,6 +330,92 @@ static void test_layout(void)
     bw_doc_free(d);
 }
 
+/* the boxes of a text, by its first letter */
+static const BwBox* box_of(const BwDoc* d, const BwLayout* l, unsigned short c)
+{
+    unsigned int i;
+    for (i = 0; i < l->boxCount; i++) if (l->boxes[i].kind == BW_BOX_TEXT && d->pool[l->boxes[i].off] == c) return &l->boxes[i];
+    return 0;
+}
+
+static void test_tables(void)
+{
+    BwDoc* d = parse("<table border=1><tr><th>Mena</th><th>Kurz</th></tr><tr><td>EUR</td><td align=right>24,35</td></tr>"
+                     "<tr><td colspan=2>Zdroj: CNB</td></tr></table><p>after</p>");
+    BwLayout* l = bw_layout(d, 500, &kM);
+    const BwBox* mena = box_of(d, l, 'M');
+    const BwBox* kurz = box_of(d, l, 'K');
+    const BwBox* eur = box_of(d, l, 'E');
+    const BwBox* val = box_of(d, l, '2');
+    const BwBox* src = box_of(d, l, 'Z');
+    const BwBox* aft = box_of(d, l, 'a');
+    unsigned int i;
+    CHECK(mena && kurz && eur && val && src && aft);
+    if (mena && kurz && eur && val && src && aft) {
+        CHECK(mena->y == kurz->y && kurz->x > mena->x + mena->w);    /* side by side */
+        CHECK(eur->y > mena->y && val->y == eur->y);
+        CHECK(val->x > mena->x + mena->w && val->x + val->w <= kurz->x + kurz->w + 8);   /* the same column */
+        CHECK(src->y > eur->y && aft->y > src->y);
+    }
+    /* lines stay in order */
+    for (i = 1; i < l->lineCount; i++) CHECK(l->lines[i].bottom >= l->lines[i - 1].bottom && l->lines[i].first >= l->lines[i - 1].first);
+    {
+        int outlines = 0;
+        for (i = 0; i < l->fillCount; i++) if (l->fills[i].outline) outlines++;
+        CHECK(outlines >= 5);
+    }
+    bw_layout_free(l);
+    bw_doc_free(d);
+
+    /* a sidebar after a long column: drawn from the row's line */
+    d = parse("<table><tr><td>long<br>a<br>b<br>c<br>d<br>e</td><td>side</td></tr></table>");
+    l = bw_layout(d, 300, &kM);
+    {
+        const BwBox* side = box_of(d, l, 's');
+        const BwBox* lng = box_of(d, l, 'l');
+        CHECK(side && lng && side->y == lng->y);
+        CHECK(l->lineCount == 1);
+        CHECK(bw_layout_first_box(l, 0) == 0);
+        if (side) CHECK(bw_layout_hit(l, side->x + 1, side->y + 1) == -1);
+    }
+    bw_layout_free(l);
+    bw_doc_free(d);
+
+    /* rowspan: the next row's cell goes to the free column */
+    d = parse("<table><tr><td rowspan=2>nav</td><td>top</td></tr><tr><td>bottom</td></tr></table>");
+    l = bw_layout(d, 400, &kM);
+    {
+        const BwBox* top = box_of(d, l, 't');
+        const BwBox* bot = box_of(d, l, 'b');
+        CHECK(top && bot && bot->x == top->x && bot->y > top->y);
+    }
+    bw_layout_free(l);
+    bw_doc_free(d);
+
+    /* too wide for columns: the rows stack, the cells follow each other */
+    d = parse("<table><tr><td>aaaaaaaaaaaaaaaaaaaaaaaaaaaa</td><td>bbbbbbbbbbbbbbbbbbbbbbbbbbb</td><td>ccccccccccccccccccccccc</td></tr></table>");
+    l = bw_layout(d, 200, &kM);
+    {
+        const BwBox* a = box_of(d, l, 'a');
+        const BwBox* b = box_of(d, l, 'b');
+        CHECK(a && b && b->y > a->y);
+    }
+    bw_layout_free(l);
+    bw_doc_free(d);
+
+    /* nested tables, cells without rows, text outside cells */
+    d = parse("<table><caption>Cap</caption><td>x<table><tr><td>in1<td>in2</table><td>y</table>");
+    l = bw_layout(d, 400, &kM);
+    {
+        const BwBox* cap = box_of(d, l, 'C');
+        const BwBox* x = box_of(d, l, 'x');
+        const BwBox* y = box_of(d, l, 'y');
+        CHECK(cap && x && y && cap->y < x->y && y->y == x->y && y->x > x->x);
+    }
+    bw_layout_free(l);
+    bw_doc_free(d);
+}
+
 static void test_cookies(void)
 {
     BwCookieJar j;
@@ -468,6 +555,7 @@ int main(int argc, char** argv)
     test_sizes();
     test_forms();
     test_layout();
+    test_tables();
     test_cookies();
     printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
     return fails ? 1 : 0;

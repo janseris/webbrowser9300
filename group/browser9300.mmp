@@ -23,6 +23,6 @@ SYSTEMINCLUDE     \epoc32\include
 
 LIBRARY           euser.lib apparc.lib cone.lib eikcore.lib eikcoctl.lib eikdlg.lib eikctl.lib
 LIBRARY           bafl.lib efsrv.lib gdi.lib ws32.lib fbscli.lib bitgdi.lib imageconversion.lib apgrfx.lib
-LIBRARY           hal.lib esock.lib insock.lib commdb.lib securesocket.lib ezlib.lib
+LIBRARY           etext.lib hal.lib esock.lib insock.lib commdb.lib securesocket.lib ezlib.lib
 
 AIF               browser9300.aif ..\aif browseraif.rss c16 icon25.bmp icon25_mask.bmp icon64.bmp icon64_mask.bmp

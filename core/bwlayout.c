@@ -2,8 +2,10 @@
  *
  * One pass, like a simple flow layout: blocks stack vertically with collapsing margins and
  * an indent; inline content (words, images, controls) fills lines that are aligned on a common
- * baseline and then shifted for text-align. Table cells are inline with a gap (rows are blocks),
- * which reads well on a 640 px screen. C89, no static data. */
+ * baseline and then shifted for text-align. Tables get columns sized from their content (min /
+ * max widths, like browsers) when they fit the width; otherwise their rows stack and the cells
+ * follow each other with a gap. A table row is one entry of the line table, so painting and
+ * hit testing walk lines, not boxes. C89, no static data. */
 
 #include "bwcore.h"
 
@@ -11,15 +13,7 @@
 #define CELL_GAP 12
 
 typedef struct {
-    unsigned int first;      /* first box of the line */
-    int top, bottom;
-} BwLine;
-
-/* the layout keeps its line table after the public part */
-typedef struct {
     BwLayout pub;
-    BwLine* lines;
-    unsigned int lineCount, lineCap;
 } LayoutImpl;
 
 typedef struct {
@@ -48,6 +42,7 @@ typedef struct {
     unsigned int lastWordEnd;
     unsigned char* asc;          /* per box: its ascent within the line (parallel to boxes) */
     unsigned int ascCap;
+    int tableDepth;              /* tables laid out as columns around this point */
 } S;
 
 static int font_h(S* s, int f)
@@ -172,8 +167,8 @@ static void finish_line(S* s, int force)
             }
         }
     }
-    if (grow((void**)&L->lines, &L->lineCap, L->lineCount, sizeof(BwLine))) {
-        BwLine* ln = &L->lines[L->lineCount++];
+    if (grow((void**)&L->pub.lines, &L->pub.lineCap, L->pub.lineCount, sizeof(BwLine))) {
+        BwLine* ln = &L->pub.lines[L->pub.lineCount++];
         ln->first = s->lineStart;
         ln->top = s->y;
         ln->bottom = s->y + h;
@@ -351,15 +346,29 @@ static void place_image(S* s, const BwOp* op)
     if (b) { b->ref = op->ref; b->target = op->target; b->font = op->font; b->color = op->color; }
 }
 
-static void place_control(S* s, const BwOp* op)
+/* the width a picture takes before it is fitted (for measuring table columns) */
+static int image_width(S* s, const BwOp* op)
+{
+    const BwImage* im = &s->d->images[op->ref];
+    int w = im->attrW, h = im->attrH;
+    if (im->failed || (!im->natW && !w && !h)) {
+        if (!im->altLen) return im->failed ? 0 : 16;
+        return s->m->textWidth(s->m->ctx, op->font, s->d->pool + im->altOff, (int)im->altLen) + 6;
+    }
+    if (im->natW > 0 && im->natH > 0) {
+        if (!w && !h) w = im->natW;
+        else if (!w) w = h * im->natW / im->natH;
+    } else if (!w) w = h;
+    return w;
+}
+
+static void control_size(S* s, const BwOp* op, int* pw, int* ph, int* pf)
 {
     const BwControl* c = &s->d->controls[op->ref];
     int f = BW_FONT_MAKE(BW_FONT_SIZE(op->font) == 0 ? 0 : 1, 0);
     int fh = font_h(s, f);
     int cw;
-    int maxW = s->right - s->left;
     int w, h;
-    BwBox* b;
     {
         unsigned short zero = '0';
         cw = s->m->textWidth(s->m->ctx, f, &zero, 1);
@@ -406,6 +415,17 @@ static void place_control(S* s, const BwOp* op)
         break;
     }
     if (w < 12) w = 12;
+    *pw = w;
+    *ph = h;
+    *pf = f;
+}
+
+static void place_control(S* s, const BwOp* op)
+{
+    int w, h, f;
+    int maxW = s->right - s->left;
+    BwBox* b;
+    control_size(s, op, &w, &h, &f);
     if (w > maxW) w = maxW;
     b = place_inline(s, BW_BOX_CONTROL, w, h);
     if (b) { b->ref = op->ref; b->target = op->target; b->font = (unsigned char)f; b->color = readable(s, s->d->textColor); }
@@ -466,6 +486,476 @@ static void pop_block(S* s, const BwOp* op)
     if (op && op->a > s->pendingMargin) s->pendingMargin = op->a;
 }
 
+static unsigned int layout_table(S* s, unsigned int i0, unsigned int to);
+
+/* lays out the ops [from, to) at the current position */
+static void layout_ops(S* s, unsigned int from, unsigned int to)
+{
+    unsigned int i;
+    for (i = from; i < to && !s->L->pub.failed; i++) {
+        const BwOp* op = &s->d->ops[i];
+        switch (op->type) {
+        case BW_OP_TEXT: place_text(s, op, (int)i); break;
+        case BW_OP_BLOCK_START: push_block(s, op); break;
+        case BW_OP_BLOCK_END: pop_block(s, op); break;
+        case BW_OP_BR: finish_line(s, s->lineContent ? 0 : 1); break;
+        case BW_OP_HR:
+            {
+                BwBox* b;
+                finish_line(s, 0);
+                if (s->pendingMargin && s->y > 0) s->y += s->pendingMargin;
+                s->pendingMargin = 0;
+                s->y += 4;
+                b = new_box(s, BW_BOX_RULE, 2);
+                if (b) {
+                    b->x = s->left; b->w = s->right - s->left; b->h = 2;
+                    b->color = lum(s->bg) > 128 ? 0x999999 : 0x777777;
+                }
+                s->x = s->right;
+                finish_line(s, 0);
+                s->y += 4;
+            }
+            break;
+        case BW_OP_IMAGE: place_image(s, op); break;
+        case BW_OP_CONTROL: place_control(s, op); break;
+        case BW_OP_ANCHOR:
+            if (op->ref >= 0 && (unsigned int)op->ref < s->d->anchorCount)
+                s->L->pub.anchorY[op->ref] = s->y + (s->lineContent ? 0 : s->pendingMargin);
+            break;
+        case BW_OP_MARKER:
+            {
+                int f = op->font;
+                int w = s->m->textWidth(s->m->ctx, f, s->d->pool + op->off, (int)op->len);
+                int mx = s->left - w - 6;
+                BwBox* b = new_box(s, BW_BOX_TEXT, font_a(s, f));
+                if (b) {
+                    b->font = (unsigned char)f;
+                    b->color = readable(s, op->color);
+                    b->off = op->off;
+                    b->len = op->len;
+                    b->w = w;
+                    b->h = font_h(s, f);
+                    if (mx >= 0 && s->x == s->left) b->x = mx;
+                    else { b->x = s->x; s->x += w + space_w(s, f); }
+                }
+                s->pendingSpace = 0;
+                s->lastOp = -1;
+            }
+            break;
+        case BW_OP_TABLE_START:
+            {
+                unsigned int end = layout_table(s, i, to);
+                if (end) { i = end; break; }
+                /* too wide for columns: the rows stack */
+                push_block(s, op);
+            }
+            break;
+        case BW_OP_ROW_START:
+            {
+                BwOp b = *op;
+                b.a = 0; b.b = 0;
+                push_block(s, &b);
+            }
+            break;
+        case BW_OP_TABLE_END: case BW_OP_ROW_END:
+            pop_block(s, op);
+            break;
+        case BW_OP_CELL_START:
+            if (s->x > s->left) {
+                s->x += CELL_GAP;
+                if (s->x >= s->right) finish_line(s, 0);
+            }
+            s->pendingSpace = 0;
+            break;
+        case BW_OP_CELL_END:
+            break;
+        default: break;
+        }
+    }
+}
+
+
+/* ------------------------------------------------------------------ tables */
+
+#define MAX_COLS 10
+#define MIN_WORD_CAP 150         /* a long word (a URL) is broken: it need not widen its column */
+
+typedef struct {
+    unsigned int from, to;       /* the cell's content ops */
+    const BwOp* op;              /* its CELL_START */
+    int row, col, span;
+    int mn, mx;
+} Cell;
+
+typedef struct {
+    Cell* cells;
+    unsigned int count, cap;
+    int rows, cols;
+    const BwOp** rowOps;         /* ROW_START of each row (NULL: an implied row) */
+    unsigned int rowCap;
+    unsigned int* outside;       /* ops at the table's own level outside cells (a caption) */
+    unsigned int outCount, outCap;
+    int colMin[MAX_COLS], colMax[MAX_COLS], colW[MAX_COLS];
+    int pad, gap, border, width;
+} Table;
+
+/* the TABLE_END matching the TABLE_START at i (to if none) */
+static unsigned int table_end(const BwDoc* d, unsigned int i, unsigned int to)
+{
+    int depth = 0;
+    for (; i < to; i++) {
+        int t = d->ops[i].type;
+        if (t == BW_OP_TABLE_START) depth++;
+        else if (t == BW_OP_TABLE_END && --depth == 0) return i;
+    }
+    return to;
+}
+
+static void table_free(Table* t)
+{
+    ig_free(t->cells);
+    ig_free((void*)t->rowOps);
+    ig_free(t->outside);
+}
+
+static int measure_table(S* s, unsigned int i0, unsigned int end, int avail, Table* t);
+
+/* the narrowest and the widest the ops [from, to) can be laid out (min-content / max-content) */
+static void measure_range(S* s, unsigned int from, unsigned int to, int* pmn, int* pmx)
+{
+    const BwDoc* d = s->d;
+    int line = 0, best = 0, mn = 0, space = 0;
+    int indent = 0, ind[32], depth = 0;
+    unsigned int i;
+    for (i = from; i < to; i++) {
+        const BwOp* op = &d->ops[i];
+        switch (op->type) {
+        case BW_OP_TEXT:
+            {
+                unsigned int k = op->off, e = op->off + op->len;
+                while (k < e) {
+                    unsigned short c = d->pool[k];
+                    if (c == ' ') { space = 1; k++; continue; }
+                    if (c == '\n') { if (line + indent > best) best = line + indent; line = 0; space = 0; k++; continue; }
+                    {
+                        unsigned int ws = k;
+                        int w;
+                        while (k < e && d->pool[k] != ' ' && d->pool[k] != '\n') k++;
+                        w = s->m->textWidth(s->m->ctx, op->font, d->pool + ws, (int)(k - ws));
+                        if (space && line) line += space_w(s, op->font);
+                        line += w;
+                        space = 0;
+                        if (w > MIN_WORD_CAP) w = MIN_WORD_CAP;
+                        if (w + indent > mn) mn = w + indent;
+                    }
+                }
+            }
+            break;
+        case BW_OP_IMAGE: case BW_OP_CONTROL:
+            {
+                int w, h, f;
+                if (op->type == BW_OP_IMAGE) w = image_width(s, op);
+                else control_size(s, op, &w, &h, &f);
+                if (space && line) line += space_w(s, BW_FONT_MAKE(1, 0));
+                line += w;
+                space = 0;
+                if (w > MIN_WORD_CAP) w = MIN_WORD_CAP;
+                if (w + indent > mn) mn = w + indent;
+            }
+            break;
+        case BW_OP_CELL_START:
+            if (line) line += CELL_GAP;
+            space = 0;
+            break;
+        case BW_OP_TABLE_START:
+            {
+                unsigned int end = table_end(d, i, to);
+                Table t;
+                if (line + indent > best) best = line + indent;
+                line = 0;
+                if (s->tableDepth < 6 && measure_table(s, i, end, 100000, &t)) {
+                    int tmn = t.gap * (t.cols - 1) + t.border * 2, tmx = tmn, c;
+                    for (c = 0; c < t.cols; c++) { tmn += t.colMin[c]; tmx += t.colMax[c]; }
+                    if (tmn + indent > mn) mn = tmn + indent;
+                    if (tmx + indent > best) best = tmx + indent;
+                    table_free(&t);
+                }
+                i = end;
+            }
+            break;
+        case BW_OP_BLOCK_START:
+            if (line + indent > best) best = line + indent;
+            line = 0; space = 0;
+            if (depth < 32) ind[depth] = op->b;
+            depth++;
+            indent += op->b;
+            break;
+        case BW_OP_BLOCK_END:
+            if (line + indent > best) best = line + indent;
+            line = 0; space = 0;
+            if (depth > 0) { depth--; if (depth < 32) indent -= ind[depth]; }
+            break;
+        case BW_OP_BR: case BW_OP_HR: case BW_OP_ROW_START: case BW_OP_ROW_END: case BW_OP_TABLE_END:
+            if (line + indent > best) best = line + indent;
+            line = 0; space = 0;
+            break;
+        default:
+            break;
+        }
+    }
+    if (line + indent > best) best = line + indent;
+    *pmn = mn;
+    *pmx = best > mn ? best : mn;
+}
+
+static int add_cell(Table* t, unsigned int from, unsigned int to, const BwOp* op, int row, int col)
+{
+    Cell* c;
+    if (!grow((void**)&t->cells, &t->cap, t->count, sizeof(Cell))) return 0;
+    c = &t->cells[t->count++];
+    c->from = from;
+    c->to = to;
+    c->op = op;
+    c->row = row;
+    c->col = col;
+    c->span = op->a < 1 ? 1 : op->a;
+    c->mn = c->mx = 0;
+    return 1;
+}
+
+/* the table's rows and cells, their min / max widths and the column widths for avail;
+ * 0 when it is not a table we can lay out as columns */
+static int measure_table(S* s, unsigned int i0, unsigned int end, int avail, Table* t)
+{
+    const BwDoc* d = s->d;
+    const BwOp* top = &d->ops[i0];
+    unsigned int i;
+    int row = -1, col = 0, c, sumMin, sumMax, extra;
+    int busyUntil[MAX_COLS];         /* rowspan: a column is taken up to that row */
+    ig_memset(t, 0, sizeof(Table));
+    for (c = 0; c < MAX_COLS; c++) busyUntil[c] = 0;
+    t->border = top->b ? 1 : 0;
+    t->pad = top->ref >= 0 ? (top->ref > 8 ? 8 : top->ref) : (t->border ? 3 : 1);
+    t->gap = t->border ? 0 : 6;
+    for (i = i0 + 1; i < end; i++) {
+        const BwOp* op = &d->ops[i];
+        if (op->type == BW_OP_ROW_START) {
+            row++;
+            col = 0;
+            if (!grow((void**)&t->rowOps, &t->rowCap, (unsigned int)row, sizeof(BwOp*))) { table_free(t); return 0; }
+            t->rowOps[row] = op;
+        } else if (op->type == BW_OP_ROW_END) {
+            /* (the next cell without a row starts one) */
+        } else if (op->type == BW_OP_CELL_START) {
+            unsigned int k;
+            int depth = 0;
+            if (row < 0 || (i > 0 && d->ops[i - 1].type == BW_OP_ROW_END)) {
+                row++;
+                col = 0;
+                if (!grow((void**)&t->rowOps, &t->rowCap, (unsigned int)row, sizeof(BwOp*))) { table_free(t); return 0; }
+                t->rowOps[row] = 0;
+            }
+            /* its CELL_END at this level */
+            for (k = i + 1; k < end; k++) {
+                int ty = d->ops[k].type;
+                if (ty == BW_OP_TABLE_START) depth++;
+                else if (ty == BW_OP_TABLE_END) depth--;
+                else if (ty == BW_OP_CELL_END && depth == 0) break;
+            }
+            /* past the columns a cell above still spans */
+            while (col < MAX_COLS && busyUntil[col] > row) col++;
+            if (!add_cell(t, i + 1, k, op, row, col)) { table_free(t); return 0; }
+            {
+                int rs = op->ref > 1 ? op->ref : 1, q;
+                for (q = col; q < col + t->cells[t->count - 1].span && q < MAX_COLS; q++) busyUntil[q] = row + rs;
+            }
+            col += t->cells[t->count - 1].span;
+            if (col > t->cols) t->cols = col;
+            i = k;
+        } else if (op->type == BW_OP_TABLE_START) {
+            /* a table straight in a table (no cell): outside content */
+            unsigned int e = table_end(d, i, end);
+            for (; i <= e && i < end; i++) {
+                if (!grow((void**)&t->outside, &t->outCap, t->outCount, sizeof(unsigned int))) { table_free(t); return 0; }
+                t->outside[t->outCount++] = i;
+            }
+            i = e;
+        } else if (op->type != BW_OP_ANCHOR) {
+            if (op->type == BW_OP_TEXT) {
+                unsigned int k, real = 0;
+                for (k = op->off; k < op->off + op->len; k++) if (d->pool[k] != ' ' && d->pool[k] != '\n') { real = 1; break; }
+                if (!real) continue;
+            }
+            if (!grow((void**)&t->outside, &t->outCap, t->outCount, sizeof(unsigned int))) { table_free(t); return 0; }
+            t->outside[t->outCount++] = i;
+        }
+    }
+    t->rows = row + 1;
+    if (t->cols < 1 || t->cols > MAX_COLS || !t->count) { table_free(t); return 0; }
+    for (c = 0; c < t->cols; c++) { t->colMin[c] = 0; t->colMax[c] = 0; }
+    /* single cells first, then the spanning ones widen their columns if they must */
+    for (i = 0; i < t->count; i++) {
+        Cell* ce = &t->cells[i];
+        measure_range(s, ce->from, ce->to, &ce->mn, &ce->mx);
+        ce->mn += 2 * t->pad;
+        ce->mx += 2 * t->pad;
+        if (ce->span == 1 && ce->col < MAX_COLS) {
+            if (ce->mn > t->colMin[ce->col]) t->colMin[ce->col] = ce->mn;
+            if (ce->mx > t->colMax[ce->col]) t->colMax[ce->col] = ce->mx;
+        }
+    }
+    for (i = 0; i < t->count; i++) {
+        Cell* ce = &t->cells[i];
+        int k, n = 0, smn = 0, smx = 0;
+        if (ce->span == 1) continue;
+        for (k = ce->col; k < ce->col + ce->span && k < t->cols; k++) { smn += t->colMin[k]; smx += t->colMax[k]; n++; }
+        if (!n) continue;
+        smn += t->gap * (n - 1);
+        smx += t->gap * (n - 1);
+        for (k = ce->col; k < ce->col + ce->span && k < t->cols; k++) {
+            if (ce->mn > smn) t->colMin[k] += (ce->mn - smn + n - 1) / n;
+            if (ce->mx > smx) t->colMax[k] += (ce->mx - smx + n - 1) / n;
+        }
+    }
+    sumMin = sumMax = t->gap * (t->cols - 1) + 2 * t->border;
+    for (c = 0; c < t->cols; c++) {
+        if (t->colMax[c] < t->colMin[c]) t->colMax[c] = t->colMin[c];
+        sumMin += t->colMin[c];
+        sumMax += t->colMax[c];
+    }
+    if (sumMin > avail) { table_free(t); return 0; }
+    if (sumMax <= avail) {
+        for (c = 0; c < t->cols; c++) t->colW[c] = t->colMax[c];
+        t->width = sumMax;
+    } else {
+        /* between: each column gets its min plus a share of what is left, by how much more it wants */
+        extra = avail - sumMin;
+        t->width = sumMin;
+        for (c = 0; c < t->cols; c++) {
+            int want = t->colMax[c] - t->colMin[c];
+            int add = sumMax > sumMin ? (int)((long)extra * want / (sumMax - sumMin)) : 0;
+            t->colW[c] = t->colMin[c] + add;
+            t->width += add;
+        }
+    }
+    return 1;
+}
+
+static int add_fill(S* s, int x, int y, int w, int h, int color, int outline)
+{
+    BwLayout* l = &s->L->pub;
+    BwFill* f;
+    if (!grow((void**)&l->fills, &l->fillCap, l->fillCount, sizeof(BwFill))) { l->failed = 1; return -1; }
+    f = &l->fills[l->fillCount];
+    f->x = x; f->y = y; f->w = w; f->h = h; f->color = color; f->outline = outline;
+    return (int)l->fillCount++;
+}
+
+/* Lays out the table at op i0 as columns; the index of its TABLE_END, or 0 when it does not fit
+ * (the caller then stacks the rows) */
+static unsigned int layout_table(S* s, unsigned int i0, unsigned int to)
+{
+    const BwDoc* d = s->d;
+    const BwOp* top = &d->ops[i0];
+    unsigned int end = table_end(d, i0, to);
+    BwLayout* l = &s->L->pub;
+    Table t;
+    int tx, avail, r, tableTop, tableFill = -1;
+    unsigned int ci = 0;
+    if (end >= to || s->tableDepth >= 6) return 0;      /* (the phone's stack is small) */
+    finish_line(s, 0);
+    avail = s->right - s->left;
+    if (!measure_table(s, i0, end, avail, &t)) return 0;
+    if (top->a > s->pendingMargin) s->pendingMargin = top->a;
+    if (s->pendingMargin && s->y > 0) s->y += s->pendingMargin;
+    s->pendingMargin = 0;
+    /* a caption or other content outside the cells goes above the columns */
+    if (t.outCount) {
+        unsigned int k;
+        for (k = 0; k < t.outCount; k++) layout_ops(s, t.outside[k], t.outside[k] + 1);
+        finish_line(s, 0);
+        if (s->pendingMargin && s->y > 0) s->y += s->pendingMargin;
+        s->pendingMargin = 0;
+    }
+    tx = s->left;
+    if (top->align == BW_ALIGN_CENTER) tx += (avail - t.width) / 2;
+    else if (top->align == BW_ALIGN_RIGHT) tx += avail - t.width;
+    tableTop = s->y;
+    if (top->color >= 0) tableFill = add_fill(s, tx, tableTop, t.width, 0, top->color, 0);
+    for (r = 0; r < t.rows; r++) {
+        int rowTop = s->y, rowBottom = s->y + 2;
+        unsigned int firstBox = l->boxCount, lineMark = l->lineCount, fillMark = l->fillCount, rc;
+        const BwOp* rop = t.rowOps ? t.rowOps[r] : 0;
+        int rowBg = rop && rop->color >= 0 ? rop->color : top->color >= 0 ? top->color : s->bg;
+        int rowFill = rop && rop->color >= 0 ? add_fill(s, tx, rowTop, t.width, 0, rop->color, 0) : -1;
+        unsigned int firstCell = ci;
+        /* the cells of this row */
+        for (; ci < t.count && t.cells[ci].row == r; ci++) {
+            Cell* ce = &t.cells[ci];
+            int x0 = tx + t.border, w = 0, k;
+            int saveLeft = s->left, saveRight = s->right, saveAlign = s->align, saveBg = s->bg, saveDepth = s->depth;
+            int saveSkip = s->skipDepth;
+            for (k = 0; k < ce->col && k < t.cols; k++) x0 += t.colW[k] + t.gap;
+            for (k = ce->col; k < ce->col + ce->span && k < t.cols; k++) w += t.colW[k] + (k > ce->col ? t.gap : 0);
+            if (ce->op->color >= 0) { add_fill(s, x0, rowTop, w, 0, ce->op->color, 0); }
+            s->left = x0 + t.pad;
+            s->right = x0 + w - t.pad;
+            if (s->right <= s->left) s->right = s->left + 1;
+            s->x = s->left;
+            s->y = rowTop + t.pad;
+            s->align = ce->op->align;
+            s->bg = ce->op->color >= 0 ? ce->op->color : rowBg;
+            s->lineStart = l->boxCount;
+            s->lineContent = 0;
+            s->pendingSpace = 0;
+            s->pendingMargin = 0;
+            s->lastOp = -1;
+            s->tableDepth++;
+            layout_ops(s, ce->from, ce->to);
+            s->tableDepth--;
+            finish_line(s, 0);
+            while (s->depth > saveDepth) pop_block(s, 0);
+            s->skipDepth = saveSkip;
+            if (s->y + t.pad > rowBottom) rowBottom = s->y + t.pad;
+            s->left = saveLeft; s->right = saveRight; s->align = saveAlign; s->bg = saveBg;
+            s->pendingMargin = 0;
+        }
+        /* the row's cell backgrounds and borders reach its bottom */
+        for (rc = firstCell; rc < ci; rc++) {
+            Cell* ce = &t.cells[rc];
+            int x0 = tx + t.border, w = 0, k;
+            for (k = 0; k < ce->col && k < t.cols; k++) x0 += t.colW[k] + t.gap;
+            for (k = ce->col; k < ce->col + ce->span && k < t.cols; k++) w += t.colW[k] + (k > ce->col ? t.gap : 0);
+            if (t.border) add_fill(s, x0, rowTop, w + 1, rowBottom - rowTop + 1, 0x999999, 1);
+        }
+        {
+            unsigned int f;
+            for (f = fillMark; f < l->fillCount; f++)
+                if (l->fills[f].h == 0 && !l->fills[f].outline && l->fills[f].y == rowTop) l->fills[f].h = rowBottom - rowTop;
+        }
+        (void)rowFill;
+        /* the row is one line: its cells' lines go */
+        l->lineCount = lineMark;
+        if (grow((void**)&l->lines, &l->lineCap, l->lineCount, sizeof(BwLine))) {
+            BwLine* ln = &l->lines[l->lineCount++];
+            ln->first = firstBox;
+            ln->top = rowTop;
+            ln->bottom = rowBottom;
+        } else l->failed = 1;
+        s->y = rowBottom + (t.border ? 0 : 2);
+        s->lineStart = l->boxCount;
+        s->lineContent = 0;
+    }
+    if (t.border) { s->y += 1; add_fill(s, tx, tableTop, t.width, s->y - tableTop, 0x777777, 1); }
+    if (tableFill >= 0) l->fills[tableFill].h = s->y - tableTop;
+    s->x = s->left;
+    s->pendingSpace = 0;
+    s->lastOp = -1;
+    s->pendingMargin = 4;
+    table_free(&t);
+    return end;
+}
+
 BwLayout* bw_layout(const BwDoc* d, int width, const BwMetrics* m)
 {
     LayoutImpl* L;
@@ -499,66 +989,7 @@ BwLayout* bw_layout(const BwDoc* d, int width, const BwMetrics* m)
     s->y = 2;
     s->bg = d->bgColor;
     s->lastOp = -1;
-    for (i = 0; i < d->opCount && !L->pub.failed; i++) {
-        const BwOp* op = &d->ops[i];
-        switch (op->type) {
-        case BW_OP_TEXT: place_text(s, op, (int)i); break;
-        case BW_OP_BLOCK_START: push_block(s, op); break;
-        case BW_OP_BLOCK_END: pop_block(s, op); break;
-        case BW_OP_BR: finish_line(s, s->lineContent ? 0 : 1); break;
-        case BW_OP_HR:
-            {
-                BwBox* b;
-                finish_line(s, 0);
-                if (s->pendingMargin && s->y > 0) s->y += s->pendingMargin;
-                s->pendingMargin = 0;
-                s->y += 4;
-                b = new_box(s, BW_BOX_RULE, 2);
-                if (b) {
-                    b->x = s->left; b->w = s->right - s->left; b->h = 2;
-                    b->color = lum(s->bg) > 128 ? 0x999999 : 0x777777;
-                }
-                s->x = s->right;
-                finish_line(s, 0);
-                s->y += 4;
-            }
-            break;
-        case BW_OP_IMAGE: place_image(s, op); break;
-        case BW_OP_CONTROL: place_control(s, op); break;
-        case BW_OP_ANCHOR:
-            if (op->ref >= 0 && (unsigned int)op->ref < d->anchorCount)
-                L->pub.anchorY[op->ref] = s->y + (s->lineContent ? 0 : s->pendingMargin);
-            break;
-        case BW_OP_MARKER:
-            {
-                int f = op->font;
-                int w = m->textWidth(m->ctx, f, d->pool + op->off, (int)op->len);
-                int mx = s->left - w - 6;
-                BwBox* b = new_box(s, BW_BOX_TEXT, font_a(s, f));
-                if (b) {
-                    b->font = (unsigned char)f;
-                    b->color = readable(s, op->color);
-                    b->off = op->off;
-                    b->len = op->len;
-                    b->w = w;
-                    b->h = font_h(s, f);
-                    if (mx >= 0 && s->x == s->left) b->x = mx;
-                    else { b->x = s->x; s->x += w + space_w(s, f); }
-                }
-                s->pendingSpace = 0;
-                s->lastOp = -1;
-            }
-            break;
-        case BW_OP_CELL:
-            if (s->x > s->left) {
-                s->x += CELL_GAP;
-                if (s->x >= s->right) finish_line(s, 0);
-            }
-            s->pendingSpace = 0;
-            break;
-        default: break;
-        }
-    }
+    layout_ops(s, 0, d->opCount);
     finish_line(s, 0);
     while (s->depth) pop_block(s, 0);
     L->pub.height = s->y + 6;
@@ -575,30 +1006,36 @@ void bw_layout_free(BwLayout* l)
     ig_free(l->fills);
     ig_free(l->targets);
     ig_free(l->anchorY);
-    ig_free(L->lines);
+    ig_free(L->pub.lines);
     ig_free(L);
+}
+
+unsigned int bw_layout_first_line(const BwLayout* l, int y)
+{
+    unsigned int lo = 0, hi = l->lineCount;
+    while (lo < hi) {
+        unsigned int mid = (lo + hi) / 2;
+        if (l->lines[mid].bottom <= y) lo = mid + 1; else hi = mid;
+    }
+    return lo;
 }
 
 unsigned int bw_layout_first_box(const BwLayout* l, int y)
 {
-    const LayoutImpl* L = (const LayoutImpl*)l;
-    unsigned int lo = 0, hi = L->lineCount;
-    while (lo < hi) {
-        unsigned int mid = (lo + hi) / 2;
-        if (L->lines[mid].bottom <= y) lo = mid + 1; else hi = mid;
-    }
-    if (lo >= L->lineCount) return l->boxCount;
-    return L->lines[lo].first;
+    unsigned int i = bw_layout_first_line(l, y);
+    return i < l->lineCount ? l->lines[i].first : l->boxCount;
 }
 
 int bw_layout_hit(const BwLayout* l, int x, int y)
 {
-    unsigned int i = bw_layout_first_box(l, y - 2);
+    unsigned int li = bw_layout_first_line(l, y - 2);
     int best = -1;
-    for (; i < l->boxCount; i++) {
-        const BwBox* b = &l->boxes[i];
-        if (b->y > y + 40) break;
-        if (b->target >= 0 && x >= b->x - 2 && x < b->x + b->w + 2 && y >= b->y - 1 && y < b->y + b->h + 1) best = b->target;
+    for (; li < l->lineCount && l->lines[li].top <= y + 2; li++) {
+        unsigned int i, e = li + 1 < l->lineCount ? l->lines[li + 1].first : l->boxCount;
+        for (i = l->lines[li].first; i < e; i++) {
+            const BwBox* b = &l->boxes[i];
+            if (b->target >= 0 && x >= b->x - 2 && x < b->x + b->w + 2 && y >= b->y - 1 && y < b->y + b->h + 1) best = b->target;
+        }
     }
     return best;
 }

@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.2");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.2");
+_LIT(KBrVersion, "0.3");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.3");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -546,6 +546,8 @@ private:
     BwDoc* ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl, const char* aCt, TBool aReparse);
     TInt FindCss(const TDesC8& aUrl) const;
     void FindL(TBool aNext);
+    void CopyAddressL();
+    TInt iForceCs;                      // the encoding chosen by hand for this page (-1: automatic)
     void ShowInternalL(const TDesC8& aUrl);
     void ShowLoadedL(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8*& aBody);
     HBufC8* StartPageLC();
