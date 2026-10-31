@@ -584,7 +584,8 @@ void CBrAppUi::OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost, TBool aAddHisto
     TBuf<160> t;
     t.Copy(aUrl.Left(160));
     iView->SetTitle(t);
-    iView->SetStatus(_L("Loading..."));
+    iPageStatus.Copy(_L("Loading..."));
+    UpdateStatus();
     }
 
 void CBrAppUi::HomeL()
@@ -602,7 +603,8 @@ void CBrAppUi::StopL()
     if (!iLoader->Busy()) return;
     iLoader->Stop();
     iView->SetLoading(EFalse);
-    iView->SetStatus(_L("Stopped"));
+    iPageStatus.Copy(_L("Stopped"));
+    UpdateStatus();
     UpdateTitle();
     }
 
@@ -793,9 +795,7 @@ void CBrAppUi::StyleArrived(const TDesC8& aUrl, const TDesC8* aCss)
         delete iCssUrls[0]; delete iCssTexts[0];
         iCssUrls.Remove(0); iCssTexts.Remove(0);
         }
-    TBuf<40> st;
-    st.Format(_L("Stylesheets: %d to load"), iStyles->Waiting());
-    if (iStyles->Waiting()) iView->SetStatus(st);
+    UpdateStatus();
     }
 
 void CBrAppUi::StylesDone()
@@ -945,8 +945,9 @@ void CBrAppUi::PageLoaded(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8
         }
     TBuf<80> t;
     if (aStatus != 200) t.Format(_L("HTTP %d, "), aStatus);
-    t.AppendFormat(_L("%d KB, %d.%d s"), iPageBytes / 1024, iDownloadMs / 1000, (iDownloadMs % 1000) / 100);
-    iView->SetStatus(t);
+    t.AppendFormat(_L("Page: %d KB, %d.%d s"), iPageBytes / 1024, iDownloadMs / 1000, (iDownloadMs % 1000) / 100);
+    iPageStatus.Copy(t.Left(iPageStatus.MaxLength()));
+    UpdateStatus();
     }
 
 void CBrAppUi::PageDownloaded(const TDesC& aFile, const TDesC8& aContentType)
@@ -987,7 +988,35 @@ void CBrAppUi::PageFailed(const TDesC& aText)
 
 void CBrAppUi::PageProgress(const TDesC& aText)
     {
-    iView->SetStatus(aText);
+    iPageStatus.Copy(aText.Left(iPageStatus.MaxLength()));
+    UpdateStatus();
+    }
+
+// One line per part (the side bar shows them as lines, the top bar in one row):
+//   the page:        "Connecting to the server...", "12 / 40 KB, 30%, 9 KB/s", "34 KB, 1.2 s"
+//   stylesheets:     "Styles: 2 to load"
+//   pictures:        "Pictures: 5, 3 to load, 1 failed" (the ones near the screen are asked for)
+void CBrAppUi::UpdateStatus()
+    {
+    TBuf<200> t;
+    t.Copy(iPageStatus);
+    if (iStyles && iStyles->Waiting())
+        {
+        if (t.Length()) t.Append('\n');
+        t.AppendFormat(_L("Styles: %d to load"), iStyles->Waiting());
+        }
+    if (iImages && iSettings->iImages)
+        {
+        TInt done = iImages->LoadedCount(), left = iImages->Pending(), bad = iImages->FailedCount();
+        if (done || left || bad)
+            {
+            if (t.Length()) t.Append('\n');
+            t.AppendFormat(_L("Pictures: %d"), done);
+            if (left) t.AppendFormat(_L(", %d to load"), left);
+            if (bad) t.AppendFormat(_L(", %d failed"), bad);
+            }
+        }
+    iView->SetStatus(t);
     }
 
 void CBrAppUi::ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize)
@@ -995,9 +1024,9 @@ void CBrAppUi::ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize)
     iView->ImageArrived(aUrl, aOk, aFullSize);
     }
 
-void CBrAppUi::ImageProgress(const TDesC& aText)
+void CBrAppUi::ImageProgress(const TDesC& /*aText*/)
     {
-    if (!iLoader->Busy() && aText.Length()) iView->SetStatus(aText);
+    UpdateStatus();
     }
 
 void CBrAppUi::LinkFocused(TInt /*aTarget*/)

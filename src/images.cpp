@@ -175,6 +175,8 @@ void CImageLoader::ClearAll()
         }
     iEntries.ResetAndDestroy();
     iBytes = 0;
+    iLoadedCount = 0;
+    iFailedCount = 0;
     }
 
 void CImageLoader::Kick()
@@ -360,6 +362,7 @@ void CImageLoader::Finish(CFbsBitmap* aBitmap)
     if (iCurrent)
         {
         TBool ok = aBitmap != NULL;
+        if (ok) iLoadedCount++; else iFailedCount++;
         TSize full = ok ? iFullNow : TSize(0, 0);
         CEntry* e = new CEntry;
         HBufC8* url = iCurrent->iUrl;
@@ -387,9 +390,7 @@ void CImageLoader::Finish(CFbsBitmap* aBitmap)
             }
         }
     else delete aBitmap;
-    TBuf<40> t;
-    if (iQueue.Count()) t.Format(_L("%d pictures to load"), iQueue.Count());
-    iObserver.ImageProgress(t);
+    iObserver.ImageProgress(KNullDesC);      // the app builds the status from the counts
     Kick();
     }
 

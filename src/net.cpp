@@ -451,15 +451,19 @@ void CHttpClient::RunL()
                     return;
                     }
                 TInt got = iSinkOpen ? iSinkBytes : iRespLen;
-                if (got / 4096 != iLastProgressKb)
+                if (got / 2048 != iLastProgressKb)
                     {
+                    // "12 / 40 KB, 30%" (the body when its length is known), then the speed
+                    TInt body = iSinkOpen ? iSinkBytes : (iHeadersDone ? iRespLen - (TInt)iInfo.headerLen : 0);
                     TBuf<60> t;
-                    if (iSinkOpen && iInfo.contentLength > 0) t.Format(_L("Downloading %d/%d KB"), got / 1024, iInfo.contentLength / 1024);
-                    else t.Format(_L("Receiving %d KB"), got / 1024);
+                    if (iHeadersDone && iInfo.contentLength > 0)
+                        t.Format(_L("%d / %d KB, %d%%"), body / 1024, iInfo.contentLength / 1024,
+                                 (TInt)((TInt64(body) * TInt64(100) / TInt64(iInfo.contentLength)).GetTInt()));
+                    else t.Format(_L("%d KB"), got / 1024);
                     TTime now; now.UniversalTime();
                     TInt ms = (now.MicroSecondsFrom(iRequestStart).Int64() / TInt64(1000)).GetTInt();
                     if (ms > 500) { t.Append(_L(", ")); t.AppendNum(got / ms); t.Append(_L(" KB/s")); }
-                    iLastProgressKb = got / 4096;
+                    iLastProgressKb = got / 2048;
                     if (iObserver) iObserver->HttpProgress(t);
                     }
                 ReceiveNext();

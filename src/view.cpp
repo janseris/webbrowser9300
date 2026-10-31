@@ -461,7 +461,14 @@ void CBrView::RenderHeader(CFbsBitGc& aGc)
     const CFont* f = iEikonEnv->DenseFont();
     aGc.UseFont(f);
     TInt base = (iHeaderH - f->HeightInPixels()) / 2 + f->AscentInPixels();
-    TInt statusW = iStatusText.Length() ? f->TextWidthInPixels(iStatusText) + 8 : 0;
+    // the status parts in one row
+    TBuf<240> status;
+    for (TInt i = 0; i < iStatusText.Length() && status.Length() < 236; i++)
+        {
+        if (iStatusText[i] == '\n') status.Append(_L(" \x00B7 "));
+        else status.Append(iStatusText[i]);
+        }
+    TInt statusW = status.Length() ? f->TextWidthInPixels(status) + 8 : 0;
     if (statusW > r.Width() / 2) statusW = r.Width() / 2;
     // left: the address of the link under the pointer (or the focused one), else the title
     TBuf<160> left;
@@ -479,8 +486,8 @@ void CBrView::RenderHeader(CFbsBitGc& aGc)
     if (statusW)
         {
         aGc.SetPenColor(TRgb(0xFF, 0xE0, 0x80));
-        TInt sn = f->TextCount(iStatusText, statusW - 4);
-        aGc.DrawText(iStatusText.Left(sn), TPoint(r.Width() - statusW + 2, base));
+        TInt sn = f->TextCount(status, statusW - 4);
+        aGc.DrawText(status.Left(sn), TPoint(r.Width() - statusW + 2, base));
         }
     }
 
@@ -512,9 +519,12 @@ void CBrView::RenderSide(CFbsBitGc& aGc)
     if (iStatusText.Length())
         {
         TInt pos = 0;
-        while (pos < iStatusText.Length() && statusLines < 3)
+        while (pos < iStatusText.Length() && statusLines < 5)
             {
-            TInt n = f->TextCount(iStatusText.Mid(pos), w);
+            TPtrC rest = iStatusText.Mid(pos);
+            TInt nl = rest.Locate('\n');
+            TInt n = f->TextCount(nl >= 0 ? rest.Left(nl) : rest, w);
+            if (nl >= 0 && n >= nl) n = nl + 1;
             if (n <= 0) break;
             pos += n;
             statusLines++;
@@ -563,10 +573,21 @@ TInt CBrView::DrawWrapped(CFbsBitGc& aGc, const CFont* aFont, const TDesC& aText
     for (TInt line = 0; line < aMaxLines && pos < len; line++)
         {
         while (pos < len && aText[pos] == ' ') pos++;
-        TPtrC rest = aText.Mid(pos);
+        TPtrC all = aText.Mid(pos);
+        // an explicit line break ends the line
+        TInt nl = all.Locate('\n');
+        TPtrC rest = nl >= 0 ? all.Left(nl) : all;
         TInt n = aFont->TextCount(rest, aW);
+        if (n <= 0 && nl == 0) { pos++; line--; continue; }
         if (n <= 0) break;
-        if (n < rest.Length())
+        if (n >= rest.Length() && nl >= 0)
+            {
+            aGc.DrawText(rest, TPoint(aX, aY + aFont->AscentInPixels()));
+            aY += lh;
+            pos += nl + 1;
+            continue;
+            }
+        if (n < rest.Length() || (nl >= 0 && line == aMaxLines - 1))
             {
             if (line == aMaxLines - 1)
                 {

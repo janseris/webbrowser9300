@@ -19,6 +19,19 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.11** (not yet run on the phone): progress in more detail.
+  - **The status has a line for each part:**
+    - the page: its stage ("Connecting to the server...", "TLS handshake..."), then
+      "12 / 40 KB, 30%, 9 KB/s" while it arrives (the size, when the server sends it), then
+      "Page: 34 KB, 1.2 s";
+    - "Styles: 2 to load" while stylesheets are on the way;
+    - "Pictures: 5, 3 to load, 1 failed" (the pictures near the screen are asked for, so the
+      count grows as you scroll).
+
+    The side bar shows them as lines, the top bar in one row separated by "·". Progress updates
+    every 2 KB (was 4).
+  - **Fixed: "1 pictures to load" stayed** after the last picture arrived (the empty "done"
+    message was dropped). Pictures now report their counts, and the line shows the final tally.
 - **0.10** (not yet run on the phone): search from the address bar; Enter goes.
   - **What isn't an address is searched for** on DuckDuckGo Lite, which works without JavaScript
     (`https://lite.duckduckgo.com/lite/?q=...`, UTF-8, percent-encoded). An address is

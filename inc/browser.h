@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.10");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.10");
+_LIT(KBrVersion, "0.11");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.11");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -264,6 +264,8 @@ public:
     void SetMaxSize(const TSize& aSize) { iMax = aSize; }
     void SetEnabled(TBool aOn) { iEnabled = aOn; }
     TInt Pending() const { return iQueue.Count() + (iCurrent ? 1 : 0); }
+    TInt LoadedCount() const { return iLoadedCount; }   // this page's pictures so far
+    TInt FailedCount() const { return iFailedCount; }
     TInt CachedKb() const { return iBytes / 1024; }
     TBool FullSize(const char* aUrl, TSize& aSize);     // a cached picture's original size
     // MHttpObserver
@@ -318,6 +320,7 @@ private:
     TSize iMax;
     TBool iEnabled;
     TBuf8<128> iHostBuf;
+    TInt iLoadedCount, iFailedCount;
     };
 
 // ------------------------------------------------------------------ fonts.cpp
@@ -457,7 +460,7 @@ private:
     TInt iHeaderH;
     TBool iSideBar;                        // full screen: the bar at the side, the page the whole height
     TBuf<160> iTitle;
-    TBuf<120> iStatusText;
+    TBuf<200> iStatusText;                 // lines separated by '\n'
     TBool iLoading;
     CFbsBitmap* iBuffer;
     CFbsBitmapDevice* iBufferDev;
@@ -561,6 +564,7 @@ public:
     void PageDownloaded(const TDesC& aFile, const TDesC8& aContentType);
     void PageFailed(const TDesC& aText);
     void PageProgress(const TDesC& aText);
+    void UpdateStatus();                  // the status from its parts: the page, stylesheets, pictures
     // MImageObserver
     void ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize);
     void ImageProgress(const TDesC& aText);
@@ -581,6 +585,7 @@ private:
     TInt FindCss(const TDesC8& aUrl) const;
     void FindL(TBool aNext);
     void CopyAddressL();
+    TBuf<80> iPageStatus;               // the page's part of the status (stage, KB, the result)
     TInt iForceCs;                      // the encoding chosen by hand for this page (-1: automatic)
     TInt iHover[32];                    // the element under the pointer and its ancestors (:hover)
     TUint iHoverCount;
