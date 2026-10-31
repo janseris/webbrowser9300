@@ -316,6 +316,21 @@ int bw_layout_hit(const BwLayout* l, int x, int y);
 /* the box under a point (any kind), -1 none */
 int bw_layout_hit_box(const BwLayout* l, int x, int y);
 
+/* ---------------------------------------------------------------- streaming (downloads to a file) */
+/* HTTP chunked framing removed as the bytes arrive, in any split */
+typedef struct {
+    int state;
+    unsigned long remain;
+    unsigned int digits, lineLen;
+    int done;                        /* the last chunk and the trailers are through */
+    int error;                       /* not chunked framing */
+} BwDechunk;
+void bw_dechunk_init(BwDechunk* d);
+/* the body bytes in in[0..n), written to out (room for n); how many */
+unsigned int bw_dechunk(BwDechunk* d, const unsigned char* in, unsigned int n, unsigned char* out);
+/* the gzip header's length in d[0..n): > 0 its length, 0 more bytes needed, -1 not gzip */
+int bw_gzip_header_len(const unsigned char* d, unsigned int n);
+
 /* ---------------------------------------------------------------- .ico (favicons) */
 /* The phone's own ICO decoder crashes on modern icons, so they are read here. */
 enum { BW_ICO_NONE = 0, BW_ICO_PNG = 1, BW_ICO_PIXELS = 2 };

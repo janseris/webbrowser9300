@@ -40,6 +40,9 @@ CHttpClient::~CHttpClient()
     if (iSsOpen) iSs.Close();
     if (iSinkOpen) iSink.Close();
     delete iSinkBuf;
+    if (iZs) { if (iGzState >= 1) inflateEnd(iZs); User::Free(iZs); }
+    delete iGzHead;
+    delete iStage;
     if (iSinkFsOpen) iSinkFs.Close();
     delete iRequest;
     delete iResponse;
@@ -214,20 +217,116 @@ void CHttpClient::CloseSink()
     iSink.Close();
     iSinkOpen = EFalse;
     delete iSinkBuf; iSinkBuf = NULL;           // the RAM goes back after each download
+    if (iZs) { if (iGzState >= 1) inflateEnd(iZs); User::Free(iZs); iZs = NULL; }
+    delete iGzHead; iGzHead = NULL;
+    delete iStage; iStage = NULL;
+    iGzState = 0;
+    }
+
+// all of the body: the last chunk, or Content-Length bytes (the raw ones)
+TBool CHttpClient::SinkDone() const
+    {
+    if (iSinkChunked) return iDechunk.done;
+    return iInfo.contentLength >= 0 && iSinkBytes >= iInfo.contentLength;
+    }
+
+TBool CHttpClient::SinkFeed(const TDesC8& aData)
+    {
+    TPtrC8 data(aData);
+    if (iSinkChunked)
+        {
+        if (iDechunk.done) return ETrue;
+        if (!iStage || iStage->Des().MaxLength() < data.Length())
+            {
+            delete iStage;
+            iStage = HBufC8::New(Max(data.Length(), 16384));
+            if (!iStage) return EFalse;
+            }
+        TPtr8 st = iStage->Des();
+        TUint n = bw_dechunk(&iDechunk, data.Ptr(), data.Length(), (unsigned char*)st.Ptr());
+        if (iDechunk.error) return EFalse;
+        st.SetLength(n);
+        data.Set(st);
+        }
+    if (!data.Length()) return ETrue;
+    if (iSinkGzip) return GunzipFeed(data);
+    return SinkWrite(data);
+    }
+
+// gzip on the way: the header (it may come in pieces), then raw inflate, 32 KB at a time to the file
+TBool CHttpClient::GunzipFeed(const TDesC8& aData)
+    {
+    if (iGzState == 2) return ETrue;            // (the 8-byte trailer and anything after)
+    TPtrC8 in(aData);
+    if (iGzState == 0)
+        {
+        TInt have = iGzHead ? iGzHead->Length() : 0;
+        if (have + in.Length() > 65536) return EFalse;
+        HBufC8* h = iGzHead ? iGzHead->ReAlloc(have + in.Length()) : HBufC8::New(in.Length());
+        if (!h) return EFalse;
+        iGzHead = h;
+        iGzHead->Des().Append(in);
+        TInt hl = bw_gzip_header_len(iGzHead->Ptr(), iGzHead->Length());
+        if (hl < 0)
+            {
+            // not gzip after all: as it is
+            iSinkGzip = EFalse;
+            TBool ok = SinkWrite(*iGzHead);
+            delete iGzHead; iGzHead = NULL;
+            return ok;
+            }
+        if (hl == 0) return ETrue;              // more of the header to come
+        iZs = (z_stream*)User::Alloc(sizeof(z_stream));
+        if (!iZs) return EFalse;
+        Mem::FillZ(iZs, sizeof(z_stream));
+        if (inflateInit2(iZs, -MAX_WBITS) != Z_OK) { User::Free(iZs); iZs = NULL; return EFalse; }
+        iGzState = 1;
+        // the rest after the header, then the header buffer goes
+        HBufC8* head = iGzHead;
+        iGzHead = NULL;
+        TBool ok = GunzipFeed(head->Mid(hl));
+        delete head;
+        return ok;
+        }
+    const TInt KOut = 32768;
+    HBufC8* out = HBufC8::New(KOut);            // (iStage may hold the input: a buffer of its own)
+    if (!out) return EFalse;
+    iZs->next_in = (Bytef*)in.Ptr();
+    iZs->avail_in = in.Length();
+    TBool ok = ETrue;
+    for (;;)
+        {
+        iZs->next_out = (Bytef*)out->Ptr();
+        iZs->avail_out = KOut;
+        TInt r = inflate(iZs, Z_NO_FLUSH);
+        TInt produced = KOut - iZs->avail_out;
+        if (produced > 0) { TPtrC8 o(out->Ptr(), produced); if (!SinkWrite(o)) { ok = EFalse; break; } }
+        if (r == Z_STREAM_END) { iGzState = 2; break; }
+        if (r != Z_OK && r != Z_BUF_ERROR) { ok = EFalse; break; }
+        if (iZs->avail_in == 0 && iZs->avail_out != 0) break;     // all of this piece is in
+        if (r == Z_BUF_ERROR && produced == 0) break;
+        }
+    delete out;
+    return ok;
     }
 
 // a file sink: the body so far goes to the file, the memory keeps the headers
 void CHttpClient::TryOpenSink()
     {
-    if (!iSinkName.Length() || iInfo.chunked || iInfo.status != 200) return;
+    if (!iSinkName.Length() || iInfo.status != 200) return;
     if (!iSinkFsOpen) { if (iSinkFs.Connect() == KErrNone) iSinkFsOpen = ETrue; }
     if (!iSinkFsOpen) return;
     iSinkFs.MkDirAll(iSinkName);
     if (iSink.Replace(iSinkFs, iSinkName, EFileWrite | EFileShareAny) != KErrNone) return;
     iSinkOpen = ETrue;
     iSinkUsed = ETrue;
+    // chunked and gzip replies are decoded on the way (a file bigger than the RAM still fits)
+    iSinkChunked = iInfo.chunked;
+    iSinkGzip = iInfo.gzip;
+    bw_dechunk_init(&iDechunk);
+    iGzState = 0;
     TPtrC8 rest(iResponse->Ptr() + iInfo.headerLen, iRespLen - iInfo.headerLen);
-    if (rest.Length()) { SinkWrite(rest); iSinkBytes = rest.Length(); }
+    if (rest.Length()) { SinkFeed(rest); iSinkBytes = rest.Length(); }
     iResponse->Des().SetLength(iInfo.headerLen);
     iRespLen = iInfo.headerLen;
     }
@@ -245,7 +344,7 @@ void CHttpClient::ResumeL(const TDesC& aFile)
 void CHttpClient::ReceivedSoFarL()
     {
     TBool complete;
-    if (iSinkOpen) complete = iInfo.contentLength >= 0 && iSinkBytes >= iInfo.contentLength;
+    if (iSinkOpen) complete = SinkDone();
     else complete = ig_http_body_complete((const char*)iResponse->Ptr(), iRespLen, &iInfo);
     if (complete) { iFramed = ETrue; FinishL(KErrNone); return; }
     ReceiveNext();
@@ -459,9 +558,9 @@ void CHttpClient::RunL()
                     {
                     // (AppendResponse put this chunk in memory: move it to the file)
                     TPtrC8 rest(iResponse->Ptr() + iInfo.headerLen, iRespLen - iInfo.headerLen);
-                    if (!SinkWrite(rest))
+                    if (!SinkFeed(rest))
                         {
-                        iLastError.Copy(_L("Cannot write the file"));
+                        iLastError.Copy(iDechunk.error ? _L("Bad chunked reply") : _L("Cannot write the file"));
                         FinishL(KErrDiskFull);
                         return;
                         }
@@ -470,7 +569,7 @@ void CHttpClient::RunL()
                     iRespLen = iInfo.headerLen;
                     }
                 TBool complete;
-                if (iSinkOpen) complete = iInfo.contentLength >= 0 && iSinkBytes >= iInfo.contentLength;
+                if (iSinkOpen) complete = SinkDone();
                 else complete = iHeadersDone && ig_http_body_complete((const char*)iResponse->Ptr(), iRespLen, &iInfo);
                 if (complete)
                     {

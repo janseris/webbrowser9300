@@ -19,6 +19,20 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.20** (not yet run on the phone): downloads bigger than the RAM; the app icon fixed.
+  - **Every accepted download now streams to its file.** Before, chunked replies (the common
+    kind for generated files) were collected in RAM, and gzip replies would have been saved
+    compressed. Now the body goes through `bw_dechunk` (chunked framing removed as it
+    arrives, any split) and, for gzip, a raw-inflate stream (the header via
+    `bw_gzip_header_len`, then 32 KB at a time) into the file. The RAM used doesn't depend on
+    the file's size. Both decoders are in `core/bwstream.c`, unit-tested under ASan (every
+    split, byte by byte, junk).
+  - The prompt shows each place's free space ("Phone: My files (12.3 MB free)"). A file
+    bigger than the free space there asks "Not enough space ... Download anyway?" first.
+  - **The app icon**: its masks were the wrong way round for this phone, which draws
+    where the mask is black (as Instagram 9300 found for `BitBltMasked`). Desk showed a white
+    rectangle with the globe cut out. `aif/icon25_mask.bmp` and `icon64_mask.bmp` are now
+    black on the icon, white around it. Desk may keep the old icon until the phone restarts.
 - **0.19** (not yet run on the phone): asks before downloading a file.
   - When a reply turns out to be a file (not HTML / text / XML / a picture, or sent as
     `Content-Disposition: attachment`, or a `.jad`), the transfer **pauses at its headers**

@@ -1445,6 +1445,29 @@ TInt CBrAppUi::OfferCallback(TAny* aSelf)
     return 0;
     }
 
+// the free space on a path's drive (bytes; -1 unknown)
+static TInt64 FreeSpace(RFs& aFs, const TDesC& aPath)
+    {
+    TInt drive;
+    TVolumeInfo vi;
+    if (!aPath.Length() || RFs::CharToDrive(aPath[0], drive) != KErrNone || aFs.Volume(vi, drive) != KErrNone) return TInt64(-1);
+    return vi.iFree;
+    }
+
+// "Phone: My files (12.3 MB free)"
+static void AppendPlaceL(CDesCArray& aLabels, CDesCArray& aDirs, RFs& aFs, const TDesC& aLabel, const TDesC& aDir)
+    {
+    TBuf<80> l(aLabel);
+    TInt64 f = FreeSpace(aFs, aDir);
+    if (f >= TInt64(0))
+        {
+        TInt kb = (f / TInt64(1024)).GetTInt();
+        l.AppendFormat(_L(" (%d.%d MB free)"), kb / 1024, (kb % 1024) * 10 / 1024);
+        }
+    aLabels.AppendL(l);
+    aDirs.AppendL(aDir);
+    }
+
 static TBool DirExists(RFs& aFs, const TDesC& aDir)
     {
     TEntry e;
@@ -1463,16 +1486,14 @@ void CBrAppUi::AskDownloadL()
     CleanupStack::PushL(dirs);
     _LIT(KMyFiles, "C:\\My files\\");
     _LIT(KDocuments, "C:\\Documents\\");
-    if (DirExists(fs, KMyFiles) || !DirExists(fs, KDocuments)) { labels->AppendL(_L("Phone: My files")); dirs->AppendL(KMyFiles); }
-    else { labels->AppendL(_L("Phone: Documents")); dirs->AppendL(KDocuments); }
+    if (DirExists(fs, KMyFiles) || !DirExists(fs, KDocuments)) AppendPlaceL(*labels, *dirs, fs, _L("Phone: My files"), KMyFiles);
+    else AppendPlaceL(*labels, *dirs, fs, _L("Phone: Documents"), KDocuments);
     TDriveInfo di;
     if (fs.Drive(di, EDriveE) == KErrNone && di.iType != EMediaNotPresent && di.iType != EMediaUnknown)
         {
-        labels->AppendL(_L("Memory card (E:)"));
-        dirs->AppendL(_L("E:\\"));
+        AppendPlaceL(*labels, *dirs, fs, _L("Memory card"), _L("E:\\"));
         }
-    labels->AppendL(_L("Temporary: open / install"));
-    dirs->AppendL(_L("C:\\System\\Temp\\"));
+    AppendPlaceL(*labels, *dirs, fs, _L("Temporary: open / install"), _L("C:\\System\\Temp\\"));
     // installers and apps go to the temporary place by default (they are opened at once)
     TInt place = 0;
     TParsePtrC np(iOfferName);
@@ -1540,6 +1561,24 @@ void CBrAppUi::AskDownloadL()
         full.Append(pp.Ext());
         }
     }
+    // a file bigger than the free space would fail at the end: say so first
+    TInt64 freeB = FreeSpace(fs, full);
+    if (iOfferLength > 0 && freeB >= TInt64(0) && TInt64(iOfferLength) + TInt64(64 * 1024) > freeB)
+        {
+        TBuf<100> q;
+        TInt kb = (freeB / TInt64(1024)).GetTInt();
+        q.Format(_L("Only %d.%d MB free there (the file is %d.%d MB). Download anyway?"), kb / 1024, (kb % 1024) * 10 / 1024,
+                 iOfferLength / (1024 * 1024), (iOfferLength % (1024 * 1024)) * 10 / (1024 * 1024));
+        if (!iEikonEnv->QueryWinL(_L("Not enough space"), q))
+            {
+            iLoader->Stop();
+            iView->SetLoading(EFalse);
+            UpdateTitle();
+            iPageStatus.Copy(_L("Download cancelled"));
+            UpdateStatus();
+            return;
+            }
+        }
     fs.MkDirAll(full);
     IgLog(full);
     iPageStatus.Copy(_L("Downloading..."));

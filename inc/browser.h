@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.19");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.19");
+_LIT(KBrVersion, "0.20");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.20");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -57,6 +57,8 @@ const TDesC& LogFileName();
 const TDesC& LogPrevFileName();
 
 // ------------------------------------------------------------------ net.cpp
+
+struct z_stream_s;
 
 class MHttpObserver
     {
@@ -111,6 +113,16 @@ private:
     void Progress(const TDesC& aText);
     TBool SinkWrite(const TDesC8& aData);
     void TryOpenSink();
+    // a body piece on its way to the sink file: chunked framing off, gzip inflated, then written
+    TBool SinkFeed(const TDesC8& aData);
+    TBool GunzipFeed(const TDesC8& aData);
+    TBool SinkDone() const;               // all of the body is in the file
+    BwDechunk iDechunk;
+    TBool iSinkChunked, iSinkGzip;
+    TInt iGzState;                        // 0 the header, 1 inflating, 2 the end
+    HBufC8* iGzHead;                      // the gzip header while it arrives
+    HBufC8* iStage;                       // the de-chunked bytes / the inflated ones
+    struct z_stream_s* iZs;
     void ReceivedSoFarL();                 // after the headers: done, or receive more
     TBool iPaused, iSinkUsed;
     TBool SinkFlush();

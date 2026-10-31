@@ -884,6 +884,63 @@ static void test_ico(void)
     CHECK(!bw_ico_is((const unsigned char*)"GIF89a", 6));
 }
 
+
+static void test_stream(void)
+{
+    const char* body = "4\r\nWiki\r\n5;ext=1\r\npedia\r\nE\r\n in\r\n\r\nchunks.\r\n0\r\nX-Trailer: 1\r\n\r\nNEXT";
+    const char* want = "Wikipedia in\r\n\r\nchunks.";
+    unsigned int n = (unsigned int)strlen(body), split, k;
+    unsigned char out[256];
+    /* every split into two pieces, and byte by byte */
+    for (split = 0; split <= n; split++) {
+        BwDechunk d;
+        unsigned int o;
+        bw_dechunk_init(&d);
+        o = bw_dechunk(&d, (const unsigned char*)body, split, out);
+        o += bw_dechunk(&d, (const unsigned char*)body + split, n - split, out + o);
+        CHECK(!d.error && d.done && o == strlen(want) && memcmp(out, want, o) == 0);
+    }
+    {
+        BwDechunk d;
+        unsigned int o = 0;
+        bw_dechunk_init(&d);
+        for (k = 0; k < n; k++) o += bw_dechunk(&d, (const unsigned char*)body + k, 1, out + o);
+        CHECK(d.done && o == strlen(want));
+    }
+    {
+        BwDechunk d;
+        bw_dechunk_init(&d);
+        bw_dechunk(&d, (const unsigned char*)"zz\r\n", 4, out);
+        CHECK(d.error);
+        bw_dechunk_init(&d);
+        bw_dechunk(&d, (const unsigned char*)"\r\n", 2, out);
+        CHECK(d.error);                         /* an empty size line */
+    }
+    /* gzip headers: plain, with a file name, cut short, not gzip */
+    {
+        unsigned char g[40] = { 0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3 };
+        unsigned char h[40] = { 0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 3, 'a', '.', 't', 'x', 't', 0, 0x55 };
+        CHECK(bw_gzip_header_len(g, 12) == 10);
+        CHECK(bw_gzip_header_len(g, 5) == 0);
+        CHECK(bw_gzip_header_len(h, 17) == 16);
+        CHECK(bw_gzip_header_len(h, 14) == 0);
+        CHECK(bw_gzip_header_len((const unsigned char*)"PK\3\4", 4) == -1);
+    }
+    /* junk: no crash (ASan) */
+    {
+        unsigned int r;
+        unsigned char junk[64];
+        for (r = 0; r < 3000; r++) {
+            BwDechunk d;
+            unsigned int j;
+            for (j = 0; j < sizeof(junk); j++) junk[j] = (unsigned char)((r * 131 + j * 17) ^ (j * r));
+            bw_dechunk_init(&d);
+            bw_dechunk(&d, junk, sizeof(junk), out);
+            bw_gzip_header_len(junk, sizeof(junk));
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     if (argc == 2) { dump(argv[1]); return 0; }
@@ -906,6 +963,7 @@ int main(int argc, char** argv)
     test_tables();
     test_cookies();
     test_ico();
+    test_stream();
     printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
     return fails ? 1 : 0;
 }
