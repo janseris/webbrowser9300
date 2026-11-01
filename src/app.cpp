@@ -46,9 +46,15 @@ enum { EHelperNone = 0, EHelperUpdate, EHelperLog, EHelperShot };
 
 // ------------------------------------------------------------------ the text dialog
 
+CTextDialog::~CTextDialog()
+    {
+    if (iCursorSuspended) ResumeCursor(*iEikonEnv);
+    }
+
 void CTextDialog::PreLayoutDynInitL()
     {
     SetTitleL(iTitle);
+    iCursorSuspended = SuspendCursor(*iEikonEnv);
     CEikEdwin* ed = (CEikEdwin*)Control(EBrTextField);
     ed->SetTextL(&iText);
     // the address bar: what is there is selected, so typing replaces it
@@ -90,6 +96,24 @@ public:
 CAddressDialog::~CAddressDialog()
     {
     delete iHistory;               // (NULL once the combo box owns it)
+    if (iCursorSuspended) ResumeCursor(*iEikonEnv);
+    }
+
+// The phone's virtual cursor takes the arrow keys while it is on: an edit field needs them (Down
+// for the address list, the caret), so it is suspended while a text dialog is open (ESuspended
+// is meant for this) and switched on again after.
+TBool SuspendCursor(CEikonEnv& aEnv)
+    {
+    TEikVirtualCursor& vc = aEnv.VirtualCursor();
+    if (vc.CursorState(aEnv) != TEikVirtualCursor::EOn) return EFalse;
+    TRAPD(err, vc.SetCursorStateL(TEikVirtualCursor::ESuspended, aEnv));
+    return err == KErrNone;
+    }
+
+void ResumeCursor(CEikonEnv& aEnv)
+    {
+    TRAPD(err, aEnv.VirtualCursor().SetCursorStateL(TEikVirtualCursor::EOn, aEnv));
+    (void)err;
     }
 
 void CAddressDialog::PreLayoutDynInitL()
@@ -101,6 +125,9 @@ void CAddressDialog::PreLayoutDynInitL()
         iHistory = NULL;
         }
     cb->SetTextL(&iText);
+    cb->SetInfoPrintNothingInHistoryList(ETrue);      // Down on an empty history says so
+    iCursorSuspended = SuspendCursor(*iEikonEnv);
+    IgLogF(_L("address: %d pages in the list"), cb->Array() ? cb->Array()->MdcaCount() : -1);
     CEikEdwin* ed = cb->Edwin();
     if (ed)
         {
@@ -112,10 +139,11 @@ void CAddressDialog::PreLayoutDynInitL()
 TKeyResponse CAddressDialog::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType)
     {
     CBrCombo* cb = (CBrCombo*)Control(EBrTextField);
+    if (aType == EEventKey) IgLogF2(_L("address: key %d, list shown %d"), (TInt)aKeyEvent.iCode, cb && cb->ListShown() ? 1 : 0);
     if (aType == EEventKey && cb && !cb->ListShown())
         {
-        // Down: the list of the pages visited; Enter: go
-        if (aKeyEvent.iCode == EKeyDownArrow && cb->Array() && cb->Array()->MdcaCount() > 0)
+        // Down (or Ctrl+Down / Tab): the list of the pages visited; Enter: go
+        if (aKeyEvent.iCode == EKeyDownArrow || (aKeyEvent.iCode == EKeyTab && cb->Array() && cb->Array()->MdcaCount() > 0))
             {
             cb->OpenListL();
             return EKeyWasConsumed;
@@ -1589,6 +1617,15 @@ void CBrAppUi::AskDownloadL()
     IgLog(full);
     iPageStatus.Copy(_L("Downloading..."));
     UpdateStatus();
+    // the link goes into the history too, under the file's name
+    {
+    TBuf<120> title(_L("Download: "));
+    title.Append(name.Left(100));
+    HBufC8* u = iLoader->Url().AllocLC();
+    TRAPD(verr, RecordVisitL(*u, &title));
+    (void)verr;
+    CleanupStack::PopAndDestroy(u);
+    }
     iLoader->AcceptDownloadL(full);
     }
 
@@ -2205,6 +2242,7 @@ void CBrAppUi::RecordVisitL(const TDesC8& aUrl, const TDesC* aTitle)
         iVisitUrls.Remove(last); iVisitTitles.Remove(last);
         }
     iVisitsDirty = ETrue;
+    SaveVisits();          // at once: a crash or a battery pull must not lose it (one small write)
     }
 
 // history.txt: URL TAB title per line (UTF-8), newest first

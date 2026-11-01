@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.22");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.22");
+_LIT(KBrVersion, "0.23");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.23");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -39,6 +39,9 @@ HBufC* Utf8ToUnicodeL(const char* aText);
 char* UnicodeToUtf8(const TDesC& aText);          // ig_malloc'ed, NULL on failure
 HBufC8* UnicodeToUtf8L(const TDesC& aText);
 TUint NowUnixSeconds();
+// the virtual cursor off while a text dialog needs the arrow keys (ETrue if it was on)
+TBool SuspendCursor(CEikonEnv& aEnv);
+void ResumeCursor(CEikonEnv& aEnv);
 TUint32 TickMs();                                  // milliseconds (for timings)
 TInt BrFreeRam();                                  // the system's free RAM in bytes (HAL)
 
@@ -558,11 +561,13 @@ public:
     void PreLayoutDynInitL();
     TBool OkToExitL(TInt aButtonId);
     TKeyResponse OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType);
+    ~CTextDialog();
 private:
     TDes& iText;
     const TDesC& iTitle;
     TBool iSelectAll;
     TBool iMulti;
+    TBool iCursorSuspended;
     };
 
 // the address bar: the text, and the addresses visited (newest first) in the combo box's list
@@ -578,6 +583,7 @@ private:
     TDes& iText;
     CDesCArray* iHistory;          // ours until the combo box takes it
     TBool iSelectAll;
+    TBool iCursorSuspended;
     };
 
 // before a download: the file's type and size, where it is from, its name (editable) and where to

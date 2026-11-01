@@ -19,6 +19,17 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.23** (not yet run on the phone): Down in the address bar.
+  - The phone's virtual cursor (the pointer) takes the arrow keys while it's on, so Down never
+    reached the address field. While a text dialog is open (the address bar, Find, form
+    fields) it's now set to `ESuspended`, the state Symbian provides for edit fields that
+    need the arrows, and it's switched on again when the dialog closes.
+  - Down opens the list even when it's empty; the phone then says there's nothing in the
+    history. (Pages are added once they've loaded; nothing was added while 0.13-0.16
+    crashed.) Tab opens it too when it isn't empty.
+  - The log records "address: N pages in the list" and each key the dialog gets.
+  - **The history also gets downloads** (the link, titled "Download: file name"). It's saved
+    right after each new entry, not only on exit, so a crash doesn't lose it.
 - **0.22**: **a new 3D app icon**: a shaded globe (oceans and continents lit from the upper
   left, a graticule that follows the sphere, a specular highlight, a blue rim light) with a
   tilted golden orbit ring passing behind and in front of it. It's drawn by
