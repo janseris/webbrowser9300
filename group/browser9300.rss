@@ -39,6 +39,7 @@ RESOURCE HOTKEYS r_br_hotkeys
         HOTKEY { command = EBrCmdBookmarks; key = 'b'; },
         HOTKEY { command = EBrCmdAddBookmark; key = 'd'; },
         HOTKEY { command = EBrCmdHistory; key = 'h'; },
+        HOTKEY { command = EBrCmdDownloads; key = 'j'; },
         HOTKEY { command = EBrCmdPageInfo; key = 'i'; },
         HOTKEY { command = EBrCmdFind; key = 'f'; },
         HOTKEY { command = EBrCmdFindNext; key = 'n'; },
@@ -85,7 +86,8 @@ RESOURCE MENU_PANE r_br_menu_bookmarks
         {
         MENU_ITEM { command = EBrCmdBookmarks; txt = "Bookmarks"; },
         MENU_ITEM { command = EBrCmdAddBookmark; txt = "Add this page"; },
-        MENU_ITEM { command = EBrCmdHistory; txt = "History"; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdHistory; txt = "History"; },
+        MENU_ITEM { command = EBrCmdDownloads; txt = "Downloads"; flags = EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdSetHome; txt = "Set as home page..."; }
         };
     }

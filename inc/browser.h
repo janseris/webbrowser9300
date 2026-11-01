@@ -28,8 +28,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.23");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.23");
+_LIT(KBrVersion, "0.24");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.24");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -731,6 +731,15 @@ private:
     RPointerArray<HBufC> iVisitTitles;
     TBool iVisitsDirty;
     void RecordVisitL(const TDesC8& aUrl, const TDesC* aTitle);
+    // the files downloaded, newest first, kept across runs (downloads.txt: path TAB URL)
+    RPointerArray<HBufC> iDlPaths;
+    RPointerArray<HBufC8> iDlUrls;
+    void RecordDownloadL(const TDesC& aPath, const TDesC8& aUrl);
+    void LoadDownloadsL();
+    void SaveDownloads();
+    void RemoveDownload(TInt aIndex);
+    HBufC8* DownloadsPageLC();
+    void OpenFileL(const TDesC& aPath);
     void LoadVisitsL();
     void SaveVisits();
     TInt iHistoryPos;              // the entry on screen

@@ -19,6 +19,15 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.24** (not yet run on the phone): the downloads list; replacing a file is asked.
+  - **Bookmarks > Downloads (Ctrl+J)** opens `about:downloads`: every file downloaded
+    (newest first, up to 100, kept in `downloads.txt`). For each: its name, folder, size or
+    "deleted", and **[open]**, **[delete]** and **[download again]**.
+  - **Delete the installers**: one link deletes all the downloaded `.sis` / `.sisx` files
+    (they're only needed to install) and says how many and how many KB. Another link removes
+    the entries whose files are gone.
+  - **A name that's taken**: "name is there already. Replace it?". Yes overwrites it, which is
+    the usual answer for an installer. No keeps both ("name (2).ext").
 - **0.23** (not yet run on the phone): Down in the address bar.
   - The phone's virtual cursor (the pointer) takes the arrow keys while it's on, so Down never
     reached the address field. While a text dialog is open (the address bar, Find, form
@@ -389,7 +398,7 @@ receives logs (`localserver\ota_server.js`).
 | Enter | open the focused link; edit the field; tick the box; choose from the list |
 | Esc, Backspace | stop loading; otherwise back |
 | Ctrl+L | go to an address (side button **Go to**) |
-| Ctrl+B / Ctrl+D / Ctrl+H | bookmarks / add this page / history |
+| Ctrl+B / Ctrl+D / Ctrl+H / Ctrl+J | bookmarks / add this page / history / downloads |
 | Ctrl+R | reload (Forward: Page menu) |
 | Ctrl+F / Ctrl+N | find in page / find the next one |
 | Ctrl+I | page info |

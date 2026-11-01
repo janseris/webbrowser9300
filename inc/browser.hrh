@@ -13,6 +13,7 @@ enum TBrCommands
     EBrCmdBookmarks,
     EBrCmdAddBookmark,
     EBrCmdHistory,
+    EBrCmdDownloads,
     EBrCmdPageInfo,
     EBrCmdImages,
     EBrCmdFullScreen,

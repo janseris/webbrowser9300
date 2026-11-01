@@ -23,6 +23,7 @@
 #include "browser.h"
 
 _LIT(KBookmarksFile, "C:\\System\\Data\\browser9300\\bookmarks.txt");
+_LIT(KDownloadsFile, "C:\\System\\Data\\browser9300\\downloads.txt");
 _LIT(KHistoryFile, "C:\\System\\Data\\browser9300\\history.txt");
 _LIT(KCookiesFile, "C:\\System\\Data\\browser9300\\cookies.txt");
 _LIT(KUpdateFile, "C:\\System\\Temp\\browser9300_update.sis");
@@ -342,6 +343,7 @@ void CBrAppUi::ConstructL()
     LoadCookies();
     TRAP(err, LoadBookmarksL());
     TRAP(err, LoadVisitsL());
+    TRAP(err, LoadDownloadsL());
     iFonts = CBrFonts::NewL(iSettings->iTextSize);
     iImages = CImageLoader::NewL(*this, iCookies);
     iImages->SetEnabled(iSettings->iImages);
@@ -384,6 +386,8 @@ CBrAppUi::~CBrAppUi()
     SaveVisits();
     iVisitUrls.ResetAndDestroy();
     iVisitTitles.ResetAndDestroy();
+    iDlPaths.ResetAndDestroy();
+    iDlUrls.ResetAndDestroy();
     if (iView) RemoveFromStack(iView);
     delete iView;
     if (iRefreshTimer) iRefreshTimer->Cancel();
@@ -734,6 +738,7 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
         case EBrCmdStartPage: OpenUrlL(_L8("about:start")); break;
         case EBrCmdBookmarks: OpenUrlL(_L8("about:bookmarks")); break;
         case EBrCmdHistory: OpenUrlL(_L8("about:history")); break;
+        case EBrCmdDownloads: OpenUrlL(_L8("about:downloads")); break;
         case EBrCmdAddBookmark: AddBookmarkL(); break;
         case EBrCmdPageInfo: PageInfoL(); break;
         case EBrCmdFind: FindL(EFalse); break;
@@ -1585,16 +1590,24 @@ void CBrAppUi::AskDownloadL()
     TFileName full(path);
     full.Append(name);
     TEntry ent;
-    {
-    TParsePtrC pp(name);
-    for (TInt n = 2; n < 100 && fs.Entry(full, ent) == KErrNone; n++)
+    // a file of that name is there: replace it (asked; an installer is only an installer), or
+    // else keep both ("name (2).ext")
+    if (fs.Entry(full, ent) == KErrNone)
         {
-        full.Copy(path);
-        full.Append(pp.Name());
-        full.AppendFormat(_L(" (%d)"), n);
-        full.Append(pp.Ext());
+        TBuf<160> q(name.Left(100));
+        q.Append(_L(" is there already. Replace it?"));
+        if (!iEikonEnv->QueryWinL(_L("Replace the file?"), q))
+            {
+            TParsePtrC pp(name);
+            for (TInt n = 2; n < 100 && fs.Entry(full, ent) == KErrNone; n++)
+                {
+                full.Copy(path);
+                full.Append(pp.Name());
+                full.AppendFormat(_L(" (%d)"), n);
+                full.Append(pp.Ext());
+                }
+            }
         }
-    }
     // a file bigger than the free space would fail at the end: say so first
     TInt64 freeB = FreeSpace(fs, full);
     if (iOfferLength > 0 && freeB >= TInt64(0) && TInt64(iOfferLength) + TInt64(64 * 1024) > freeB)
@@ -1634,6 +1647,10 @@ void CBrAppUi::PageDownloaded(const TDesC& aFile, const TDesC8& aContentType)
     iView->SetLoading(EFalse);
     UpdateTitle();
     IgLog(_L("download saved"));
+    {
+    TRAPD(derr, RecordDownloadL(aFile, iLoader->Url()));
+    (void)derr;
+    }
     TBuf<200> q;
     q.Copy(aFile.Left(150));
     TBuf<40> ct;
@@ -1645,21 +1662,176 @@ void CBrAppUi::PageDownloaded(const TDesC& aFile, const TDesC8& aContentType)
         Say(t);
         return;
         }
+    OpenFileL(aFile);
+    }
+
+// hands a file to the app that opens it (a .sis to the installer)
+void CBrAppUi::OpenFileL(const TDesC& aPath)
+    {
     RApaLsSession ls;
     TInt err = ls.Connect();
     if (err == KErrNone)
         {
         TThreadId tid;
-        err = ls.StartDocument(aFile, tid);
+        err = ls.StartDocument(aPath, tid);
         ls.Close();
         }
     if (err != KErrNone)
         {
         TBuf<80> t;
-        t.Format(_L("No app opens it (%d): "), err);
-        t.Append(ct);
+        t.Format(_L("No app opens it (%d)"), err);
         Say(t);
         }
+    }
+
+// ------------------------------------------------------------------ the downloads list
+
+const TInt KDownloadsMax = 100;
+
+static TBool IsInstaller(const TDesC& aPath)
+    {
+    TParsePtrC p(aPath);
+    return p.Ext().CompareF(_L(".sis")) == 0 || p.Ext().CompareF(_L(".sisx")) == 0;
+    }
+
+void CBrAppUi::RecordDownloadL(const TDesC& aPath, const TDesC8& aUrl)
+    {
+    for (TInt i = 0; i < iDlPaths.Count(); i++)
+        if (iDlPaths[i]->CompareF(aPath) == 0) { RemoveDownload(i); break; }
+    HBufC* p = aPath.AllocLC();
+    HBufC8* u = aUrl.Left(1000).AllocLC();
+    User::LeaveIfError(iDlPaths.Insert(p, 0));
+    TInt err = iDlUrls.Insert(u, 0);
+    if (err != KErrNone) { iDlPaths.Remove(0); User::Leave(err); }
+    CleanupStack::Pop(2);
+    while (iDlPaths.Count() > KDownloadsMax) RemoveDownload(iDlPaths.Count() - 1);
+    SaveDownloads();
+    }
+
+void CBrAppUi::RemoveDownload(TInt aIndex)
+    {
+    if (aIndex < 0 || aIndex >= iDlPaths.Count()) return;
+    delete iDlPaths[aIndex]; delete iDlUrls[aIndex];
+    iDlPaths.Remove(aIndex); iDlUrls.Remove(aIndex);
+    }
+
+void CBrAppUi::LoadDownloadsL()
+    {
+    RFs& fs = iCoeEnv->FsSession();
+    RFile f;
+    if (f.Open(fs, KDownloadsFile, EFileRead) != KErrNone) return;
+    CleanupClosePushL(f);
+    TInt size = 0;
+    f.Size(size);
+    if (size > 128 * 1024) size = 128 * 1024;
+    HBufC8* buf = HBufC8::NewLC(size);
+    TPtr8 p = buf->Des();
+    User::LeaveIfError(f.Read(p));
+    TInt i = 0;
+    while (i < p.Length() && iDlPaths.Count() < KDownloadsMax)
+        {
+        TInt e = i;
+        while (e < p.Length() && p[e] != '\n') e++;
+        TPtrC8 line = p.Mid(i, e - i);
+        if (line.Length() && line[line.Length() - 1] == '\r') line.Set(line.Left(line.Length() - 1));
+        i = e + 1;
+        TInt tab = line.Locate('\t');
+        TPtrC8 path = tab >= 0 ? line.Left(tab) : line;
+        TPtrC8 url = tab >= 0 ? line.Mid(tab + 1) : TPtrC8();
+        if (!path.Length()) continue;
+        HBufC* p16 = Utf8ToUnicodeL(path);
+        CleanupStack::PushL(p16);
+        HBufC8* u = url.AllocLC();
+        PtrAppendL(iDlPaths, p16);
+        PtrAppendL(iDlUrls, u);
+        CleanupStack::Pop(2);
+        }
+    CleanupStack::PopAndDestroy(2);
+    }
+
+void CBrAppUi::SaveDownloads()
+    {
+    RFs& fs = iCoeEnv->FsSession();
+    fs.MkDirAll(KDownloadsFile);
+    TInt size = 16;
+    for (TInt i = 0; i < iDlPaths.Count(); i++) size += iDlPaths[i]->Length() * 3 + iDlUrls[i]->Length() + 3;
+    HBufC8* all = HBufC8::New(size);
+    if (!all) return;
+    TPtr8 a = all->Des();
+    for (TInt i = 0; i < iDlPaths.Count(); i++)
+        {
+        HBufC8* p8 = NULL;
+        TRAPD(err, p8 = UnicodeToUtf8L(*iDlPaths[i]));
+        if (err != KErrNone || !p8) continue;
+        a.Append(*p8);
+        delete p8;
+        a.Append('\t');
+        a.Append(*iDlUrls[i]);
+        a.Append(_L8("\r\n"));
+        }
+    RFile f;
+    if (f.Replace(fs, KDownloadsFile, EFileWrite) == KErrNone) { f.Write(*all); f.Close(); }
+    delete all;
+    }
+
+// about:downloads: each file (name, folder, size or "deleted") with open / delete, and one link
+// that deletes all the installers (.sis / .sisx: done with once installed)
+HBufC8* CBrAppUi::DownloadsPageLC()
+    {
+    RFs& fs = iCoeEnv->FsSession();
+    TInt size = 3000;
+    for (TInt i = 0; i < iDlPaths.Count(); i++) size += iDlPaths[i]->Length() * 9 + iDlUrls[i]->Length() * 2 + 200;
+    HBufC8* b = HBufC8::NewLC(size);
+    TPtr8 p = b->Des();
+    p.Append(KPageHead);
+    p.Append(_L8("Downloads"));
+    p.Append(KPageStyle);
+    p.Append(_L8("<h1>Downloads</h1>"));
+    TInt sisCount = 0, sisKb = 0, missing = 0;
+    for (TInt i = 0; i < iDlPaths.Count(); i++)
+        {
+        TEntry e;
+        TBool there = fs.Entry(*iDlPaths[i], e) == KErrNone;
+        if (!there) missing++;
+        else if (IsInstaller(*iDlPaths[i])) { sisCount++; sisKb += e.iSize / 1024; }
+        }
+    if (sisCount)
+        {
+        p.Append(_L8("<p><a href='about:dlclearsis'>Delete the installers</a> <span class=s>("));
+        p.AppendNum(sisCount);
+        p.Append(_L8(" .sis files, "));
+        p.AppendNum(sisKb);
+        p.Append(_L8(" KB)</span></p>"));
+        }
+    if (missing) p.Append(_L8("<p><a href='about:dlforget'>Remove the deleted ones from the list</a></p>"));
+    if (!iDlPaths.Count()) p.Append(_L8("<p class=s>Nothing downloaded yet.</p>"));
+    p.Append(_L8("<ol>"));
+    for (TInt i = 0; i < iDlPaths.Count(); i++)
+        {
+        TParsePtrC pp(*iDlPaths[i]);
+        TEntry e;
+        TBool there = fs.Entry(*iDlPaths[i], e) == KErrNone;
+        p.Append(_L8("<li><b>"));
+        AppendHtmlEscaped(p, pp.NameAndExt());
+        p.Append(_L8("</b> <span class=s>"));
+        AppendHtmlEscaped(p, pp.DriveAndPath());
+        if (there) { p.Append(_L8(", ")); if (e.iSize >= 1024) { p.AppendNum(e.iSize / 1024); p.Append(_L8(" KB")); } else { p.AppendNum(e.iSize); p.Append(_L8(" bytes")); } }
+        else p.Append(_L8(", deleted"));
+        p.Append(_L8("</span><br>"));
+        if (there)
+            {
+            p.Append(_L8("<a href='about:dlopen?")); p.AppendNum(i); p.Append(_L8("'>[open]</a> "));
+            p.Append(_L8("<a href='about:dldel?")); p.AppendNum(i); p.Append(_L8("'>[delete]</a> "));
+            }
+        if (iDlUrls[i]->Length())
+            {
+            p.Append(_L8("<a href=\""));
+            AppendHtmlEscaped(p, *iDlUrls[i]);
+            p.Append(_L8("\">[download again]</a>"));
+            }
+        }
+    p.Append(_L8("</ol></body></html>"));
+    return b;
     }
 
 void CBrAppUi::PageFailed(const TDesC& aText)
@@ -2129,6 +2301,68 @@ void CBrAppUi::ShowInternalL(const TDesC8& aUrl)
     else if (u.CompareF(_L8("about:history")) == 0) body = BookmarksPageLC(ETrue);
     else if (u.CompareF(_L8("about:blank")) == 0) { body = HBufC8::NewLC(1); }
     else if (u.CompareF(_L8("about:log")) == 0) body = LogPageLC(EFalse);
+    else if (u.CompareF(_L8("about:downloads")) == 0) body = DownloadsPageLC();
+    else if (u.Left(13).CompareF(_L8("about:dlopen?")) == 0 || u.Left(12).CompareF(_L8("about:dldel?")) == 0 ||
+             u.CompareF(_L8("about:dlclearsis")) == 0 || u.CompareF(_L8("about:dlforget")) == 0)
+        {
+        RFs& fs = iCoeEnv->FsSession();
+        if (u.Left(13).CompareF(_L8("about:dlopen?")) == 0)
+            {
+            TLex8 l(u.Mid(13)); TInt n = -1;
+            if (l.Val(n) == KErrNone && n >= 0 && n < iDlPaths.Count())
+                {
+                HBufC* path = iDlPaths[n]->AllocLC();
+                CleanupStack::Pop(path);
+                CleanupStack::PopAndDestroy(url);
+                CleanupStack::PushL(path);
+                OpenFileL(*path);
+                CleanupStack::PopAndDestroy(path);
+                return;                 // (the list stays on the screen)
+                }
+            }
+        else if (u.Left(12).CompareF(_L8("about:dldel?")) == 0)
+            {
+            TLex8 l(u.Mid(12)); TInt n = -1;
+            if (l.Val(n) == KErrNone && n >= 0 && n < iDlPaths.Count())
+                {
+                TInt err = fs.Delete(*iDlPaths[n]);
+                if (err == KErrNone || err == KErrNotFound || err == KErrPathNotFound) RemoveDownload(n);
+                else { TBuf<60> t; t.Format(_L("Cannot delete it (%d)"), err); Say(t); }
+                }
+            }
+        else if (u.CompareF(_L8("about:dlclearsis")) == 0)
+            {
+            TInt deleted = 0, kb = 0;
+            for (TInt i = iDlPaths.Count() - 1; i >= 0; i--)
+                {
+                if (!IsInstaller(*iDlPaths[i])) continue;
+                TEntry e;
+                TInt sz = fs.Entry(*iDlPaths[i], e) == KErrNone ? e.iSize : 0;
+                TInt err = fs.Delete(*iDlPaths[i]);
+                if (err == KErrNone) { deleted++; kb += sz / 1024; }
+                if (err == KErrNone || err == KErrNotFound || err == KErrPathNotFound) RemoveDownload(i);
+                }
+            TBuf<60> t;
+            t.Format(_L("%d installers deleted (%d KB)"), deleted, kb);
+            Say(t);
+            }
+        else
+            {
+            for (TInt i = iDlPaths.Count() - 1; i >= 0; i--)
+                {
+                TEntry e;
+                if (fs.Entry(*iDlPaths[i], e) != KErrNone) RemoveDownload(i);
+                }
+            }
+        SaveDownloads();
+        // the list again, in the same place
+        iNavigatingHistory = ETrue;
+        TInt keep = iView->ScrollY();
+        CleanupStack::PopAndDestroy(url);
+        ShowInternalL(_L8("about:downloads"));
+        iView->ScrollTo(keep);
+        return;
+        }
     else if (u.CompareF(_L8("about:clearhistory")) == 0)
         {
         iVisitUrls.ResetAndDestroy();
