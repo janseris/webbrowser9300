@@ -19,6 +19,16 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.25** (not yet run on the phone): the USER 23 crash on downloads fixed.
+  - **Cause**: `CHttpClient::SinkWrite` (from Instagram 9300) took a `TPtr8` to its buffer,
+    flushed the full buffer to the file, then appended through the old `TPtr8`. That pointer still
+    had the full length, so the Append overflowed (USER 23, an 8-bit descriptor exceeding its
+    maximum length). It only happened when a file was bigger than the buffer, which is sized
+    from the free RAM: right after start the buffer is bigger than the file, later in a session
+    (caches full) it isn't. That's why a fresh start "fixed" it. The pointer is now taken after
+    any flush.
+  - The internal pages (Downloads, History, Bookmarks, Start) now size their buffers for the
+    worst escaping ('&' becomes 5 bytes, UTF-8 up to 3), so links full of `&` can't overflow them.
 - **0.24** (not yet run on the phone): the downloads list; replacing a file is asked.
   - **Bookmarks > Downloads (Ctrl+J)** opens `about:downloads`: every file downloaded
     (newest first, up to 100, kept in `downloads.txt`). For each: its name, folder, size or

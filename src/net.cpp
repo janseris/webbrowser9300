@@ -193,13 +193,14 @@ TBool CHttpClient::SinkWrite(const TDesC8& aData)
         IgLogF2(_L("file sink: %d KB free RAM, %d KB buffer"), freeRam / 1024, iSinkBuf ? want / 1024 : 0);
         if (!iSinkBuf) return iSink.Write(aData) == KErrNone;
         }
-    TPtr8 b = iSinkBuf->Des();
-    if (b.Length() + aData.Length() > b.MaxLength())
+    if (iSinkBuf->Length() + aData.Length() > iSinkBuf->Des().MaxLength())
         {
         if (!SinkFlush()) return EFalse;
-        if (aData.Length() > b.MaxLength()) return iSink.Write(aData) == KErrNone;
+        if (aData.Length() > iSinkBuf->Des().MaxLength()) return iSink.Write(aData) == KErrNone;
         }
-    b.Append(aData);
+    // (a TPtr8 taken before SinkFlush keeps the old length: the Append after a flush overflowed,
+    //  USER 23. The pointer is taken here, after any flush.)
+    iSinkBuf->Des().Append(aData);
     return ETrue;
     }
 

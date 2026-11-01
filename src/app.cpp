@@ -1780,7 +1780,7 @@ HBufC8* CBrAppUi::DownloadsPageLC()
     {
     RFs& fs = iCoeEnv->FsSession();
     TInt size = 3000;
-    for (TInt i = 0; i < iDlPaths.Count(); i++) size += iDlPaths[i]->Length() * 9 + iDlUrls[i]->Length() * 2 + 200;
+    for (TInt i = 0; i < iDlPaths.Count(); i++) size += iDlPaths[i]->Length() * 18 + iDlUrls[i]->Length() * 6 + 300;   // (escaped: '&' -> 5 bytes, UTF-8 up to 3)
     HBufC8* b = HBufC8::NewLC(size);
     TPtr8 p = b->Des();
     p.Append(KPageHead);
@@ -2199,7 +2199,7 @@ void CBrAppUi::PageInfoL()
 HBufC8* CBrAppUi::StartPageLC()
     {
     TInt size = 3000;
-    for (TInt i = 0; i < iBookmarkUrls.Count(); i++) size += iBookmarkUrls[i]->Length() * 2 + iBookmarkTitles[i]->Length() * 6 + 40;
+    for (TInt i = 0; i < iBookmarkUrls.Count(); i++) size += iBookmarkUrls[i]->Length() * 6 + iBookmarkTitles[i]->Length() * 18 + 80;
     HBufC8* b = HBufC8::NewLC(size);
     TPtr8 p = b->Des();
     p.Append(KPageHead);
@@ -2227,9 +2227,9 @@ HBufC8* CBrAppUi::BookmarksPageLC(TBool aHistory)
     {
     TInt size = 2000;
     if (aHistory)
-        for (TInt i = 0; i < iVisitUrls.Count(); i++) size += iVisitUrls[i]->Length() * 2 + iVisitTitles[i]->Length() * 6 + 60;
+        for (TInt i = 0; i < iVisitUrls.Count(); i++) size += iVisitUrls[i]->Length() * 6 + iVisitTitles[i]->Length() * 18 + 80;
     else
-        for (TInt i = 0; i < iBookmarkUrls.Count(); i++) size += iBookmarkUrls[i]->Length() * 3 + iBookmarkTitles[i]->Length() * 6 + 80;
+        for (TInt i = 0; i < iBookmarkUrls.Count(); i++) size += iBookmarkUrls[i]->Length() * 9 + iBookmarkTitles[i]->Length() * 18 + 120;
     HBufC8* b = HBufC8::NewLC(size);
     TPtr8 p = b->Des();
     p.Append(KPageHead);
