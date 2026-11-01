@@ -19,6 +19,12 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.22**: **a new 3D app icon**: a shaded globe (oceans and continents lit from the upper
+  left, a graticule that follows the sphere, a specular highlight, a blue rim light) with a
+  tilted golden orbit ring passing behind and in front of it. It's drawn by
+  `tools/make_icon.py` (original, numpy, 8x supersampled; the 25x20 size gets a wider ring).
+  The masks are black on the icon, as this phone wants; edges are blended toward the Desk's
+  light background, because the mask is 1-bit.
 - **0.21** (not yet run on the phone): history across restarts; the update path.
   - **The history is kept**: the pages visited, newest first, each once, up to 200, in
     `C:\System\Data\browser9300\history.txt` (URL TAB title, UTF-8). It's saved when the
