@@ -323,13 +323,14 @@ static HBufC8* BitmapToBmpLC(CFbsBitmap& aBitmap)
 
 void CBrAppUi::ConstructL()
     {
+    TUint32 t0 = TickMs();
     BaseConstructL();
     RFs& fs = iCoeEnv->FsSession();
     fs.MkDirAll(KBrDataDir);
     iSettings = CBrSettings::NewL(fs);
     TRAPD(err, iSettings->LoadL());
     (void)err;
-    IgLogRotate();
+    if (iSettings->iLogOn) IgLogRotate();          // (nothing to rotate without the log: no renames)
     IgLogEnable(iSettings->iLogOn);
     {
     TBuf<80> t;
@@ -340,10 +341,7 @@ void CBrAppUi::ConstructL()
     IgLogF(_L("RAM free: %d KB"), freeRam / 1024);
     }
     bw_cookies_init(&iCookies);
-    LoadCookies();
-    TRAP(err, LoadBookmarksL());
-    TRAP(err, LoadVisitsL());
-    TRAP(err, LoadDownloadsL());
+    TRAP(err, LoadBookmarksL());                     // (the start page shows them)
     iFonts = CBrFonts::NewL(iSettings->iTextSize);
     iImages = CImageLoader::NewL(*this, iCookies);
     iImages->SetEnabled(iSettings->iImages);
@@ -356,18 +354,6 @@ void CBrAppUi::ConstructL()
     iOfferCallback = new (ELeave) CAsyncCallBack(TCallBack(OfferCallback, this), CActive::EPriorityStandard);
     iStylesCallback = new (ELeave) CAsyncCallBack(TCallBack(StylesCallback, this), CActive::EPriorityStandard);
     iStatsTimer = CPeriodic::NewL(CActive::EPriorityLow);
-    {
-    // the idle thread's CPU time is the idle time (if this kernel keeps CPU times)
-    TFullName name;
-    TFindThread ft(_L("*Null*"));
-    if (ft.Next(name) == KErrNone && iNullThread.Open(ft) == KErrNone) iNullOpen = ETrue;
-    else
-        {
-        TFindThread ft2(_L("*NULL*"));
-        if (ft2.Next(name) == KErrNone && iNullThread.Open(ft2) == KErrNone) iNullOpen = ETrue;
-        }
-    if (iNullOpen) IgLog(name); else IgLog(_L("stats: no idle thread found"));
-    }
     iCurrentUrl = HBufC8::NewL(1);
     iView = CBrView::NewL(ClientRect(), *this, *iImages, *iFonts);
     AddToStackL(iView);
@@ -375,8 +361,33 @@ void CBrAppUi::ConstructL()
     iSelectControl = -1;
     iForceCs = -1;
     ApplySettingsL();
-    IgLogFlush();
     HomeL();
+    iStartupMs = (TInt)(TickMs() - t0);
+    IgLogF(_L("startup: %d ms"), iStartupMs);
+    IgLogFlush();
+    }
+
+void CBrAppUi::EnsureVisits()
+    {
+    if (iVisitsLoaded) return;
+    iVisitsLoaded = ETrue;
+    TRAPD(err, LoadVisitsL());
+    (void)err;
+    }
+
+void CBrAppUi::EnsureDownloads()
+    {
+    if (iDlLoaded) return;
+    iDlLoaded = ETrue;
+    TRAPD(err, LoadDownloadsL());
+    (void)err;
+    }
+
+void CBrAppUi::EnsureCookies()
+    {
+    if (iCookiesLoaded) return;
+    iCookiesLoaded = ETrue;
+    LoadCookies();
     }
 
 CBrAppUi::~CBrAppUi()
@@ -449,7 +460,7 @@ void CBrAppUi::UpdateStatsTimer(TBool aForeground)
         if (!iStatsTimer->IsActive())
             {
             iStatsStarted = EFalse;
-            iStatsTimer->Start(0, KStatsTickUs, TCallBack(StatsCallback, this));
+            iStatsTimer->Start(KStatsTickUs, KStatsTickUs, TCallBack(StatsCallback, this));
             }
         }
     else
@@ -510,6 +521,20 @@ static void AppendMb(TDes& aT, TInt aBytes)
 // the pictures in the bitmap server).
 void CBrAppUi::StatsTick()
     {
+    if (!iNullTried)
+        {
+        // the idle thread's CPU time is the idle time (if this kernel keeps CPU times)
+        iNullTried = ETrue;
+        TFullName name;
+        TFindThread ft(_L("*Null*"));
+        if (ft.Next(name) == KErrNone && iNullThread.Open(ft) == KErrNone) iNullOpen = ETrue;
+        else
+            {
+            TFindThread ft2(_L("*NULL*"));
+            if (ft2.Next(name) == KErrNone && iNullThread.Open(ft2) == KErrNone) iNullOpen = ETrue;
+            }
+        if (iNullOpen) IgLog(name); else IgLog(_L("stats: no idle thread found"));
+        }
     TTime now;
     now.UniversalTime();
     TInt64 wall = now.Int64();
@@ -927,6 +952,7 @@ TKeyResponse CBrAppUi::HandleKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aT
 // the address bar: the page's address selected, or (typed on the page) the first character
 void CBrAppUi::GoToDialogL(TUint aFirstChar)
     {
+    EnsureVisits();
     HBufC* buf = HBufC::NewLC(1000);
     TPtr t = buf->Des();
     if (aFirstChar) t.Append((TChar)aFirstChar);
@@ -984,6 +1010,7 @@ void CBrAppUi::SaveHistoryPosition()
 
 void CBrAppUi::OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost, TBool aAddHistory)
     {
+    if (aUrl.Left(6).CompareF(_L8("about:")) != 0) EnsureCookies();
     iRefreshTimer->Cancel();
     DropPendingPage();
     if (aUrl.Left(11).CompareF(_L8("javascript:")) == 0) { Say(_L("JavaScript links do not work here")); return; }
@@ -1696,6 +1723,7 @@ static TBool IsInstaller(const TDesC& aPath)
 
 void CBrAppUi::RecordDownloadL(const TDesC& aPath, const TDesC8& aUrl)
     {
+    EnsureDownloads();
     for (TInt i = 0; i < iDlPaths.Count(); i++)
         if (iDlPaths[i]->CompareF(aPath) == 0) { RemoveDownload(i); break; }
     HBufC* p = aPath.AllocLC();
@@ -1751,6 +1779,7 @@ void CBrAppUi::LoadDownloadsL()
 
 void CBrAppUi::SaveDownloads()
     {
+    if (!iDlLoaded) return;               // (never read: the file must stay as it is)
     RFs& fs = iCoeEnv->FsSession();
     fs.MkDirAll(KDownloadsFile);
     TInt size = 16;
@@ -1778,6 +1807,7 @@ void CBrAppUi::SaveDownloads()
 // that deletes all the installers (.sis / .sisx: done with once installed)
 HBufC8* CBrAppUi::DownloadsPageLC()
     {
+    EnsureDownloads();
     RFs& fs = iCoeEnv->FsSession();
     TInt size = 3000;
     for (TInt i = 0; i < iDlPaths.Count(); i++) size += iDlPaths[i]->Length() * 18 + iDlUrls[i]->Length() * 6 + 300;   // (escaped: '&' -> 5 bytes, UTF-8 up to 3)
@@ -2187,7 +2217,7 @@ void CBrAppUi::PageInfoL()
     HAL::Get(HALData::EMemoryRAMFree, freeRam);
     t.Format(_L("RAM free %d KB, pictures in RAM %d KB, %d waiting"), freeRam / 1024, iImages->CachedKb(), iImages->Pending());
     AddItemL(items, t);
-    t.Format(_L("Cookies %d, history %d pages"), iCookies.count, iHistory.Count());
+    t.Format(_L("Cookies %d, history %d pages, started in %d ms"), iCookies.count, iHistory.Count(), iStartupMs);
     AddItemL(items, t);
     iView->ShowListL(EListInfo, _L("Page info"), items, 0, *this);
     CleanupStack::PopAndDestroy(&items);
@@ -2225,6 +2255,7 @@ HBufC8* CBrAppUi::StartPageLC()
 
 HBufC8* CBrAppUi::BookmarksPageLC(TBool aHistory)
     {
+    if (aHistory) EnsureVisits();
     TInt size = 2000;
     if (aHistory)
         for (TInt i = 0; i < iVisitUrls.Count(); i++) size += iVisitUrls[i]->Length() * 6 + iVisitTitles[i]->Length() * 18 + 80;
@@ -2305,6 +2336,7 @@ void CBrAppUi::ShowInternalL(const TDesC8& aUrl)
     else if (u.Left(13).CompareF(_L8("about:dlopen?")) == 0 || u.Left(12).CompareF(_L8("about:dldel?")) == 0 ||
              u.CompareF(_L8("about:dlclearsis")) == 0 || u.CompareF(_L8("about:dlforget")) == 0)
         {
+        EnsureDownloads();
         RFs& fs = iCoeEnv->FsSession();
         if (u.Left(13).CompareF(_L8("about:dlopen?")) == 0)
             {
@@ -2365,6 +2397,7 @@ void CBrAppUi::ShowInternalL(const TDesC8& aUrl)
         }
     else if (u.CompareF(_L8("about:clearhistory")) == 0)
         {
+        iVisitsLoaded = ETrue;
         iVisitUrls.ResetAndDestroy();
         iVisitTitles.ResetAndDestroy();
         iVisitsDirty = ETrue;
@@ -2455,6 +2488,7 @@ const TInt KVisitsMax = 200;
 
 void CBrAppUi::RecordVisitL(const TDesC8& aUrl, const TDesC* aTitle)
     {
+    EnsureVisits();
     if (aUrl.Left(6).CompareF(_L8("about:")) == 0 || aUrl.Left(5).CompareF(_L8("data:")) == 0 || aUrl.Length() > 1000) return;
     for (TInt i = 0; i < iVisitUrls.Count(); i++)
         if (*iVisitUrls[i] == aUrl)
@@ -2516,6 +2550,7 @@ void CBrAppUi::LoadVisitsL()
 
 void CBrAppUi::SaveVisits()
     {
+    if (!iVisitsLoaded) return;           // (never read: the file must stay as it is)
     if (!iVisitsDirty) return;
     RFs& fs = iCoeEnv->FsSession();
     fs.MkDirAll(KHistoryFile);
@@ -2628,6 +2663,7 @@ void CBrAppUi::LoadCookies()
 
 void CBrAppUi::SaveCookies()
     {
+    if (!iCookiesLoaded) return;          // (never read: the file must stay as it is)
     char* t = bw_cookies_save(&iCookies, NowUnixSeconds());
     if (!t) return;
     RFile f;

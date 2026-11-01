@@ -28,8 +28,8 @@ CHttpClient::CHttpClient() : CActive(CActive::EPriorityStandard)
 
 void CHttpClient::ConstructL()
     {
-    User::LeaveIfError(iSs.Connect());
-    iSsOpen = ETrue;
+    // (the socket server session is opened on the first request: four clients connecting at
+    //  start cost time, and may even start ESOCK, for a start page that needs no network)
     }
 
 CHttpClient::~CHttpClient()
@@ -56,10 +56,18 @@ void CHttpClient::Progress(const TDesC& aText)
 
 // ------------------------------------------------------------------ request
 
+void CHttpClient::EnsureSessionL()
+    {
+    if (iSsOpen) return;
+    User::LeaveIfError(iSs.Connect());
+    iSsOpen = ETrue;
+    }
+
 void CHttpClient::RequestL(const TDesC8& aHost, const TDesC8& aMethod, const TDesC8& aPath,
                            const TDesC8& aHeaders, const TDesC8& aBody, MHttpObserver& aObserver,
                            TBool aSecure, TInt aPort)
     {
+    EnsureSessionL();
     if (iState != EIdle) User::Leave(KErrInUse);
     iRequestStart.UniversalTime();
     iSecure = aSecure;

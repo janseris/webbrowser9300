@@ -19,6 +19,20 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.26** (not yet run on the phone): a faster start. Work that isn't needed for the start page
+  now waits until it is:
+  - **The four HTTP clients** (page, pictures, stylesheets, the helper) open their socket server
+    sessions on their first request, not at start. Four `RSocketServ::Connect`s, the first of
+    which may even start ESOCK, aren't needed for the internal start page.
+  - **`cookies.txt`, `history.txt` and `downloads.txt`** are read and parsed when first needed:
+    cookies before the first web request; the history for the address bar, the History page or
+    the first visit; the downloads for the Downloads page or the first download. A file that
+    was never read is never saved, so it can't be overwritten with an empty list.
+  - **The log** is rotated only with Logging on (two file renames otherwise).
+  - **The CPU readout**'s search for the kernel's idle thread and its first update come one
+    second after start.
+  - The startup time is logged ("startup: N ms") and shown in Page info, so the next steps can be
+    measured on the phone.
 - **0.25** (not yet run on the phone): the USER 23 crash on downloads fixed.
   - **Cause**: `CHttpClient::SinkWrite` (from Instagram 9300) took a `TPtr8` to its buffer,
     flushed the full buffer to the file, then appended through the old `TPtr8`. That pointer still
