@@ -29,16 +29,25 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.41");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.41");
+_LIT(KBrVersion, "0.42");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.42");
 // View > Desktop pages: a desktop browser's, so sites send the layout for a wide screen (the mobile
 // ones are made for portrait phones); the version stays at the end
-_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.41");
+_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.42");
 const TDesC8& BrUserAgent();
 HBufC8* BrJsTestPageLC();
-// a page's inline scripts (jsplat.cpp): the page with each script replaced by what it wrote, NULL
-// if they wrote nothing; aSummary for the status / log
-HBufC8* BrRunPageScriptsL(const TDesC8& aHtml, const TDesC8& aUrl, const TDesC8& aUserAgent, TDes& aSummary);             // about:js (jsplat.cpp): the JavaScript engine's self-test
+// a page's scripts (jsplat.cpp, js/bwhost.c): aHtml (UTF-8) run with the external scripts aFetch
+// gives (by absolute URL, on the scripts' thread: it only reads)
+struct TBrScriptRun
+    {
+    HBufC8* iHtml;                  // the page after its scripts, NULL: as it was
+    HBufC8* iMissing;               // external scripts the page asked for that aFetch did not have, a line each
+    HBufC8* iCookies;               // document.cookie = ...: a Set-Cookie value a line
+    TBuf<160> iSummary;             // for the log
+    };
+void BrRunPageScriptsL(const TDesC8& aHtml, const TDesC8& aUrl, const TDesC8& aUserAgent, const TDesC8& aCookie,
+                       const char* (*aFetch)(void* aCtx, const char* aUrl, unsigned int* aLen), TAny* aFetchCtx,
+                       TBrScriptRun& aRun);             // about:js (jsplat.cpp): the JavaScript engine's self-test
 HBufC8* BrSpeedTestPageLC();           // about:speed (speed.cpp): the phone's double / int / copy timings            // the one the settings ask for
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
@@ -259,12 +268,15 @@ class MStyleObserver
 public:
     virtual void StyleArrived(const TDesC8& aUrl, const TDesC8* aCss) = 0;   // aCss NULL: failed
     virtual void StylesDone() = 0;                                          // the queue is empty
+    // the same for a fetcher made for scripts (CStyleFetcher::NewL(..., ETrue))
+    virtual void ScriptArrived(const TDesC8& /*aUrl*/, const TDesC8* /*aJs*/) {}
+    virtual void ScriptsDone() {}
     };
 
 class CStyleFetcher : public CBase, public MHttpObserver
     {
 public:
-    static CStyleFetcher* NewL(MStyleObserver& aObserver, BwCookieJar& aCookies);
+    static CStyleFetcher* NewL(MStyleObserver& aObserver, BwCookieJar& aCookies, TBool aScripts = EFalse);
     ~CStyleFetcher();
     void AddL(const TDesC8& aUrl);
     void StartL();
@@ -280,6 +292,7 @@ private:
     static TInt WatchdogTick(TAny* aSelf);
     MStyleObserver& iObserver;
     BwCookieJar& iCookies;
+    TBool iScripts;                 // fetches scripts (ScriptArrived / ScriptsDone, 512 KB each)
     CHttpClient* iHttp;
     CPeriodic* iWatchdog;
     RPointerArray<HBufC8> iQueue;
@@ -722,6 +735,16 @@ private:
     void ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus, TBool aReparse = EFalse);
     BwDoc* ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl, const char* aCt, TBool aReparse, TInt aCs);
     void RunScriptsL(const TDesC8& aUrl, const TDesC8& aBody, const char* aCt, const TDesC8*& aHtml, TInt& aCs);
+    // external scripts: the cache the page's scripts read them from (see RunScriptsL)
+    void ScriptArrived(const TDesC8& aUrl, const TDesC8* aJs);
+    void ScriptsDone();
+    static TInt ScriptsCallback(TAny* aSelf);
+    void ApplyArrivedScripts();
+    TInt FindScript(const TDesC8& aUrl) const;
+    TInt QueueScriptsL(const TDesC8& aList);         // the URLs (a line each) not in the cache: how many
+public:
+    const TDesC8* CachedScript(const char* aUrl) const;
+private:
     TInt FindCss(const TDesC8& aUrl) const;
     void FindL(TBool aNext);
     void CopyAddressL();
@@ -735,6 +758,14 @@ private:
     TUint32 iScriptedKey;
     TInt iScriptedLen;
     TInt iScriptedForceCs;
+    TInt iScriptedGen;                  // iScriptGen when it was made
+    CStyleFetcher* iScriptFetcher;
+    RPointerArray<HBufC8> iScriptUrls;  // the cache: an empty text is a script that failed
+    RPointerArray<HBufC8> iScriptTexts;
+    TInt iScriptBytes;
+    TInt iScriptGen;                    // more scripts arrived: a page's run is redone
+    TInt iScriptRounds;                 // of fetching for the page on the screen (3 at most)
+    CAsyncCallBack* iScriptsCallback;
     TInt iHover[32];                    // the element under the pointer and its ancestors (:hover)
     TUint iHoverCount;
     void ShowInternalL(const TDesC8& aUrl);

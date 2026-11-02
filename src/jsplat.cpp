@@ -407,6 +407,7 @@ struct TJsPageJob
     {
     BwJsPage iPage;
     TJsCtx iCtx;
+    TAny* iFetchCtx;   // the app's script cache (the fetch callback's own)
     TInt iResult;      // -1: no engine / the prelude failed
     };
 
@@ -423,6 +424,7 @@ static void PageOnThread(TAny* aJob)
     JsInitCtx(job->iCtx, KJsPageMs);
     job->iPage.expired = JsExpired;
     job->iPage.ctx = &job->iCtx;
+    job->iPage.fetchCtx = job->iFetchCtx;
     js_State* J = JsNew(job->iCtx);
     if (!J) { job->iResult = -1; return; }
     job->iResult = bw_js_page(J, &job->iPage);
@@ -438,47 +440,71 @@ static char* ZeroTerm(const TDesC8& aText)
     return z;
     }
 
-HBufC8* BrRunPageScriptsL(const TDesC8& aHtml, const TDesC8& aUrl, const TDesC8& aUserAgent, TDes& aSummary)
+static HBufC8* CopyOut(const char* aText, unsigned int aLen)
     {
+    if (!aText || !aLen) return NULL;
+    HBufC8* h = HBufC8::New(aLen);
+    if (h) h->Des().Copy((const TUint8*)aText, aLen);
+    return h;
+    }
+
+void BrRunPageScriptsL(const TDesC8& aHtml, const TDesC8& aUrl, const TDesC8& aUserAgent, const TDesC8& aCookie,
+                       const char* (*aFetch)(void* aCtx, const char* aUrl, unsigned int* aLen), TAny* aFetchCtx,
+                       TBrScriptRun& aRun)
+    {
+    aRun.iHtml = aRun.iMissing = aRun.iCookies = NULL;
     TJsPageJob* job = (TJsPageJob*)User::Alloc(sizeof(TJsPageJob));
     if (!job) User::Leave(KErrNoMemory);
     Mem::FillZ(job, sizeof(TJsPageJob));
     char* url = ZeroTerm(aUrl);
     char* ua = ZeroTerm(aUserAgent);
-    job->iPage.html = (const char*)aHtml.Ptr();
-    job->iPage.len = aHtml.Length();
-    job->iPage.href = url;
-    job->iPage.ua = ua;
-    job->iPage.ref = "";
-    job->iPage.lang = "cs";
-    job->iPage.w = 640;
-    job->iPage.h = 200;
+    char* cookie = ZeroTerm(aCookie);
+    BwJsPage& pg = job->iPage;
+    pg.html = (const char*)aHtml.Ptr();
+    pg.len = aHtml.Length();
+    pg.href = url;
+    pg.ua = ua;
+    pg.ref = "";
+    pg.lang = "cs";
+    pg.cookie = cookie;
+    pg.w = 640;
+    pg.h = 200;
+    pg.fetch = aFetch;
+    // (fetch's context: the page job's own ctx is the time; the cache is the app's)
+    job->iFetchCtx = aFetchCtx;
     TBuf<80> why;
     TUint32 t0 = JsMs();
-    TInt err = url && ua ? RunOnJsThread(PageOnThread, job, why) : KErrNoMemory;
+    TInt err = url && ua && cookie ? RunOnJsThread(PageOnThread, job, why) : KErrNoMemory;
     TInt ms = (TInt)(JsMs() - t0);
     User::Free(url);
     User::Free(ua);
-    BwJsPage& pg = job->iPage;
-    HBufC8* result = NULL;
-    if (err == KErrNone && pg.out) result = HBufC8::New(pg.outLen);
-    if (result) result->Des().Copy((const TUint8*)pg.out, pg.outLen);
-    if (err != KErrNone) aSummary.Format(_L("Scripts: the engine %S"), &why);
-    else if (job->iResult < 0) aSummary.Copy(_L("Scripts: no memory for the engine"));
+    User::Free(cookie);
+    if (err == KErrNone)
+        {
+        aRun.iHtml = CopyOut(pg.out, pg.outLen);
+        aRun.iMissing = CopyOut(pg.missing, pg.missingLen);
+        aRun.iCookies = CopyOut(pg.cookies, pg.cookiesLen);
+        }
+    TDes& sum = aRun.iSummary;
+    if (err != KErrNone) sum.Format(_L("Scripts: the engine %S"), &why);
+    else if (job->iResult < 0) sum.Copy(_L("Scripts: the page could not be set up (memory)"));
     else
         {
-        aSummary.Format(_L("Scripts: %d run"), pg.run);
-        if (pg.failed) aSummary.AppendFormat(_L(", %d failed"), pg.failed);
-        if (pg.external) aSummary.AppendFormat(_L(", %d external not loaded"), pg.external);
-        if (pg.big) aSummary.AppendFormat(_L(", %d over 64 KB not run"), pg.big);
-        if (pg.stopped) aSummary.Append(_L(", stopped (time / memory)"));
-        aSummary.AppendFormat(_L(", %d ms"), ms);
+        sum.Format(_L("Scripts: %d run"), pg.run);
+        if (pg.failed) sum.AppendFormat(_L(", %d failed"), pg.failed);
+        if (pg.external) sum.AppendFormat(_L(", %d external"), pg.external);
+        if (pg.externalMissing) sum.AppendFormat(_L(", %d to load"), pg.externalMissing);
+        if (pg.big) sum.AppendFormat(_L(", %d too big"), pg.big);
+        if (pg.timers) sum.AppendFormat(_L(", %d timers"), pg.timers);
+        if (pg.stopped) sum.Append(_L(", stopped (time / memory)"));
+        if (!pg.out) sum.Append(_L(", no change"));
+        sum.AppendFormat(_L(", %d ms"), ms);
         }
     if (IgLogEnabled())
         {
-        IgLog(aSummary);
+        IgLog(sum);
         TBuf<120> l;
-        l.Format(_L("js page: %d B written, heap peak %d KB"), pg.written, job->iCtx.iPeak / 1024);
+        l.Format(_L("js page: %d nodes, %d B written, heap peak %d KB"), pg.nodes, pg.written, job->iCtx.iPeak / 1024);
         IgLog(l);
         if (pg.say)
             {
@@ -496,11 +522,21 @@ HBufC8* BrRunPageScriptsL(const TDesC8& aHtml, const TDesC8& aUrl, const TDesC8&
                 say.Set(say.Mid(nl + 1));
                 }
             }
+        if (pg.navigate)
+            {
+            TBuf8<200> l8;
+            l8.Append(_L8("js: the page goes to "));
+            l8.Append(TPtrC8((const TUint8*)pg.navigate).Left(170));
+            IgLog8(l8);
+            }
         IgLogFlush();
         }
+    TBool lost = err == KErrNone && pg.out && !aRun.iHtml;
     User::Free(pg.out);
     User::Free(pg.say);
+    User::Free(pg.missing);
+    User::Free(pg.navigate);
+    User::Free(pg.cookies);
     User::Free(job);
-    if (err == KErrNone && !result && pg.out) User::Leave(KErrNoMemory);
-    return result;
+    if (lost) { delete aRun.iMissing; delete aRun.iCookies; aRun.iMissing = aRun.iCookies = NULL; User::Leave(KErrNoMemory); }
     }

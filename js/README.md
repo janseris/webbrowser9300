@@ -7,6 +7,10 @@ the phone; every change is in `mujs-browser9300.patch` and marked "Browser 9300"
 |---|---|
 | `mujs/` | the engine; `one.c` builds it as one unit (`group/mujs.mmp` -> `mujs.lib`) |
 | `shim/` | libc headers for it: every libc name mapped to a `bwc_` function (only this library sees them) |
+| `bwdom.c`, `bwdom.h` | the page as a tree: HTML parser, writer, selectors |
+| `bwdomjs.c`, `bwjs.h` | the DOM for scripts: the tree's nodes as JavaScript objects |
+| `bwhost.c`, `bwhost.h` | a page's run: scripts in order, document.write, events, timers, external scripts |
+| `prelude.js` | the window and the DOM built on the C part, and the newer methods MuJS lacks (`genprelude.py` -> `prelude.h`) |
 | `bwlibc.c` | the C half of that library (strings, setjmp, IEEE helpers, exact printf / strtod / shortest digits, GCC helpers EUSER lacks) |
 | `../src/jsplat.cpp` | the platform half (heap, Math::, clock, time zone), the 256 KB-stack thread, about:js |
 | `tests/` | the about:js scripts, `expected.txt` (Node 22's results), `gen.py` -> `../src/jstests.h` |
@@ -25,6 +29,11 @@ the phone; every change is in `mujs-browser9300.patch` and marked "Browser 9300"
 - Stack traces: the 24 innermost calls. `Date.now` and the time zone from the phone.
 
 ## Checks (on a PC)
+
+    test/build_pc.sh /tmp/bwjs                                         # pagetest, treetest (ASan, UBSan)
+    /tmp/bwjs/treetest page.html ...                                   # the tree's round trip: the same document for the browser
+    /tmp/bwjs/pagetest page.html url [scripts-dir]                     # a page after its scripts; getscripts.py fetches its external ones
+    python3 test/emu/run_page.py page.html url [script-url=file ...]   # the same in the ARM emulator (test/emu/build.sh first)
 
     cd test
     gcc -O1 -DBWC_HOST fmttest.c ../bwlibc.c -lm && ./a.out           # printf, strtod, maths vs glibc

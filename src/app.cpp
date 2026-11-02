@@ -352,10 +352,12 @@ void CBrAppUi::ConstructL()
     iLoader->Http().SetPromptForAccessPoint(iSettings->iPromptAccessPoint);
     iHelperHttp = CHttpClient::NewL();
     iStyles = CStyleFetcher::NewL(*this, iCookies);
+    iScriptFetcher = CStyleFetcher::NewL(*this, iCookies, ETrue);
     iRefreshTimer = CPeriodic::NewL(CActive::EPriorityStandard);
     iShowCallback = new (ELeave) CAsyncCallBack(TCallBack(ShowCallback, this), CActive::EPriorityHigh);
     iOfferCallback = new (ELeave) CAsyncCallBack(TCallBack(OfferCallback, this), CActive::EPriorityStandard);
     iStylesCallback = new (ELeave) CAsyncCallBack(TCallBack(StylesCallback, this), CActive::EPriorityStandard);
+    iScriptsCallback = new (ELeave) CAsyncCallBack(TCallBack(ScriptsCallback, this), CActive::EPriorityStandard);
     iStatsTimer = CPeriodic::NewL(CActive::EPriorityLow);
     iCurrentUrl = HBufC8::NewL(1);
     iView = CBrView::NewL(ClientRect(), *this, *iImages, *iFonts);
@@ -414,6 +416,10 @@ CBrAppUi::~CBrAppUi()
     delete iShowCallback;
     delete iOfferCallback;
     delete iStylesCallback;
+    delete iScriptsCallback;
+    delete iScriptFetcher;
+    iScriptUrls.ResetAndDestroy();
+    iScriptTexts.ResetAndDestroy();
     if (iNullOpen) iNullThread.Close();
     if (iProbeOn)
         {
@@ -1357,16 +1363,120 @@ void CBrAppUi::ApplyArrivedStyles()
     if (err == KErrNone) iView->SetStatus(_L("Stylesheets applied"));
     }
 
-// A page's inline scripts, run once for a body (read again when its stylesheets come: the result
-// is kept): aHtml and aCs become the page as the scripts left it (UTF-8), or stay as they are when
-// there are none or they wrote nothing.
+// ------------------------------------------------------------------ a page's scripts
+
+const TInt KScriptCacheBytes = 1500 * 1024;     // the external scripts kept (the oldest go first)
+const TInt KScriptRounds = 3;                   // fetches for one page: the HTML's, then what they add
+
+// the page's scripts read the external ones from the cache on their thread (the app's waits)
+static const char* JsFetch(void* aSelf, const char* aUrl, unsigned int* aLen)
+    {
+    const TDesC8* t = ((CBrAppUi*)aSelf)->CachedScript(aUrl);
+    if (!t || !t->Length()) return NULL;
+    *aLen = t->Length();
+    return (const char*)t->Ptr();               // (zero-terminated: ScriptArrived)
+    }
+
+TInt CBrAppUi::FindScript(const TDesC8& aUrl) const
+    {
+    for (TInt i = 0; i < iScriptUrls.Count(); i++) if (*iScriptUrls[i] == aUrl) return i;
+    return -1;
+    }
+
+const TDesC8* CBrAppUi::CachedScript(const char* aUrl) const
+    {
+    TInt k = FindScript(TPtrC8((const TUint8*)aUrl));
+    return k >= 0 ? iScriptTexts[k] : NULL;
+    }
+
+// the URLs in aList (a line each) that are not in the cache go to the fetcher: how many
+TInt CBrAppUi::QueueScriptsL(const TDesC8& aList)
+    {
+    TInt n = 0;
+    TPtrC8 rest(aList);
+    while (rest.Length())
+        {
+        TInt nl = rest.Locate('\n');
+        TPtrC8 u(rest);
+        if (nl >= 0) u.Set(rest.Left(nl));
+        if (u.Length() && u.Length() < 2000 && FindScript(u) < 0) { iScriptFetcher->AddL(u); n++; }
+        if (nl < 0) break;
+        rest.Set(rest.Mid(nl + 1));
+        }
+    return n;
+    }
+
+void CBrAppUi::ScriptArrived(const TDesC8& aUrl, const TDesC8* aJs)
+    {
+    // kept even when it failed (empty): not asked for again this run. As UTF-8, zero-terminated.
+    HBufC8* u = aUrl.Alloc();
+    HBufC8* t = NULL;
+    if (aJs && aJs->Length())
+        {
+        TInt cs = bw_doc_charset((const char*)aJs->Ptr(), aJs->Length(), NULL, -1);
+        if (cs == BW_CS_UTF8)
+            {
+            t = HBufC8::New(aJs->Length() + 1);
+            if (t) { t->Des().Copy(*aJs); t->Des().ZeroTerminate(); }
+            }
+        else
+            {
+            unsigned int n = 0;
+            char* c = bw_charset_to_utf8(cs, (const char*)aJs->Ptr(), aJs->Length(), &n);
+            if (c) { t = HBufC8::New(n + 1); if (t) { t->Des().Copy((const TUint8*)c, n); t->Des().ZeroTerminate(); } ig_free(c); }
+            }
+        }
+    if (!t) t = HBufC8::New(1);
+    if (!u || !t || iScriptUrls.Append(u) != KErrNone) { delete u; delete t; return; }
+    if (iScriptTexts.Append(t) != KErrNone) { iScriptUrls.Remove(iScriptUrls.Count() - 1); delete u; delete t; return; }
+    iScriptBytes += t->Length();
+    if (aJs) iScriptGen++;
+    while (iScriptBytes > KScriptCacheBytes && iScriptUrls.Count() > 1)
+        {
+        iScriptBytes -= iScriptTexts[0]->Length();
+        delete iScriptUrls[0]; delete iScriptTexts[0];
+        iScriptUrls.Remove(0); iScriptTexts.Remove(0);
+        }
+    }
+
+void CBrAppUi::ScriptsDone()
+    {
+    if (iScriptsCallback && !iScriptsCallback->IsActive()) iScriptsCallback->CallBack();
+    }
+
+TInt CBrAppUi::ScriptsCallback(TAny* aSelf)
+    {
+    ((CBrAppUi*)aSelf)->ApplyArrivedScripts();
+    return 0;
+    }
+
+// the page on the screen again, its scripts run with the ones that came
+void CBrAppUi::ApplyArrivedScripts()
+    {
+    if (iHistoryPos < 0 || iHistoryPos >= iHistory.Count()) return;
+    THistoryEntry& e = iHistory[iHistoryPos];
+    if (!e.iBody || *e.iUrl != *iCurrentUrl || iLoader->Busy() || !iSettings->iJs) return;
+    TInt scroll = iView->ScrollY();
+    TInt focus = iView->Focus();
+    HBufC8* ct = e.iContentType ? e.iContentType->Alloc() : KNullDesC8().Alloc();
+    if (!ct) return;
+    TRAPD(err, ShowPageL(*e.iUrl, *ct, *e.iBody, scroll, focus, ETrue));
+    delete ct;
+    (void)err;
+    }
+
+// A page's scripts, run once for a body (read again when its stylesheets come: the result is
+// kept): aHtml and aCs become the page as the scripts left it (UTF-8), or stay as they are when
+// there are none or they changed nothing. External scripts are fetched first: the page is on the
+// screen as it is meanwhile, and shown again when they are in (ApplyArrivedScripts).
 void CBrAppUi::RunScriptsL(const TDesC8& aUrl, const TDesC8& aBody, const char* aCt, const TDesC8*& aHtml, TInt& aCs)
     {
     // FNV-1a of the body: the same page again?
     TUint32 key = 2166136261u;
     const TUint8* b = aBody.Ptr();
     for (TInt i = 0; i < aBody.Length(); i++) key = (key ^ b[i]) * 16777619u;
-    if (iScriptedValid && iScriptedKey == key && iScriptedLen == aBody.Length() && iScriptedForceCs == iForceCs)
+    if (iScriptedValid && iScriptedKey == key && iScriptedLen == aBody.Length() && iScriptedForceCs == iForceCs &&
+        iScriptedGen == iScriptGen)
         {
         if (iScriptedBody) { aHtml = iScriptedBody; aCs = BW_CS_UTF8; }
         return;
@@ -1375,7 +1485,6 @@ void CBrAppUi::RunScriptsL(const TDesC8& aUrl, const TDesC8& aBody, const char* 
     iScriptedBody = NULL;
     iScriptedValid = EFalse;
     if (!bw_js_has_scripts((const char*)aBody.Ptr(), aBody.Length())) return;
-    StepNow(_L("Running the page's scripts..."));
     TInt cs = bw_doc_charset((const char*)aBody.Ptr(), aBody.Length(), aCt, iForceCs);
     HBufC8* utf8 = NULL;
     const TDesC8* src = &aBody;
@@ -1391,20 +1500,83 @@ void CBrAppUi::RunScriptsL(const TDesC8& aUrl, const TDesC8& aBody, const char* 
         src = utf8;
         }
     CleanupStack::PushL(utf8);
-    TBuf<120> sum;
-    HBufC8* out = BrRunPageScriptsL(*src, aUrl, BrUserAgent(), sum);
-    CleanupStack::PopAndDestroy(utf8);
-    iScriptedBody = out;
+    HBufC8* zurl = ZeroTermLC(aUrl);
+    // the external scripts the HTML names: fetched first
+    if (iScriptRounds < KScriptRounds)
+        {
+        unsigned int n = 0;
+        char* list = bw_js_script_urls((const char*)src->Ptr(), src->Length(), (const char*)zurl->Ptr(), &n);
+        TInt queued = 0;
+        if (list) { TRAPD(err, queued = QueueScriptsL(TPtrC8((const TUint8*)list, n))); (void)err; User::Free(list); }
+        if (queued)
+            {
+            iScriptRounds++;
+            TRAPD(err, iScriptFetcher->StartL());
+            (void)err;
+            IgLogF(_L("scripts: fetching %d first"), queued);
+            CleanupStack::PopAndDestroy(2);
+            return;
+            }
+        }
+    // the cookies the page sees, and where its own go
+    char host[128];
+    int port = 0, secure = 0;
+    const char* path = "/";
+    unsigned int pathLen = 1;
+    if (!bw_url_split((const char*)zurl->Ptr(), host, sizeof(host), &port, &secure, &path, &pathLen)) host[0] = 0;
+    HBufC8* zpath = HBufC8::NewLC(pathLen + 1);
+    zpath->Des().Copy(TPtrC8((const TUint8*)path, pathLen));
+    zpath->Des().ZeroTerminate();
+    char* cookie = host[0] ? bw_cookies_header(&iCookies, host, (const char*)zpath->Ptr(), secure, NowUnixSeconds()) : NULL;
+    StepNow(_L("Running the page's scripts..."));
+    TBrScriptRun run;
+    TPtrC8 cookieDes(KNullDesC8);               // (no ?: with descriptors: GCC 2.9)
+    if (cookie) cookieDes.Set((const TUint8*)cookie);
+    TRAPD(err, BrRunPageScriptsL(*src, aUrl, BrUserAgent(), cookieDes, JsFetch, this, run));
+    if (cookie) ig_free(cookie);
+    if (err == KErrNone && run.iCookies && host[0])
+        {
+        TPtrC8 rest(*run.iCookies);
+        while (rest.Length())
+            {
+            TInt nl = rest.Locate('\n');
+            TPtrC8 c(rest);
+            if (nl >= 0) c.Set(rest.Left(nl));
+            if (c.Length()) bw_cookies_set(&iCookies, host, (const char*)zpath->Ptr(), (const char*)c.Ptr(), c.Length(), NowUnixSeconds());
+            if (nl < 0) break;
+            rest.Set(rest.Mid(nl + 1));
+            }
+        }
+    // scripts the scripts added: fetched, then the page again
+    if (err == KErrNone && run.iMissing && iScriptRounds < KScriptRounds)
+        {
+        TInt queued = 0;
+        TRAPD(err2, queued = QueueScriptsL(*run.iMissing));
+        (void)err2;
+        if (queued)
+            {
+            iScriptRounds++;
+            TRAPD(err3, iScriptFetcher->StartL());
+            (void)err3;
+            IgLogF(_L("scripts: fetching %d more the scripts asked for"), queued);
+            }
+        }
+    delete run.iMissing;
+    delete run.iCookies;
+    CleanupStack::PopAndDestroy(3);         // zpath, zurl, utf8
+    User::LeaveIfError(err);
+    iScriptedBody = run.iHtml;
     iScriptedValid = ETrue;
     iScriptedKey = key;
     iScriptedLen = aBody.Length();
     iScriptedForceCs = iForceCs;
-    if (out) { aHtml = out; aCs = BW_CS_UTF8; }
+    iScriptedGen = iScriptGen;
+    if (run.iHtml) { aHtml = run.iHtml; aCs = BW_CS_UTF8; }
     }
 
 void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus, TBool aReparse)
     {
-    if (!aReparse) { iStyles->Stop(); iHoverCount = 0; iView->ResetHover(); }
+    if (!aReparse) { iStyles->Stop(); iScriptFetcher->Stop(); iScriptRounds = 0; iHoverCount = 0; iView->ResetHover(); }
     // the steps below keep the thread busy: each is on the screen before it starts
     TBuf<80> keepStatus(iPageStatus);
     {

@@ -420,8 +420,18 @@ static int lex(struct cstate *g)
 		return g->yychar;
 	}
 
-	if (g->yychar == '{')
-		return lexcount(g);
+	if (g->yychar == '{') {
+		/* Browser 9300: a '{' that does not start {n}, {n,} or {n,m} is the character
+		 * itself (Annex B, as browsers read /(\[|{)|(}|])/ in jQuery 1.x) */
+		const char *p = g->source;
+		if (*p >= '0' && *p <= '9') {
+			while (*p >= '0' && *p <= '9') p++;
+			if (*p == ',') { p++; while (*p >= '0' && *p <= '9') p++; }
+			if (*p == '}')
+				return lexcount(g);
+		}
+		return L_CHAR;
+	}
 	if (g->yychar == '[')
 		return lexclass(g);
 	if (g->yychar == '(') {

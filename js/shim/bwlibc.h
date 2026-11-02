@@ -44,11 +44,13 @@ int bwc_sprintf(char* b, const char* f, ...);
 void* bwc_malloc(size_t n);
 void* bwc_realloc(void* p, size_t n);
 void bwc_free(void* p);
+void* bwc_calloc(size_t n, size_t s);
 void bwc_abort(void);
 long bwc_strtol(const char* s, char** e, int b);
 #define malloc bwc_malloc
 #define realloc bwc_realloc
 #define free bwc_free
+#define calloc bwc_calloc
 #define abort bwc_abort
 #define strtol bwc_strtol
 #define atoi(s) ((int)bwc_strtol((s), 0, 10))

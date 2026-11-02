@@ -22,6 +22,15 @@ unsigned int ig_strlen(const char* s);
 /* ---- strings ---------------------------------------------------------------------------- */
 
 #ifndef BWC_HOST
+void* bwc_calloc(size_t n, size_t s)
+{
+    void* p = bwc_malloc(n * s);
+    if (p) bwc_memset(p, 0, n * s);
+    return p;
+}
+#endif
+
+#ifndef BWC_HOST
 /* GCC itself calls memcpy (struct copies) and abort (unreachable code): those need real names */
 #undef memcpy
 #undef abort

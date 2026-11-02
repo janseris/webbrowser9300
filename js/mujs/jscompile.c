@@ -205,7 +205,9 @@ static void emitlocal(JF, int oploc, int opvar, js_Ast *ident)
 		if (is_eval)
 			jsC_error(J, ident, "'eval' is read-only in strict mode");
 	}
-	if (is_eval)
+	/* Browser 9300: reading eval as a value ((1,eval)(code), window.eval) gets the global eval
+	 * function (indirect eval, in the global scope); only assigning to it is an error */
+	if (is_eval && oploc != OP_GETLOCAL)
 		js_evalerror(J, "%s:%d: invalid use of 'eval'", J->filename, ident->line);
 
 	i = findlocal(J, F, ident->string);

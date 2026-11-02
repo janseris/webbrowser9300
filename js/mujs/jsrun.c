@@ -1976,7 +1976,7 @@ static void jsR_run(js_State *J, js_Function *F)
 			ix = js_toint32(J, -2);
 			uy = js_touint32(J, -1);
 			js_pop(J, 2);
-			js_pushnumber(J, ix << (uy & 0x1F));
+			js_pushnumber(J, (int)((unsigned int)ix << (uy & 0x1F)));
 			break;
 
 		case OP_SHR:

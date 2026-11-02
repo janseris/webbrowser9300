@@ -1022,7 +1022,7 @@ static int jsP_foldconst(js_Ast *node)
 			case EXP_MOD: return jsP_setnumnode(node, fmod(x, y));
 			case EXP_ADD: return jsP_setnumnode(node, x + y);
 			case EXP_SUB: return jsP_setnumnode(node, x - y);
-			case EXP_SHL: return jsP_setnumnode(node, toint32(x) << (touint32(y) & 0x1F));
+			case EXP_SHL: return jsP_setnumnode(node, (int)((unsigned int)toint32(x) << (touint32(y) & 0x1F)));
 			case EXP_SHR: return jsP_setnumnode(node, toint32(x) >> (touint32(y) & 0x1F));
 			case EXP_USHR: return jsP_setnumnode(node, touint32(x) >> (touint32(y) & 0x1F));
 			case EXP_BITAND: return jsP_setnumnode(node, toint32(x) & toint32(y));

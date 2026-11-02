@@ -394,9 +394,12 @@ void CPageLoader::HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders
 const TInt KMaxStyleRedirects = 3;
 const TInt KMaxStyleBytes = 400 * 1024;
 
-CStyleFetcher* CStyleFetcher::NewL(MStyleObserver& aObserver, BwCookieJar& aCookies)
+const TInt KMaxScriptBytes = 512 * 1024;
+
+CStyleFetcher* CStyleFetcher::NewL(MStyleObserver& aObserver, BwCookieJar& aCookies, TBool aScripts)
     {
     CStyleFetcher* self = new (ELeave) CStyleFetcher(aObserver, aCookies);
+    self->iScripts = aScripts;
     CleanupStack::PushL(self);
     self->iHttp = CHttpClient::NewL();
     self->iHttp->SetQuiet(ETrue);
@@ -465,7 +468,8 @@ void CStyleFetcher::SendL()
     TPtr8 hp = h->Des();
     hp.Append(_L8("User-Agent: "));
     hp.Append(BrUserAgent());
-    hp.Append(_L8("\r\nAccept: text/css,*/*;q=0.1\r\nAccept-Encoding: gzip\r\n"));
+    if (iScripts) hp.Append(_L8("\r\nAccept: */*\r\nAccept-Encoding: gzip\r\n"));
+    else hp.Append(_L8("\r\nAccept: text/css,*/*;q=0.1\r\nAccept-Encoding: gzip\r\n"));
     HBufC8* zp = HBufC8::NewLC(pathLen + 1);
     zp->Des().Copy(TPtrC8((const TUint8*)path, pathLen));
     zp->Des().ZeroTerminate();
@@ -492,7 +496,8 @@ TInt CStyleFetcher::WatchdogTick(TAny* aSelf)
     if (now != self->iLastBytes) { self->iLastBytes = now; self->iIdleTicks = 0; return 0; }
     if (++self->iIdleTicks >= 6)
         {
-        IgLog(_L("stylesheet: no data for 30 s"));
+        if (self->iScripts) IgLog(_L("script: no data for 30 s"));
+        else IgLog(_L("stylesheet: no data for 30 s"));
         self->iHttp->Abort();
         self->Done(NULL);
         }
@@ -534,13 +539,15 @@ void CStyleFetcher::HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeade
                 }
             }
         }
-    if (aError != KErrNone || aHttpStatus != 200 || aBody.Length() > KMaxStyleBytes)
+    if (aError != KErrNone || aHttpStatus != 200 || aBody.Length() > (iScripts ? KMaxScriptBytes : KMaxStyleBytes))
         {
-        IgLogF2(_L("stylesheet failed: err %d HTTP %d"), aError, aHttpStatus);
+        if (iScripts) IgLogF2(_L("script failed: err %d HTTP %d"), aError, aHttpStatus);
+        else IgLogF2(_L("stylesheet failed: err %d HTTP %d"), aError, aHttpStatus);
         Done(NULL);
         return;
         }
-    IgLogF(_L("stylesheet: %d bytes"), aBody.Length());
+    if (iScripts) IgLogF(_L("script: %d bytes"), aBody.Length());
+    else IgLogF(_L("stylesheet: %d bytes"), aBody.Length());
     Done(&aBody);
     }
 
@@ -550,7 +557,7 @@ void CStyleFetcher::Done(const TDesC8* aCss)
     iCurrent = NULL;
     if (url)
         {
-        iObserver.StyleArrived(*url, aCss);
+        if (iScripts) iObserver.ScriptArrived(*url, aCss); else iObserver.StyleArrived(*url, aCss);
         delete url;
         }
     if (iQueue.Count())
@@ -558,5 +565,6 @@ void CStyleFetcher::Done(const TDesC8* aCss)
         TRAPD(err, StartL());
         (void)err;
         }
+    else if (iScripts) iObserver.ScriptsDone();
     else iObserver.StylesDone();
     }

@@ -113,16 +113,30 @@ int mj_result(js_State* J) { return (int)js_tostring(J, -1); }
 int mj_pop(js_State* J) { js_pop(J, 1); return 0; }
 int mj_free(js_State* J) { js_freestate(J); return 0; }
 
-/* a page's scripts: the page at src, its length; returns the BwJsPage (out / say readable) */
+/* a page's scripts: the page at src, its length, and a table of external scripts (n, then url,
+ * text, length triples); returns the BwJsPage (the Python side reads out / say / missing) */
 #include "bwhost.h"
-int mj_page(js_State* J, const char* src, int len)
+void* ig_malloc(unsigned int n) { return bwc_malloc(n ? n : 1); }
+void ig_free(void* p) { bwc_free(p); }
+static const char* emu_fetch(void* ctx, const char* url, unsigned int* len)
+{
+    const unsigned int* t = (const unsigned int*)ctx;
+    unsigned int i;
+    for (i = 0; i < t[0]; i++) {
+        if (bwc_strcmp((const char*)t[1 + i * 3], url) == 0) { *len = t[3 + i * 3]; return (const char*)t[2 + i * 3]; }
+    }
+    return 0;
+}
+int mj_page(js_State* J, const char* src, int len, const unsigned int* table)
 {
     BwJsPage* pg = (BwJsPage*)bwc_malloc(sizeof(BwJsPage));
     bwc_memset(pg, 0, sizeof(BwJsPage));
     pg->html = src; pg->len = (unsigned int)len;
-    pg->href = "https://example.cz/a/b.html?x=1#top"; pg->ua = "Mozilla/5.0 (Series80/2.0; Nokia9300) Browser9300/0.38";
-    pg->ref = ""; pg->lang = "cs"; pg->w = 640; pg->h = 200;
-    H->slices = 30;
+    pg->href = (const char*)table[1 + table[0] * 3];
+    pg->ua = "Mozilla/5.0 (Series80/2.0; Nokia9300) Browser9300/0.42";
+    pg->ref = ""; pg->lang = "cs"; pg->cookie = "seen=1"; pg->w = 640; pg->h = 200;
+    pg->fetch = emu_fetch; pg->fetchCtx = (void*)table;
+    H->slices = 20000;
     bw_js_page(J, pg);
     return (int)pg;
 }

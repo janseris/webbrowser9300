@@ -24,6 +24,34 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.42** (not yet run on the phone): **scripts get a real page to work on (a DOM), and external
+  scripts load.** Run in the ARM emulator as the phone builds it: the same pages out as on a PC.
+  - The page is a tree (`js/bwdom.c`): a tolerant HTML parser (implied end tags, html / head /
+    body always there) and a writer back to HTML. Ten real pages (Wikipedia, seznam.cz, idnes.cz,
+    novinky.cz, BBC, Google, Hacker News, jquery.com, craigslist, 1.3 MB the biggest) come back
+    giving the browser's own parser exactly what the original does. Scripts change the tree; the
+    browser's parser and layout read it written out, and stay as they are.
+  - The DOM (`js/bwdomjs.c` in C, the rest in `js/prelude.js`): a node gets a JavaScript object
+    only when a script reaches it (cheap on the phone: no 10 000 objects up front). Tree walking
+    and edits, attributes, innerHTML / outerHTML / textContent, getElementById / ByTagName /
+    ByClassName, querySelector(All) / matches / closest with a selector engine (tag, #id, .class,
+    [attr ^= $= *= ~= |=], :first-child ... :not(), ' ' > + ~, lists), insertAdjacentHTML,
+    cloneNode; reflected properties (id, className, href, value, checked ...), classList, dataset,
+    style (written back into the style attribute), events (addEventListener, dispatchEvent,
+    on... properties, bubbling), DOMContentLoaded, load and <body onload>, timers (those of the
+    first 3 s, in a virtual time), IntersectionObserver (everything counts as on the screen: lazy
+    pictures load), document.cookie (the browser's cookie jar, both ways), location.href = ...
+    (the browser goes there, as a meta refresh), eval as a function.
+  - Scripts run in document order, also the ones scripts add (document.write, appendChild);
+    external ones (`<script src>`) are fetched first (512 KB each, a 1.5 MB cache), the page is on
+    the screen meanwhile and is shown again with their effect; scripts they add are fetched in a
+    second and third round. Inline scripts over 128 KB (page data) are not run.
+  - jQuery 1.12.4 and 3.7.1 run (`localserver/jstest/jquery.html`, `jquery3.html`): selectors,
+    text / html / css / hide / each / appendTo / ready / addClass / attr. MuJS needed: regular
+    expressions with a literal `{` (Annex B), `(1,eval)(code)`, and a defined `1 << 31`.
+  - Test pages: `localserver/jstest/dom.html` (27 checks), `jquery.html`, `jquery3.html`.
+  - Most of today's big sites still fail on syntax newer than ES5 (`=>`, `let`, template strings)
+    and `fetch` / `Promise` / `Symbol`: next.
 - **0.41** (not yet run on the phone): page scripts only where they can change something. On the
   phone 0.40 spent 24.5 s on seznam.cz's scripts (an inline script of page data: compiling it is
   not under the time limit) and 5.2 s on google.com's, writing 414 B and nothing. Until there is a
