@@ -2,4 +2,5 @@ PRJ_PLATFORMS
 ARMI
 
 PRJ_MMPFILES
+mujs.mmp
 browser9300.mmp

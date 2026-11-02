@@ -1,0 +1,642 @@
+diff -ru a/mujs/jsbuiltin.c b/mujs/jsbuiltin.c
+--- a/mujs/jsbuiltin.c	2026-11-02 20:34:58.058535567 +0100
++++ b/mujs/jsbuiltin.c	2026-11-02 19:50:39.348081621 +0100
+@@ -100,7 +100,7 @@
+ 	const char * volatile str = str_;
+ 	js_Buffer *sb = NULL;
+ 
+-	static const char *HEX = "0123456789ABCDEF";
++	static const char HEX[] = "0123456789ABCDEF";
+ 
+ 	if (js_try(J)) {
+ 		js_free(J, sb);
+diff -ru a/mujs/jscompile.c b/mujs/jscompile.c
+--- a/mujs/jscompile.c	2026-11-02 20:34:58.058561338 +0100
++++ b/mujs/jscompile.c	2026-11-02 19:50:39.352016020 +0100
+@@ -28,11 +28,11 @@
+ 	js_throw(J);
+ }
+ 
+-static const char *futurewords[] = {
++static const char *const futurewords[] = {
+ 	"class", "const", "enum", "export", "extends", "import", "super",
+ };
+ 
+-static const char *strictfuturewords[] = {
++static const char *const strictfuturewords[] = {
+ 	"implements", "interface", "let", "package", "private", "protected",
+ 	"public", "static", "yield",
+ };
+diff -ru a/mujs/jsdate.c b/mujs/jsdate.c
+--- a/mujs/jsdate.c	2026-11-02 20:34:58.058810034 +0100
++++ b/mujs/jsdate.c	2026-11-02 20:22:56.861004060 +0100
+@@ -10,9 +10,15 @@
+ 
+ #define js_optnumber(J,I,V) (js_isdefined(J,I) ? js_tonumber(J,I) : V)
+ 
++#ifdef __SYMBIAN32__
++double js_platform_now(void);	/* Browser 9300: ms since 1970 UTC from the phone's clock */
++#endif
++
+ static double Now(void)
+ {
+-#if defined(__unix__) || defined(__APPLE__)
++#if defined(__SYMBIAN32__)
++	return js_platform_now();
++#elif defined(__unix__) || defined(__APPLE__)
+ 	struct timeval tv;
+ 	gettimeofday(&tv, NULL);
+ 	return floor(tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0);
+@@ -25,6 +31,14 @@
+ #endif
+ }
+ 
++#ifdef __SYMBIAN32__
++/* Browser 9300: the phone's offset from UTC in ms (no writable statics in an EKA1 app) */
++double js_platform_tza(void);
++static double LocalTZA(void)
++{
++	return js_platform_tza();
++}
++#else
+ static double LocalTZA(void)
+ {
+ 	static int once = 1;
+@@ -38,6 +52,7 @@
+ 	}
+ 	return tza;
+ }
++#endif
+ 
+ static double DaylightSavingTA(double t)
+ {
+diff -ru a/mujs/jsdtoa.c b/mujs/jsdtoa.c
+--- a/mujs/jsdtoa.c	2026-11-02 20:34:58.058900331 +0100
++++ b/mujs/jsdtoa.c	2026-11-02 20:05:36.737224754 +0100
+@@ -408,7 +408,14 @@
+ static uint64_t double_to_uint64(double d)
+ {
+ 	uint64_t n;
++#ifdef __MARM__
++	/* the ARM FPA word order (the Nokia 9300's GCC 2.9): the high word first */
++	unsigned int w[2];
++	memcpy(w, &d, 8);
++	n = ((uint64_t)w[0] << 32) | w[1];
++#else
+ 	memcpy(&n, &d, 8);
++#endif
+ 	return n;
+ }
+ 
+@@ -440,7 +447,9 @@
+ 	diy_fp_t res = in;
+ 	/* Normalize now */
+ 	/* the original number could have been a denormal. */
+-	while (! (res.f & (DP_HIDDEN_BIT << 1))) {
++	/* (the test on the high word: GCC 2.9 (armi) compiled the 64-bit test of this loop's first
++	 * round as 0 == 0, so a normalized value was shifted once more and lost its top bit) */
++	while (!((unsigned int)(res.f >> 32) & 0x00200000u)) {
+ 		res.f <<= 1;
+ 		res.e--;
+ 	}
+@@ -533,13 +542,13 @@
+  * already produce underflow or overflow, so there's no need to worry about
+  * additional digits.
+  */
+-static int maxExponent = 511;
++static const int maxExponent = 511;
+ 
+ /* Table giving binary powers of 10. Entry
+  * is 10^2^i. Used to convert decimal
+  * exponents into floating-point numbers.
+  */
+-static double powersOf10[] = {
++static const double powersOf10[] = {
+ 	10.,
+ 	100.,
+ 	1.0e4,
+@@ -560,7 +569,7 @@
+  * one).
+  */
+ double
+-js_strtod(const char *string, char **endPtr)
++js_strtod_imprecise(const char *string, char **endPtr)
+ {
+ 	int sign, expSign = FALSE;
+ 	double fraction, dblExp, *d;
+@@ -714,11 +723,15 @@
+ 	if (exp < -maxExponent) {
+ 		exp = maxExponent;
+ 		expSign = TRUE;
++#ifndef __SYMBIAN32__
+ 		errno = ERANGE;
++#endif
+ 	} else if (exp > maxExponent) {
+ 		exp = maxExponent;
+ 		expSign = FALSE;
++#ifndef __SYMBIAN32__
+ 		errno = ERANGE;
++#endif
+ 	} else if (exp < 0) {
+ 		expSign = TRUE;
+ 		exp = -exp;
+@@ -747,3 +760,11 @@
+ 	}
+ 	return fraction;
+ }
++
++/* Browser 9300: the one above is off by an ulp or more on many inputs (0.1 + 0.2 printed as
++ * 0.30000000000000007, 5e-324 read as 0); bwc_strtod in js/bwlibc.c rounds correctly. */
++double bwc_strtod(const char *s, char **ep);
++double js_strtod(const char *string, char **endPtr)
++{
++	return bwc_strtod(string, endPtr);
++}
+diff -ru a/mujs/jserror.c b/mujs/jserror.c
+--- a/mujs/jserror.c	2026-11-02 20:34:58.058969357 +0100
++++ b/mujs/jserror.c	2026-11-02 20:32:37.288551473 +0100
+@@ -7,9 +7,11 @@
+ {
+ 	char buf[256];
+ 	int n = J->tracetop - skip;
++	int last = n > 24 ? n - 24 : 0;	/* Browser 9300: the 24 innermost calls (a 1000-deep trace
++					 * built by concatenation took 15 MB on the phone) */
+ 	if (n <= 0)
+ 		return 0;
+-	for (; n > 0; --n) {
++	for (; n > last; --n) {
+ 		const char *name = J->trace[n].name;
+ 		const char *file = J->trace[n].file;
+ 		int line = J->trace[n].line;
+diff -ru a/mujs/jsgc.c b/mujs/jsgc.c
+--- a/mujs/jsgc.c	2026-11-02 20:34:58.059075421 +0100
++++ b/mujs/jsgc.c	2026-11-02 19:51:29.827938883 +0100
+@@ -242,6 +242,7 @@
+ 		++nstr;
+ 	}
+ 
++	{
+ 	unsigned int ntot = nenv + nfun + nobj + nstr + nprop;
+ 	unsigned int gtot = genv + gfun + gobj + gstr + gprop;
+ 	unsigned int remaining = ntot - gtot;
+@@ -255,6 +256,7 @@
+ 			100*gtot/ntot, genv, nenv, gfun, nfun, gobj, nobj, gprop, nprop, gstr, nstr);
+ 		js_report(J, buf);
+ 	}
++	}
+ }
+ 
+ void js_freestate(js_State *J)
+@@ -280,5 +282,8 @@
+ 
+ 	js_free(J, J->lexbuf.text);
+ 	J->alloc(J->actx, J->stack, 0);
++	J->alloc(J->actx, J->psent, 0);
++	J->alloc(J->actx, J->undefval, 0);
++	J->alloc(J->actx, J->ssent, 0);
+ 	J->alloc(J->actx, J, 0);
+ }
+diff -ru a/mujs/jsi.h b/mujs/jsi.h
+--- a/mujs/jsi.h	2026-11-02 20:34:58.060340362 +0100
++++ b/mujs/jsi.h	2026-11-02 20:27:30.242539345 +0100
+@@ -197,8 +197,20 @@
+ 
+ /* State struct */
+ 
++int jsS_initsentinel(js_State *J);
++int jsV_initsentinel(js_State *J);
++
+ struct js_State
+ {
++	/* Browser 9300: what were writable statics (an EKA1 app may have none): the property and
++	 * string trees' sentinels, stackidx's undefined */
++	int (*limithook)(void *ctx);	/* Browser 9300: asked for more when runlimit runs out */
++	void *limitctx;
++	int killed;		/* Browser 9300: stopped by the limit, catch blocks are skipped */
++	struct js_Property *psent;
++	js_StringNode *ssent;
++	js_Value *undefval;
++
+ 	void *actx;
+ 	void *uctx;
+ 	js_Alloc alloc;
+diff -ru a/mujs/jsintern.c b/mujs/jsintern.c
+--- a/mujs/jsintern.c	2026-11-02 20:34:58.059134141 +0100
++++ b/mujs/jsintern.c	2026-11-02 19:51:06.198518638 +0100
+@@ -38,14 +38,16 @@
+ 	char string[1];
+ };
+ 
+-static js_StringNode jsS_sentinel = { &jsS_sentinel, &jsS_sentinel, 0, ""};
++#define jsS_sentinel (*J->ssent)
++
+ 
+ static js_StringNode *jsS_newstringnode(js_State *J, const char *string, const char **result)
+ {
+ 	size_t n = strlen(string);
++	js_StringNode *node;
+ 	if (n > JS_STRLIMIT)
+ 		js_rangeerror(J, "invalid string length");
+-	js_StringNode *node = js_malloc(J, soffsetof(js_StringNode, string) + n + 1);
++	node = js_malloc(J, soffsetof(js_StringNode, string) + n + 1);
+ 	node->left = node->right = &jsS_sentinel;
+ 	node->level = 1;
+ 	memcpy(node->string, string, n + 1);
+@@ -92,17 +94,17 @@
+ 	return jsS_newstringnode(J, string, result);
+ }
+ 
+-static void dumpstringnode(js_StringNode *node, int level)
++static void dumpstringnode(js_State *J, js_StringNode *node, int level)
+ {
+ 	int i;
+ 	if (node->left != &jsS_sentinel)
+-		dumpstringnode(node->left, level + 1);
++		dumpstringnode(J, node->left, level + 1);
+ 	printf("%d: ", node->level);
+ 	for (i = 0; i < level; ++i)
+ 		putchar('\t');
+ 	printf("'%s'\n", node->string);
+ 	if (node->right != &jsS_sentinel)
+-		dumpstringnode(node->right, level + 1);
++		dumpstringnode(J, node->right, level + 1);
+ }
+ 
+ void jsS_dumpstrings(js_State *J)
+@@ -110,7 +112,7 @@
+ 	js_StringNode *root = J->strings;
+ 	printf("interned strings {\n");
+ 	if (root && root != &jsS_sentinel)
+-		dumpstringnode(root, 1);
++		dumpstringnode(J, root, 1);
+ 	printf("}\n");
+ }
+ 
+@@ -121,6 +123,18 @@
+ 	js_free(J, node);
+ }
+ 
++/* Browser 9300: the string tree's sentinel, one per state (was a writable static) */
++int jsS_initsentinel(js_State *J)
++{
++	J->ssent = J->alloc(J->actx, NULL, sizeof(js_StringNode));
++	if (!J->ssent)
++		return 0;
++	J->ssent->left = J->ssent->right = J->ssent;
++	J->ssent->level = 0;
++	J->ssent->string[0] = 0;
++	return 1;
++}
++
+ void jsS_freestrings(js_State *J)
+ {
+ 	if (J->strings && J->strings != &jsS_sentinel)
+diff -ru a/mujs/jslex.c b/mujs/jslex.c
+--- a/mujs/jslex.c	2026-11-02 20:34:58.059162323 +0100
++++ b/mujs/jslex.c	2026-11-02 19:50:39.352709902 +0100
+@@ -20,7 +20,7 @@
+ 	js_throw(J);
+ }
+ 
+-static const char *tokenstring[] = {
++static const char *const tokenstring[] = {
+ 	"(end-of-file)",
+ 	"'\\x01'", "'\\x02'", "'\\x03'", "'\\x04'", "'\\x05'", "'\\x06'", "'\\x07'",
+ 	"'\\x08'", "'\\x09'", "'\\x0A'", "'\\x0B'", "'\\x0C'", "'\\x0D'", "'\\x0E'", "'\\x0F'",
+@@ -71,7 +71,7 @@
+ 	return "<unknown>";
+ }
+ 
+-static const char *keywords[] = {
++static const char *const keywords[] = {
+ 	"break", "case", "catch", "continue", "debugger", "default", "delete",
+ 	"do", "else", "false", "finally", "for", "function", "if", "in",
+ 	"instanceof", "new", "null", "return", "switch", "this", "throw",
+diff -ru a/mujs/jsnumber.c b/mujs/jsnumber.c
+--- a/mujs/jsnumber.c	2026-11-02 20:34:58.059238591 +0100
++++ b/mujs/jsnumber.c	2026-11-02 20:05:36.737918758 +0100
+@@ -112,11 +112,15 @@
+ }
+ 
+ /* Customized ToString() on a number */
+-static void numtostr(js_State *J, const char *fmt, int w, double n)
++/* Browser 9300: JavaScript rounds the exact value half up ((12.5).toFixed(0) is "13"), not
++ * half to even like printf; bwc_jsfmt (js/bwlibc.c) does that. */
++int bwc_jsfmt(char *buf, double x, int conv, int prec);
++
++static void numtostr(js_State *J, int conv, int w, double n)
+ {
+ 	/* buf needs to fit printf("%.20f", 1e20) */
+-	char buf[50], *e;
+-	sprintf(buf, fmt, w, n);
++	char buf[64], *e;
++	bwc_jsfmt(buf, n, conv, w);
+ 	e = strchr(buf, 'e');
+ 	if (e) {
+ 		int exp = atoi(e+1);
+@@ -138,7 +142,7 @@
+ 	if (isnan(x) || isinf(x) || x <= -1e21 || x >= 1e21)
+ 		js_pushstring(J, jsV_numbertostring(J, buf, x));
+ 	else
+-		numtostr(J, "%.*f", width, x);
++		numtostr(J, 'f', width, x);
+ }
+ 
+ static void Np_toExponential(js_State *J)
+@@ -154,7 +158,7 @@
+ 	if (isnan(x) || isinf(x))
+ 		js_pushstring(J, jsV_numbertostring(J, buf, x));
+ 	else
+-		numtostr(J, "%.*e", width, x);
++		numtostr(J, 'e', width, x);
+ }
+ 
+ static void Np_toPrecision(js_State *J)
+@@ -170,7 +174,18 @@
+ 	if (isnan(x) || isinf(x))
+ 		js_pushstring(J, jsV_numbertostring(J, buf, x));
+ 	else
+-		numtostr(J, "%.*g", width, x);
++	{
++		/* the exponent of x rounded to width digits: exponential below 1e-6 or from 10^width up */
++		char buf[64], *e;
++		int ex;
++		bwc_jsfmt(buf, x, 'e', width - 1);
++		e = strchr(buf, 'e');
++		ex = atoi(e + 1);
++		if (ex < -6 || ex >= width)
++			numtostr(J, 'e', width - 1, x);
++		else
++			numtostr(J, 'f', width - 1 - ex, x);
++	}
+ }
+ 
+ void jsB_initnumber(js_State *J)
+diff -ru a/mujs/json.c b/mujs/json.c
+--- a/mujs/json.c	2026-11-02 20:34:58.059290818 +0100
++++ b/mujs/json.c	2026-11-02 19:50:39.348468816 +0100
+@@ -185,7 +185,7 @@
+ 
+ static void fmtstr(js_State *J, js_Buffer **sb, const char *s)
+ {
+-	static const char *HEX = "0123456789abcdef";
++	static const char HEX[] = "0123456789abcdef";
+ 	int i, n;
+ 	Rune c;
+ 	js_putc(J, sb, '"');
+diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
+--- a/mujs/jsproperty.c	2026-11-02 20:34:58.059469409 +0100
++++ b/mujs/jsproperty.c	2026-11-02 19:51:29.827478422 +0100
+@@ -19,12 +19,30 @@
+ 	split() fixes consecutive right horizontal links.
+ */
+ 
+-static js_Property sentinel = {
+-	&sentinel, &sentinel,
+-	0, 0,
+-	{ { {0}, JS_TUNDEFINED } },
+-	NULL, NULL, ""
+-};
++#define sentinel (*J->psent)
++
++/* Browser 9300: the property tree's sentinel, one per state (was a writable static) */
++int jsV_initsentinel(js_State *J)
++{
++	J->psent = J->alloc(J->actx, NULL, sizeof(js_Property));
++	if (!J->psent)
++		return 0;
++	memset(J->psent, 0, sizeof(js_Property));
++	J->psent->left = J->psent->right = J->psent;
++	J->psent->level = 0;
++	J->psent->value.t.type = JS_TUNDEFINED;
++	/* stackidx's undefined (outside the stack) */
++	J->undefval = J->alloc(J->actx, NULL, sizeof(js_Value));
++	if (!J->undefval) {
++		J->alloc(J->actx, J->psent, 0);
++		J->psent = NULL;
++		return 0;
++	}
++	memset(J->undefval, 0, sizeof(js_Value));
++	J->undefval->t.type = JS_TUNDEFINED;
++	return 1;
++}
++
+ 
+ static js_Property *newproperty(js_State *J, js_Object *obj, const char *name)
+ {
+@@ -43,7 +61,7 @@
+ 	return node;
+ }
+ 
+-static js_Property *lookup(js_Property *node, const char *name)
++static js_Property *lookup(js_State *J, js_Property *node, const char *name)
+ {
+ 	while (node != &sentinel) {
+ 		int c = strcmp(name, node->name);
+@@ -103,15 +121,15 @@
+ 	--obj->count;
+ }
+ 
+-static js_Property *unlinkproperty(js_Property *node, const char *name, js_Property **garbage)
++static js_Property *unlinkproperty(js_State *J, js_Property *node, const char *name, js_Property **garbage)
+ {
+ 	js_Property *temp, *a, *b;
+ 	if (node != &sentinel) {
+ 		int c = strcmp(name, node->name);
+ 		if (c < 0) {
+-			node->left = unlinkproperty(node->left, name, garbage);
++			node->left = unlinkproperty(J, node->left, name, garbage);
+ 		} else if (c > 0) {
+-			node->right = unlinkproperty(node->right, name, garbage);
++			node->right = unlinkproperty(J, node->right, name, garbage);
+ 		} else {
+ 			*garbage = node;
+ 			if (node->left == &sentinel && node->right == &sentinel) {
+@@ -121,7 +139,7 @@
+ 				a = node->right;
+ 				while (a->left != &sentinel)
+ 					a = a->left;
+-				b = unlinkproperty(node->right, a->name, &temp);
++				b = unlinkproperty(J, node->right, a->name, &temp);
+ 				temp->level = node->level;
+ 				temp->left = node->left;
+ 				temp->right = b;
+@@ -131,7 +149,7 @@
+ 				a = node->left;
+ 				while (a->right != &sentinel)
+ 					a = a->right;
+-				b = unlinkproperty(node->left, a->name, &temp);
++				b = unlinkproperty(J, node->left, a->name, &temp);
+ 				temp->level = node->level;
+ 				temp->left = b;
+ 				temp->right = node->right;
+@@ -156,7 +174,7 @@
+ static js_Property *deleteproperty(js_State *J, js_Object *obj, js_Property *tree, const char *name)
+ {
+ 	js_Property *garbage = &sentinel;
+-	tree = unlinkproperty(tree, name, &garbage);
++	tree = unlinkproperty(J, tree, name, &garbage);
+ 	if (garbage != &sentinel)
+ 		freeproperty(J, obj, garbage);
+ 	return tree;
+@@ -180,14 +198,14 @@
+ 
+ js_Property *jsV_getownproperty(js_State *J, js_Object *obj, const char *name)
+ {
+-	return lookup(obj->properties, name);
++	return lookup(J, obj->properties, name);
+ }
+ 
+ js_Property *jsV_getpropertyx(js_State *J, js_Object *obj, const char *name, int *own)
+ {
+ 	*own = 1;
+ 	do {
+-		js_Property *ref = lookup(obj->properties, name);
++		js_Property *ref = lookup(J, obj->properties, name);
+ 		if (ref)
+ 			return ref;
+ 		obj = obj->prototype;
+@@ -199,7 +217,7 @@
+ js_Property *jsV_getproperty(js_State *J, js_Object *obj, const char *name)
+ {
+ 	do {
+-		js_Property *ref = lookup(obj->properties, name);
++		js_Property *ref = lookup(J, obj->properties, name);
+ 		if (ref)
+ 			return ref;
+ 		obj = obj->prototype;
+@@ -210,7 +228,7 @@
+ static js_Property *jsV_getenumproperty(js_State *J, js_Object *obj, const char *name)
+ {
+ 	do {
+-		js_Property *ref = lookup(obj->properties, name);
++		js_Property *ref = lookup(J, obj->properties, name);
+ 		if (ref && !(ref->atts & JS_DONTENUM))
+ 			return ref;
+ 		obj = obj->prototype;
+@@ -223,7 +241,7 @@
+ 	js_Property *result;
+ 
+ 	if (!obj->extensible) {
+-		result = lookup(obj->properties, name);
++		result = lookup(J, obj->properties, name);
+ 		if (J->strict && !result)
+ 			js_typeerror(J, "object is non-extensible");
+ 		return result;
+diff -ru a/mujs/jsrepr.c b/mujs/jsrepr.c
+--- a/mujs/jsrepr.c	2026-11-02 20:34:58.059547946 +0100
++++ b/mujs/jsrepr.c	2026-11-02 19:50:39.348858284 +0100
+@@ -14,7 +14,7 @@
+ 
+ static void reprstr(js_State *J, js_Buffer **sb, const char *s)
+ {
+-	static const char *HEX = "0123456789ABCDEF";
++	static const char HEX[] = "0123456789ABCDEF";
+ 	int i, n;
+ 	Rune c;
+ 	js_putc(J, sb, '"');
+diff -ru a/mujs/jsrun.c b/mujs/jsrun.c
+--- a/mujs/jsrun.c	2026-11-02 20:34:58.059573758 +0100
++++ b/mujs/jsrun.c	2026-11-02 20:27:30.241164769 +0100
+@@ -37,15 +37,32 @@
+ 
+ static void js_runlimit(js_State *J)
+ {
++	/* Browser 9300: the host may grant more instructions (it checks the clock) */
++	if (J->limithook) {
++		int more = J->limithook(J->limitctx);
++		if (more > 1) {
++			J->runlimit = more;
++			return;
++		}
++	}
++	J->runlimit = 2;	/* stays used up: throws again at once */
++	J->killed = 1;		/* and js_throw passes the script's own catch blocks by */
+ 	STACK[TOP].t.type = JS_TLITSTR;
+ 	STACK[TOP].u.litstr = "script ran too long";
+ 	++TOP;
+ 	js_throw(J);
+ }
+ 
++void js_setlimithook(js_State *J, int (*hook)(void *ctx), void *ctx)
++{
++	J->limithook = hook;
++	J->limitctx = ctx;
++}
++
+ void js_setlimit(js_State *J, int runlimit, int memlimit)
+ {
+ 	J->runlimit = runlimit;
++	J->killed = 0;
+ 	J->memlimit = memlimit;
+ }
+ 
+@@ -219,10 +236,10 @@
+ 
+ static js_Value *stackidx(js_State *J, int idx)
+ {
+-	static js_Value undefined = { { {0}, JS_TUNDEFINED } };
++
+ 	idx = idx < 0 ? TOP + idx : BOT + idx;
+ 	if (idx < 0 || idx >= TOP)
+-		return &undefined;
++		return J->undefval;
+ 	return STACK + idx;
+ }
+ 
+@@ -1468,6 +1485,11 @@
+ 
+ void js_throw(js_State *J)
+ {
++	/* Browser 9300: a script stopped for running too long skips its own try / catch / finally
++	 * (the frames with a pc) and goes straight back to the host's js_pcall */
++	if (J->killed)
++		while (J->trytop > 0 && J->trybuf[J->trytop - 1].pc)
++			--J->trytop;
+ 	if (J->trytop > 0) {
+ 		js_Value v = *stackidx(J, -1);
+ 		--J->trytop;
+diff -ru a/mujs/jsstate.c b/mujs/jsstate.c
+--- a/mujs/jsstate.c	2026-11-02 20:34:58.059791645 +0100
++++ b/mujs/jsstate.c	2026-11-02 19:51:29.827019496 +0100
+@@ -313,6 +313,13 @@
+ 		return NULL;
+ 	}
+ 
++	if (!jsS_initsentinel(J) || !jsV_initsentinel(J)) {
++		if (J->ssent) alloc(actx, J->ssent, 0);
++		alloc(actx, J->stack, 0);
++		alloc(actx, J, 0);
++		return NULL;
++	}
++
+ 	J->gcmark = 1;
+ 	J->nextref = 0;
+ 	J->gcthresh = 0; /* reaches stability within ~ 2-5 GC cycles */
+diff -ru a/mujs/jsvalue.c b/mujs/jsvalue.c
+--- a/mujs/jsvalue.c	2026-11-02 20:34:58.059960904 +0100
++++ b/mujs/jsvalue.c	2026-11-02 20:08:41.233424520 +0100
+@@ -285,7 +285,11 @@
+ 			return js_itoa(buf, i);
+ 	}
+ 
+-	ndigits = js_grisu2(f, digits, &exp);
++	{
++		/* Browser 9300: the shortest closest digits (js/bwlibc.c), not Grisu2's */
++		extern int bwc_shortest(double v, char *buffer, int *K);
++		ndigits = bwc_shortest(f < 0 ? -f : f, digits, &exp);
++	}
+ 	point = ndigits + exp;
+ 
+ 	if (signbit(f))
+diff -ru a/mujs/mujs.h b/mujs/mujs.h
+--- a/mujs/mujs.h	2026-11-02 20:34:58.060421505 +0100
++++ b/mujs/mujs.h	2026-11-02 20:01:54.517275174 +0100
+@@ -57,6 +57,7 @@
+ void js_freestate(js_State *J);
+ void js_gc(js_State *J, int report);
+ void js_setlimit(js_State *J, int runlimit, int memlimit);
++void js_setlimithook(js_State *J, int (*hook)(void *ctx), void *ctx); /* Browser 9300 */
+ 
+ int js_dostring(js_State *J, const char *source);
+ int js_dofile(js_State *J, const char *filename);

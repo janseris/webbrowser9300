@@ -1,0 +1,16 @@
+b_inline.js	1760
+b_json.js	72038.5
+b_loop.js	670626
+b_obj.js	3100
+b_str.js	77770
+c_dates.js	2026 2 3 13 45 2 2000-02-29T12:00:00.000Z 2 86400000 number 0 true
+c_deep.js	300 1 203 1 1359 caught
+c_errors.js	true,boom,fin,ReferenceError,7,SyntaxError,bottom
+c_functions.js	0,1,4,9,16 2432902008176640000 150 2 true 5 9 3 11
+c_math.js	-2 0 3 -2 3 Infinity 1024 0.01 1.4142135624 0.5000000000 1 0.7853981634 2.7182818285 2.3025850930 3 1 -1 1.5 NaN NaN Infinity -Infinity 0.5463024898 1.0471975512 1.414213562373
+c_memory.js	20000 4 20000
+c_numbers.js	0.30000000000000004 0.3333333333333333 1e+21 123456789012 0 2e-7 ff 0.0000012 1234.57 1.00 1.235e+2 3.14 31 1000 5e-324 1.7976931348623157e+308 11001 0.000001 1e-7 33 -4 15 2147483648 13 100
+c_objects.js	a,c 3 true false 11025 1,2,5,10 1 true object function 1,2,3 13 6 1,2,3 {"a":[1,"two",{"b":null}],"c":true,"d":1.5e-7} zč [object Array]
+c_regexp.js	02.11.2026|true|3|bar,baz|120|a<1>b<2>c<3>|true|4
+c_runaway.js	error: script ran too long
+c_strings.js	HELLO, WORLD|c+b+a|cd|ef|x|120|č|a%20b%26%C4%8D|š |2|4|aa|abcd1|y|9

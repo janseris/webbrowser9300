@@ -1,0 +1,15 @@
+// MuJS (js/mujs, with the Browser 9300 changes) and its small C library (js/bwlibc.c) as a static
+// library: its own include path (js/shim's libc headers), kept away from the app's C++ files.
+TARGET            mujs.lib
+TARGETTYPE        lib
+
+OPTION GCC        -O2
+
+SOURCEPATH        ..\js\mujs
+SOURCE            one.c
+
+SOURCEPATH        ..\js
+SOURCE            bwlibc.c
+
+USERINCLUDE       ..\js\shim ..\js\mujs
+SYSTEMINCLUDE     ..\js\shim

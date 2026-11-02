@@ -19,6 +19,37 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.34** (not yet run on the phone): **the JavaScript engine is in**, not yet used by pages:
+  **Tools > JavaScript test** (`about:js`, `src/jsplat.cpp`) runs 16 scripts on the phone (the five
+  benchmarks, numbers, Math, strings, regular expressions, errors, closures, dates, objects / JSON,
+  memory, deep nesting, a runaway loop) and checks each result against Node's, with its time and heap.
+  - **MuJS** (`js/mujs`, ES5) with no writable static data (the AA-tree and string sentinels and
+    the undefined value live in the `js_State`), built as `mujs.lib` (`group/mujs.mmp`) with its own
+    include path: `js/shim`'s libc headers map every libc name to a `bwc_` function, so nothing
+    clashes with Symbian's headers.
+  - **Its C library** (`js/bwlibc.c`, C, tested on the PC against glibc): strings, `setjmp` in ARM
+    assembly, the IEEE helpers, the six GCC 64-bit / unsigned helpers EUSER lacks (`__udivdi3`,
+    `__umoddi3`, `__cmpdi2`, `__floatdidf`, `__fixunsdfdi`, `__fixunsdfsi`), and a `vsnprintf`
+    with exact `%f %e %g` (the double expanded to all its decimal digits). The platform half
+    (`src/jsplat.cpp`): User:: heap, Math::, the clock, the time zone from TLocale.
+  - **Number fixes MuJS needed** (stock MuJS gets these wrong on a PC too): a correctly rounded
+    `strtod` (it read 5e-324 as 0 and 1.7976931348623157e308 an ulp off); the shortest-closest
+    digits for Number to String (Grisu2 printed 0.1 + 0.2 as 0.30000000000000007); toFixed /
+    toExponential / toPrecision round half up as JavaScript says ((12.5).toFixed(0) is 13), and
+    toPrecision switches to exponents only below 1e-6. Checked: 716 000 formatting / parsing cases
+    against glibc, 300 000 doubles against Python's repr, 0 differences.
+  - **Safety**: scripts run on their own thread with a 256 KB stack (a regular expression needs
+    ~35 KB, each nested call ~150 bytes, 1024 deep at most), sharing the heap while the app waits;
+    a crash there ends only that thread. The engine's heap stops at the free RAM less 512 KB (or
+    16 MB): "out of memory" stops the script, not the browser. A time limit (the clock checked every
+    100 000 instructions) stops a script, and then its own catch / finally blocks are skipped. Error
+    stack traces keep the 24 innermost calls (a 1000-deep one took 15 MB).
+  - Checked in the ARM emulator as the phone builds it (`js/test/emu`: GCC 2.9 -O2, the shim,
+    the six helpers): all 16 right.
+  - Not in MuJS (ES5): `substr`, `startsWith`, `includes`, `Object.assign`, `Array.from`, `Map`,
+    `Promise`, arrow functions, `let` / `const`, classes. Next (0.35): inline scripts and
+    `document.write` while a page is parsed, a little `window` / `document` / `location`, the
+    common missing methods, View > JavaScript.
 - **0.33** (not yet run on the phone): the address bar is the phone's own combo box again, with its
   own buttons, as in 0.28: 0.29's subclass (`EBrCtAddressCombo`, a custom control to keep Go on top)
   panicked BAFL 4 (a resource read past its end) when Go to was pressed. Native controls stay native.

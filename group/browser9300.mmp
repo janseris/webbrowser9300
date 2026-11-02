@@ -10,7 +10,7 @@ EPOCSTACKSIZE     0x5000
 OPTION GCC        -O2
 
 SOURCEPATH        ..\src
-SOURCE            app.cpp view.cpp loader.cpp net.cpp images.cpp fonts.cpp settings.cpp util.cpp speed.cpp jpegdec.cpp pngdec.cpp jpegasm.c
+SOURCE            app.cpp view.cpp loader.cpp net.cpp images.cpp fonts.cpp settings.cpp util.cpp speed.cpp jsplat.cpp jpegdec.cpp pngdec.cpp jpegasm.c
 
 SOURCEPATH        ..\core
 SOURCE            igutil.c igarm.c ighttp.c bwurl.c bwcharset.c bwhtml.c bwform.c bwlayout.c bwcookie.c bwico.c bwstream.c
@@ -24,5 +24,6 @@ SYSTEMINCLUDE     \epoc32\include
 LIBRARY           euser.lib apparc.lib cone.lib eikcore.lib eikcoctl.lib eikdlg.lib eikctl.lib
 LIBRARY           bafl.lib efsrv.lib gdi.lib ws32.lib fbscli.lib bitgdi.lib imageconversion.lib apgrfx.lib
 LIBRARY           etext.lib hal.lib esock.lib insock.lib commdb.lib securesocket.lib ezlib.lib
+STATICLIBRARY     mujs.lib                     // group/mujs.mmp: the JavaScript engine
 
 AIF               browser9300.aif ..\aif browseraif.rss c16 icon25.bmp icon25_mask.bmp icon64.bmp icon64_mask.bmp
