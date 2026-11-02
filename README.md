@@ -19,6 +19,13 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.32** (not yet run on the phone): **Tools > Speed test** (`about:speed`, `src/speed.cpp`): the
+  phone's own time for a double add / subtract / multiply / divide, int <-> double, compare, an int
+  divide, and a 4 KB copy (our assembly vs Mem::Copy), each looped until it takes 0.3 s less the same
+  loop without it; shown as a page (ns, cycles at 150 MHz, next to GCC's own soft float in the
+  emulator) and in the log. For the JavaScript engine choice (`webbrowser9300/jsbench`): every JS
+  number is a double, and the SDK has only EUSER's import library, so its speed can only be
+  measured on the phone.
 - **0.31** (not yet run on the phone): pictures decoded by Maps 9300's own decoders
   (`src/pngdec.cpp`, `src/jpegdec.cpp`, `src/jpegasm.c`, copied from `maps9300` 1.19; the IDCT is
   FFmpeg's simple IDCT via mp4player9300, LGPL-2.1-or-later). In Maps the phone's ICL took a median

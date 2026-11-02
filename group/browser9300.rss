@@ -130,6 +130,7 @@ RESOURCE MENU_PANE r_br_menu_tools
         MENU_ITEM { command = EBrCmdShowLog; txt = "Show the log"; },
         MENU_ITEM { command = EBrCmdShowPrevLog; txt = "Show the previous log"; },
         MENU_ITEM { command = EBrCmdScreenshot; txt = "Send a screenshot"; },
+        MENU_ITEM { command = EBrCmdSpeedTest; txt = "Speed test"; },
         MENU_ITEM { command = EBrCmdServer; txt = "PC server address..."; flags = EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdLogging; txt = "Logging"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdPromptAp; txt = "Ask for the access point"; flags = EEikMenuItemCheckBox; },

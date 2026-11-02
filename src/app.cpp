@@ -892,6 +892,7 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
         case EBrCmdSendLog: SendLogL(); break;
         case EBrCmdShowLog: IgLogFlush(); OpenUrlL(_L8("about:log")); break;
         case EBrCmdShowPrevLog: OpenUrlL(_L8("about:prevlog")); break;
+        case EBrCmdSpeedTest: StepNow(_L("Measuring the speed (about 10 s)...")); OpenUrlL(_L8("about:speed")); break;
         case EBrCmdSendPrevLog:
             {
             iHelperOp = EHelperLog;
@@ -2484,6 +2485,7 @@ void CBrAppUi::ShowInternalL(const TDesC8& aUrl)
         return;
         }
     else if (u.CompareF(_L8("about:prevlog")) == 0) body = LogPageLC(ETrue);
+    else if (u.CompareF(_L8("about:speed")) == 0) body = BrSpeedTestPageLC();
     else body = StartPageLC();
     iNavigatingHistory = iNavigatingHistory && iHistoryPos >= 0;
     AddHistoryL(u);

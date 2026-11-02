@@ -53,7 +53,8 @@ enum TBrCommands
     EBrCmdBarSide,
     EBrCmdBarWide,
     EBrCmdAddrList,                 // the address bar's second button: the pages visited
-    EBrCmdDesktop
+    EBrCmdDesktop,
+    EBrCmdSpeedTest
     };
 
 // the address bar's combo box (CBrCombo: the phone's, without the Change button on top)
