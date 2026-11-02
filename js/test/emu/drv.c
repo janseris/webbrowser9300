@@ -112,3 +112,17 @@ int mj_run(js_State* J, const char* src, int slices)
 int mj_result(js_State* J) { return (int)js_tostring(J, -1); }
 int mj_pop(js_State* J) { js_pop(J, 1); return 0; }
 int mj_free(js_State* J) { js_freestate(J); return 0; }
+
+/* a page's scripts: the page at src, its length; returns the BwJsPage (out / say readable) */
+#include "bwhost.h"
+int mj_page(js_State* J, const char* src, int len)
+{
+    BwJsPage* pg = (BwJsPage*)bwc_malloc(sizeof(BwJsPage));
+    bwc_memset(pg, 0, sizeof(BwJsPage));
+    pg->html = src; pg->len = (unsigned int)len;
+    pg->href = "https://example.cz/a/b.html?x=1#top"; pg->ua = "Mozilla/5.0 (Series80/2.0; Nokia9300) Browser9300/0.38";
+    pg->ref = ""; pg->lang = "cs"; pg->w = 640; pg->h = 200;
+    H->slices = 30;
+    bw_js_page(J, pg);
+    return (int)pg;
+}

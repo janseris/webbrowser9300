@@ -21,6 +21,7 @@ CBrSettings::CBrSettings(RFs& aFs) : iFs(aFs)
     iTextSize = 0;
     iFullSize = EFalse;
     iDesktop = EFalse;
+    iJs = ETrue;
     iStatsOn = ETrue;
     iBar = 100;
     iPromptAccessPoint = EFalse;
@@ -59,6 +60,7 @@ void CBrSettings::LoadL()
         else if (key == _L8("full")) iFullScreen = val == _L8("1");
         else if (key == _L8("fullsize")) iFullSize = val == _L8("1");
         else if (key == _L8("desktop")) iDesktop = val == _L8("1");
+        else if (key == _L8("js")) iJs = val != _L8("0");
         else if (key == _L8("stats")) iStatsOn = val == _L8("1");
         else if (key == _L8("bar")) { TLex8 l(val); TInt v; if (l.Val(v) == KErrNone && (v == 0 || v == 80 || v == 100 || v == 130)) iBar = v; }
         else if (key == _L8("prompt")) iPromptAccessPoint = val == _L8("1");
@@ -82,6 +84,7 @@ void CBrSettings::Save()
     d.Append(_L8("\r\nfull=")); d.AppendNum(iFullScreen ? 1 : 0);
     d.Append(_L8("\r\nfullsize=")); d.AppendNum(iFullSize ? 1 : 0);
     d.Append(_L8("\r\ndesktop=")); d.AppendNum(iDesktop ? 1 : 0);
+    d.Append(_L8("\r\njs=")); d.AppendNum(iJs ? 1 : 0);
     d.Append(_L8("\r\nstats=")); d.AppendNum(iStatsOn ? 1 : 0);
     d.Append(_L8("\r\nbar=")); d.AppendNum(iBar);
     d.Append(_L8("\r\nprompt=")); d.AppendNum(iPromptAccessPoint ? 1 : 0);

@@ -48,6 +48,10 @@ int bw_charset_byte(int cs, unsigned short u);
 /* Looks for the charset in a Content-Type value or the first bytes of a page (meta charset /
  * http-equiv); -1 if none is named. */
 int bw_charset_sniff(const char* contentType, const char* data, unsigned int len);
+/* an 8-bit page as UTF-8 (ig_malloc'ed, zero-terminated), for its scripts; NULL: out of memory */
+char* bw_charset_to_utf8(int cs, const char* data, unsigned int len, unsigned int* outLen);
+/* the charset bw_doc_parse reads data in (cs: forced, or -1) */
+int bw_doc_charset(const char* data, unsigned int len, const char* contentType, int cs);
 
 /* ---------------------------------------------------------------- fonts */
 /* A font id: bit 0 bold, bit 1 italic, bit 2 monospace, bits 3-4 size (0 small, 1 normal,

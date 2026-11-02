@@ -1,0 +1,20 @@
+<html><head><title>t</title>
+<script type="text/javascript"><!--
+var greet = 'Ahoj';
+document.write('<meta name="x" content="' + navigator.userAgent.substr(0, 7) + '">');
+//--></script>
+</head><body>
+<p>Before <script>document.write('<b>' + greet + ' ' + location.hostname + location.pathname + '</b>');</script> after.</p>
+<script>document.write('<scr' + 'ipt>document.write("<i>nested " + (1+1) + "</i>")</scr' + 'ipt>'); document.write(' [then]');</script>
+<noscript><p>No JS here</p><script>document.write('NOT RUN')</script></noscript>
+<!-- <script>document.write('IN A COMMENT')</script> -->
+<script type="application/ld+json">{"a": 1}</script>
+<script src="ext.js"></script>
+<script>var y = undefinedThing.x; document.write('never');</script>
+<script>document.write([1,2,3].includes(2), ' ', 'abc'.startsWith('ab'), ' ', Object.assign({}, {q: 5}).q, ' ', escape('a b'), ' ', [5,6].find(function (v) { return v > 5; }));</script>
+<script>var e = document.createElement('div'); e.innerHTML = 'x'; document.body.appendChild(e); document.getElementById('nope'); alert('hello'); console.log('logged', 42);</script>
+<textarea><script>document.write('NOT RUN either')</script></textarea>
+<script>document.writeln('<p>Date ok: ' + (new Date().getFullYear() > 2000) + '</p>')</script>
+<script>for(;;){}</script>
+<script>document.write('after the runaway: should not run')</script>
+</body></html>

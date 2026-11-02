@@ -96,6 +96,7 @@ RESOURCE MENU_PANE r_br_menu_view
     {
     items =
         {
+        MENU_ITEM { command = EBrCmdJs; txt = "JavaScript"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdDesktop; txt = "Desktop pages"; flags = EEikMenuItemCheckBox | EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdImages; txt = "Load pictures"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdStyles; txt = "Load stylesheets"; flags = EEikMenuItemCheckBox; },

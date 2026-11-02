@@ -3869,6 +3869,26 @@ static void done_parser(P* p)
     free_rules(p);
 }
 
+/* The charset the page is read in: cs (forced) if >= 0, else the one the Content-Type or the page
+ * names, else UTF-8 if the bytes are valid UTF-8, else windows-1250 (Czech pages) */
+int bw_doc_charset(const char* data, unsigned int len, const char* contentType, int cs)
+{
+    if (cs < 0) cs = bw_charset_sniff(contentType, data, len);
+    if (cs < 0) {
+        unsigned int i = 0, bad = 0, multi = 0;
+        while (i < len && i < 65536) {
+            unsigned char c = (unsigned char)data[i];
+            if (c < 0x80) { i++; continue; }
+            if ((c & 0xE0) == 0xC0 && i + 1 < len && ((unsigned char)data[i + 1] & 0xC0) == 0x80) { i += 2; multi++; }
+            else if ((c & 0xF0) == 0xE0 && i + 2 < len && ((unsigned char)data[i + 1] & 0xC0) == 0x80 && ((unsigned char)data[i + 2] & 0xC0) == 0x80) { i += 3; multi++; }
+            else if ((c & 0xF8) == 0xF0 && i + 3 < len) { i += 4; multi++; }
+            else { bad++; i++; }
+        }
+        cs = (bad == 0 || multi > bad * 4) ? BW_CS_UTF8 : BW_CS_1250;
+    }
+    return cs;
+}
+
 BwDoc* bw_doc_parse(const char* data, unsigned int len, const char* url, const char* contentType, int cs)
 {
     return bw_doc_parse_ex(data, len, url, contentType, cs, 0, 0, 0);
@@ -3886,20 +3906,7 @@ BwDoc* bw_doc_parse_hover(const char* data, unsigned int len, const char* url, c
 {
     BwDoc* d;
     P* p;
-    if (cs < 0) cs = bw_charset_sniff(contentType, data, len);
-    if (cs < 0) {
-        /* no charset named: UTF-8 if the bytes are valid UTF-8, else windows-1250 (Czech pages) */
-        unsigned int i = 0, bad = 0, multi = 0;
-        while (i < len && i < 65536) {
-            unsigned char c = (unsigned char)data[i];
-            if (c < 0x80) { i++; continue; }
-            if ((c & 0xE0) == 0xC0 && i + 1 < len && ((unsigned char)data[i + 1] & 0xC0) == 0x80) { i += 2; multi++; }
-            else if ((c & 0xF0) == 0xE0 && i + 2 < len && ((unsigned char)data[i + 1] & 0xC0) == 0x80 && ((unsigned char)data[i + 2] & 0xC0) == 0x80) { i += 3; multi++; }
-            else if ((c & 0xF8) == 0xF0 && i + 3 < len) { i += 4; multi++; }
-            else { bad++; i++; }
-        }
-        cs = (bad == 0 || multi > bad * 4) ? BW_CS_UTF8 : BW_CS_1250;
-    }
+    cs = bw_doc_charset(data, len, contentType, cs);
     if (len >= 3 && cs == BW_CS_UTF8 && (unsigned char)data[0] == 0xEF && (unsigned char)data[1] == 0xBB && (unsigned char)data[2] == 0xBF) {
         data += 3; len -= 3;
     }

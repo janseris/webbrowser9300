@@ -29,13 +29,16 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.37");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.37");
+_LIT(KBrVersion, "0.38");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.38");
 // View > Desktop pages: a desktop browser's, so sites send the layout for a wide screen (the mobile
 // ones are made for portrait phones); the version stays at the end
-_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.37");
+_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.38");
 const TDesC8& BrUserAgent();
-HBufC8* BrJsTestPageLC();             // about:js (jsplat.cpp): the JavaScript engine's self-test
+HBufC8* BrJsTestPageLC();
+// a page's inline scripts (jsplat.cpp): the page with each script replaced by what it wrote, NULL
+// if they wrote nothing; aSummary for the status / log
+HBufC8* BrRunPageScriptsL(const TDesC8& aHtml, const TDesC8& aUrl, const TDesC8& aUserAgent, TDes& aSummary);             // about:js (jsplat.cpp): the JavaScript engine's self-test
 HBufC8* BrSpeedTestPageLC();           // about:speed (speed.cpp): the phone's double / int / copy timings            // the one the settings ask for
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
@@ -414,6 +417,7 @@ public:
     TInt iTextSize;                 // -1, 0, 1
     TBool iFullSize;                // View > Original size: laid out 1024 px wide, scrolls sideways
     TBool iDesktop;                 // View > Desktop pages: the desktop User-Agent
+    TBool iJs;                      // View > JavaScript: run a page's inline scripts (on by default)
     TBool iStatsOn;                 // View > CPU and RAM (on by default)
     TInt iBar;                      // View > Bar: 0 top, else the side bar's width (80 / 100 / 130)
     TBool iPromptAccessPoint;
@@ -713,12 +717,19 @@ public:
 
 private:
     void ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus, TBool aReparse = EFalse);
-    BwDoc* ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl, const char* aCt, TBool aReparse);
+    BwDoc* ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl, const char* aCt, TBool aReparse, TInt aCs);
+    void RunScriptsL(const TDesC8& aUrl, const TDesC8& aBody, const char* aCt, const TDesC8*& aHtml, TInt& aCs);
     TInt FindCss(const TDesC8& aUrl) const;
     void FindL(TBool aNext);
     void CopyAddressL();
     TBuf<80> iPageStatus;               // the page's part of the status (stage, KB, the result)
     TInt iForceCs;                      // the encoding chosen by hand for this page (-1: automatic)
+    // the last page after its scripts (UTF-8), for the same body read again (stylesheets came)
+    HBufC8* iScriptedBody;              // NULL: the scripts wrote nothing (the body as it is)
+    TBool iScriptedValid;
+    TUint32 iScriptedKey;
+    TInt iScriptedLen;
+    TInt iScriptedForceCs;
     TInt iHover[32];                    // the element under the pointer and its ancestors (:hover)
     TUint iHoverCount;
     void ShowInternalL(const TDesC8& aUrl);

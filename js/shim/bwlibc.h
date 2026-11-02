@@ -59,6 +59,7 @@ void* bwc_memcpy(void* d, const void* s, size_t n);
 void* bwc_memmove(void* d, const void* s, size_t n);
 void* bwc_memset(void* d, int c, size_t n);
 int bwc_memcmp(const void* a, const void* b, size_t n);
+void* bwc_memchr(const void* s, int c, size_t n);
 size_t bwc_strlen(const char* s);
 int bwc_strcmp(const char* a, const char* b);
 int bwc_strncmp(const char* a, const char* b, size_t n);
@@ -71,6 +72,7 @@ char* bwc_strcat(char* d, const char* s);
 #define memmove bwc_memmove
 #define memset bwc_memset
 #define memcmp bwc_memcmp
+#define memchr bwc_memchr
 #define strlen bwc_strlen
 #define strcmp bwc_strcmp
 #define strncmp bwc_strncmp

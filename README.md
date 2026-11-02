@@ -19,6 +19,24 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.38** (not yet run on the phone): **pages' inline scripts run** (View > JavaScript, on by
+  default, at the top of the menu; it reloads the page). Before a page is read, its `<script>`
+  elements run in order on the JavaScript thread (`js/bwhost.c`) and each is replaced by what it
+  wrote with `document.write`; written text with a script in it is read again, so its scripts run
+  too, in a browser's order. Skipped: external scripts (`src`, not loaded yet), non-JS types (JSON,
+  templates, modules), anything in comments, noscript (still shown), textarea, xmp, style. An
+  error ends that script only (the log has it, with `alert` and `console.log`); 8 s and the RAM
+  limit for all of a page's scripts. A page in another encoding is read as UTF-8 for them. Once
+  per page: when its stylesheets arrive, the result is reused. The world they see
+  (`js/prelude.js`): `window`, `location` (from the URL), `navigator` (the User-Agent sent),
+  `screen` 640 x 200, `document.write` / `writeln`, `alert` / `confirm` / `console` into the log,
+  timers that never fire, `localStorage` for the page; no DOM yet: `getElementById` gives null,
+  created elements take any call and change nothing. Added to MuJS's ES5: `substr`, `trimStart`
+  / `End`, `startsWith`, `endsWith`, `includes`, `repeat`, `padStart` / `End`, `find`,
+  `findIndex`, `fill`, `Array.from` / `of`, `Object.assign` / `values` / `entries`,
+  `Number.isNaN` / `isInteger` / ..., `Math.sign` / `trunc` / `log10` / ..., `escape`, `unescape`.
+  Checked on a PC (`js/test/pagetest.c`, `page1.html`) and in the ARM emulator as the phone builds
+  it (`js/test/emu/run_page.py`: the same page out); about 30 ms a page for the setup.
 - **0.37** (not yet run on the phone): 0.36 crashed (KERN-EXEC 3) when the JavaScript test wrote
   its log: `l.Append(at ? _L8("   ...") : aLabel)`, the GCC 2.9 ternary that slices a `TPtrC8`
   temporary mixed with a `const TDesC8&` (0.28's Wikipedia crash). An if / else now.

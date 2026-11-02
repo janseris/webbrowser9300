@@ -68,6 +68,13 @@ int bwc_memcmp(const void* a, const void* b, size_t n)
     return 0;
 }
 
+void* bwc_memchr(const void* s, int c, size_t n)
+{
+    const unsigned char* p = s;
+    for (; n; n--, p++) if (*p == (unsigned char)c) return (void*)p;
+    return 0;
+}
+
 size_t bwc_strlen(const char* s)
 {
 #ifdef BWC_HOST

@@ -394,3 +394,103 @@ HBufC8* BrJsTestPageLC()
     CleanupStack::PushL(h);
     return h;
     }
+
+// ------------------------------------------------------------------ a page's scripts
+
+#include "bwhost.h"
+
+extern "C" int bw_js_page(js_State* J, BwJsPage* pg);
+
+const TInt KJsPageMs = 8000;           // all of a page's scripts together
+
+struct TJsPageJob
+    {
+    BwJsPage iPage;
+    TJsCtx iCtx;
+    TInt iResult;      // -1: no engine / the prelude failed
+    };
+
+static void PageOnThread(TAny* aJob)
+    {
+    TJsPageJob* job = (TJsPageJob*)aJob;
+    JsInitCtx(job->iCtx, KJsPageMs);
+    js_State* J = JsNew(job->iCtx);
+    if (!J) { job->iResult = -1; return; }
+    job->iResult = bw_js_page(J, &job->iPage);
+    js_freestate(J);
+    }
+
+static char* ZeroTerm(const TDesC8& aText)
+    {
+    char* z = (char*)User::Alloc(aText.Length() + 1);
+    if (!z) return NULL;
+    Mem::Copy(z, aText.Ptr(), aText.Length());
+    z[aText.Length()] = 0;
+    return z;
+    }
+
+HBufC8* BrRunPageScriptsL(const TDesC8& aHtml, const TDesC8& aUrl, const TDesC8& aUserAgent, TDes& aSummary)
+    {
+    TJsPageJob* job = (TJsPageJob*)User::Alloc(sizeof(TJsPageJob));
+    if (!job) User::Leave(KErrNoMemory);
+    Mem::FillZ(job, sizeof(TJsPageJob));
+    char* url = ZeroTerm(aUrl);
+    char* ua = ZeroTerm(aUserAgent);
+    job->iPage.html = (const char*)aHtml.Ptr();
+    job->iPage.len = aHtml.Length();
+    job->iPage.href = url;
+    job->iPage.ua = ua;
+    job->iPage.ref = "";
+    job->iPage.lang = "cs";
+    job->iPage.w = 640;
+    job->iPage.h = 200;
+    TBuf<80> why;
+    TUint32 t0 = JsMs();
+    TInt err = url && ua ? RunOnJsThread(PageOnThread, job, why) : KErrNoMemory;
+    TInt ms = (TInt)(JsMs() - t0);
+    User::Free(url);
+    User::Free(ua);
+    BwJsPage& pg = job->iPage;
+    HBufC8* result = NULL;
+    if (err == KErrNone && pg.out) result = HBufC8::New(pg.outLen);
+    if (result) result->Des().Copy((const TUint8*)pg.out, pg.outLen);
+    if (err != KErrNone) aSummary.Format(_L("Scripts: the engine %S"), &why);
+    else if (job->iResult < 0) aSummary.Copy(_L("Scripts: no memory for the engine"));
+    else
+        {
+        aSummary.Format(_L("Scripts: %d run"), pg.run);
+        if (pg.failed) aSummary.AppendFormat(_L(", %d failed"), pg.failed);
+        if (pg.external) aSummary.AppendFormat(_L(", %d external not loaded"), pg.external);
+        if (pg.stopped) aSummary.Append(_L(", stopped (time / memory)"));
+        aSummary.AppendFormat(_L(", %d ms"), ms);
+        }
+    if (IgLogEnabled())
+        {
+        IgLog(aSummary);
+        TBuf<120> l;
+        l.Format(_L("js page: %d B written, heap peak %d KB"), pg.written, job->iCtx.iPeak / 1024);
+        IgLog(l);
+        if (pg.say)
+            {
+            TPtrC8 say((const TUint8*)pg.say, pg.sayLen);
+            while (say.Length())
+                {
+                TInt nl = say.Locate('\n');
+                TPtrC8 line(say);              // (no ?: with descriptors: GCC 2.9)
+                if (nl >= 0) line.Set(say.Left(nl));
+                TBuf8<200> l8;
+                l8.Append(_L8("js: "));
+                l8.Append(line.Left(190));
+                IgLog8(l8);
+                if (nl < 0) break;
+                say.Set(say.Mid(nl + 1));
+                }
+            }
+        IgLogFlush();
+        }
+    User::Free(pg.out);
+    User::Free(pg.say);
+    User::Free(job);
+    if (err == KErrNone && !result && pg.out) User::Leave(KErrNoMemory);
+    return result;
+    }

@@ -55,7 +55,8 @@ enum TBrCommands
     EBrCmdAddrList,                 // the address bar's second button: the pages visited
     EBrCmdDesktop,
     EBrCmdSpeedTest,
-    EBrCmdJsTest
+    EBrCmdJsTest,
+    EBrCmdJs
     };
 
 enum TBrControls

@@ -9,7 +9,7 @@ SOURCEPATH        ..\js\mujs
 SOURCE            one.c
 
 SOURCEPATH        ..\js
-SOURCE            bwlibc.c
+SOURCE            bwlibc.c bwhost.c
 
 USERINCLUDE       ..\js\shim ..\js\mujs
 SYSTEMINCLUDE     ..\js\shim

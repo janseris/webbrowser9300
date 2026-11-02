@@ -3,6 +3,7 @@
 // forms, downloads, and the PC helpers (update from the PC, log and screenshot upload).
 
 #include <eikenv.h>
+#include "bwhost.h"
 #include <eikmenup.h>
 #include <eikmenub.h>
 #include <eikbtgpc.h>
@@ -394,6 +395,7 @@ void CBrAppUi::EnsureCookies()
 
 CBrAppUi::~CBrAppUi()
     {
+    delete iScriptedBody;
     if (iSettings) iSettings->Save();
     SaveCookies();
     SaveVisits();
@@ -824,6 +826,13 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
             iSettings->Save();
             ApplyFullScreenL();
             break;
+        case EBrCmdJs:
+            iSettings->iJs = !iSettings->iJs;
+            iSettings->Save();
+            iScriptedValid = EFalse;
+            Say(iSettings->iJs ? _L("JavaScript: on") : _L("JavaScript: off"));
+            if (iCurrentUrl && iCurrentUrl->Left(6) != _L8("about:")) ReloadL();
+            break;
         case EBrCmdDesktop:
             iSettings->iDesktop = !iSettings->iDesktop;
             iSettings->Save();
@@ -944,6 +953,7 @@ void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
         aMenuPane->SetItemButtonState(EBrCmdFullScreen, iSettings->iFullScreen ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdFullSize, iSettings->iFullSize ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdDesktop, iSettings->iDesktop ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdJs, iSettings->iJs ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdMouse, iSettings->iMouseOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdStats, iSettings->iStatsOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdBarTop, iSettings->iBar == 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
@@ -1236,7 +1246,7 @@ void CBrAppUi::TrimHistoryCache()
 
 // The external stylesheets of a parsed page from the cache: parse again with them. The ones
 // not cached yet are fetched (unless this is the parse after they came).
-BwDoc* CBrAppUi::ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl, const char* aCt, TBool aReparse)
+BwDoc* CBrAppUi::ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl, const char* aCt, TBool aReparse, TInt aCs)
     {
     iStylesMissing = 0;
     if (!aReparse) iStylesGot = 0;
@@ -1273,7 +1283,7 @@ BwDoc* CBrAppUi::ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl
         }
     if (!cached) return aDoc;
     StepNow(_L("Applying the stylesheets..."));
-    BwDoc* d = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, iForceCs, css, len, aDoc->styleCount,
+    BwDoc* d = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, aCs, css, len, aDoc->styleCount,
                                   (const int*)iHover, iHoverCount, iSettings->iFullSize ? BW_PARSE_FULLSIZE : 0);
     if (!d) return aDoc;
     bw_doc_free(aDoc);
@@ -1335,6 +1345,51 @@ void CBrAppUi::ApplyArrivedStyles()
     if (err == KErrNone) iView->SetStatus(_L("Stylesheets applied"));
     }
 
+// A page's inline scripts, run once for a body (read again when its stylesheets come: the result
+// is kept): aHtml and aCs become the page as the scripts left it (UTF-8), or stay as they are when
+// there are none or they wrote nothing.
+void CBrAppUi::RunScriptsL(const TDesC8& aUrl, const TDesC8& aBody, const char* aCt, const TDesC8*& aHtml, TInt& aCs)
+    {
+    // FNV-1a of the body: the same page again?
+    TUint32 key = 2166136261u;
+    const TUint8* b = aBody.Ptr();
+    for (TInt i = 0; i < aBody.Length(); i++) key = (key ^ b[i]) * 16777619u;
+    if (iScriptedValid && iScriptedKey == key && iScriptedLen == aBody.Length() && iScriptedForceCs == iForceCs)
+        {
+        if (iScriptedBody) { aHtml = iScriptedBody; aCs = BW_CS_UTF8; }
+        return;
+        }
+    delete iScriptedBody;
+    iScriptedBody = NULL;
+    iScriptedValid = EFalse;
+    if (!bw_js_has_scripts((const char*)aBody.Ptr(), aBody.Length())) return;
+    StepNow(_L("Running the page's scripts..."));
+    TInt cs = bw_doc_charset((const char*)aBody.Ptr(), aBody.Length(), aCt, iForceCs);
+    HBufC8* utf8 = NULL;
+    const TDesC8* src = &aBody;
+    if (cs != BW_CS_UTF8)
+        {
+        unsigned int n = 0;
+        char* u = bw_charset_to_utf8(cs, (const char*)aBody.Ptr(), aBody.Length(), &n);
+        if (!u) User::Leave(KErrNoMemory);
+        utf8 = HBufC8::New(n);
+        if (utf8) utf8->Des().Copy((const TUint8*)u, n);
+        ig_free(u);
+        if (!utf8) User::Leave(KErrNoMemory);
+        src = utf8;
+        }
+    CleanupStack::PushL(utf8);
+    TBuf<120> sum;
+    HBufC8* out = BrRunPageScriptsL(*src, aUrl, BrUserAgent(), sum);
+    CleanupStack::PopAndDestroy(utf8);
+    iScriptedBody = out;
+    iScriptedValid = ETrue;
+    iScriptedKey = key;
+    iScriptedLen = aBody.Length();
+    iScriptedForceCs = iForceCs;
+    if (out) { aHtml = out; aCs = BW_CS_UTF8; }
+    }
+
 void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus, TBool aReparse)
     {
     if (!aReparse) { iStyles->Stop(); iHoverCount = 0; iView->ResetHover(); }
@@ -1365,9 +1420,13 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         doc = bw_doc_plain((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), iForceCs >= 0 ? iForceCs : bw_charset_sniff((const char*)zct->Ptr(), "", 0));
     else
         {
-        doc = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), iForceCs,
+        // its scripts first (View > JavaScript): the page as they left it, in UTF-8
+        const TDesC8* html = &aBody;
+        TInt cs = iForceCs;
+        if (iSettings->iJs) RunScriptsL(aUrl, aBody, (const char*)zct->Ptr(), html, cs);
+        doc = bw_doc_parse_hover((const char*)html->Ptr(), html->Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), cs,
                                  NULL, NULL, 0, (const int*)iHover, iHoverCount, iSettings->iFullSize ? BW_PARSE_FULLSIZE : 0);
-        if (doc) doc = ApplyStylesL(doc, aBody, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse);
+        if (doc) doc = ApplyStylesL(doc, *html, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse, cs);
         IgTrace(_L("parsed and styled"));
         }
     CleanupStack::PopAndDestroy(2);

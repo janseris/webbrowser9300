@@ -9,6 +9,7 @@ export EPOCROOT=$SYM/s80_20/ PATH=$SYM/wrap:$SYM/gcc539/bin:$PATH
 MINOR=$(sed -n 's/.*KBrVersion, "0\.\([0-9]*\)".*/\1/p' "$HERE/inc/browser.h")
 [ -n "$MINOR" ] || { echo "no version in inc/browser.h"; exit 1; }
 python3 "$HERE/js/tests/gen.py" >/dev/null     # src/jstests.h: the about:js scripts
+python3 "$HERE/js/genprelude.py" >/dev/null    # js/prelude.h: what a page's scripts find
 cd "$HERE/group"
 bldmake bldfiles >/dev/null 2>&1 || true   # ("Platform \"\" not supported" is harmless)
 abld reallyclean armi urel >/dev/null 2>&1 || true

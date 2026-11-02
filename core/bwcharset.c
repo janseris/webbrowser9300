@@ -100,3 +100,28 @@ int bw_charset_sniff(const char* contentType, const char* data, unsigned int len
     }
     return -1;
 }
+
+/* data in charset cs as UTF-8 (ig_malloc'ed, zero-terminated; NULL on out of memory) */
+char* bw_charset_to_utf8(int cs, const char* data, unsigned int len, unsigned int* outLen)
+{
+    unsigned int i, n = 0;
+    char* r;
+    for (i = 0; i < len; i++) {
+        unsigned char b = (unsigned char)data[i];
+        unsigned short u = b < 0x80 || cs == BW_CS_UTF8 ? b : bw_charset_char(cs, b);
+        n += u < 0x80 ? 1 : u < 0x800 ? 2 : 3;
+    }
+    r = (char*)ig_malloc(n + 1);
+    if (!r) return 0;
+    n = 0;
+    for (i = 0; i < len; i++) {
+        unsigned char b = (unsigned char)data[i];
+        unsigned short u = b < 0x80 || cs == BW_CS_UTF8 ? b : bw_charset_char(cs, b);
+        if (u < 0x80) r[n++] = (char)u;
+        else if (u < 0x800) { r[n++] = (char)(0xC0 | (u >> 6)); r[n++] = (char)(0x80 | (u & 0x3F)); }
+        else { r[n++] = (char)(0xE0 | (u >> 12)); r[n++] = (char)(0x80 | ((u >> 6) & 0x3F)); r[n++] = (char)(0x80 | (u & 0x3F)); }
+    }
+    r[n] = 0;
+    *outLen = n;
+    return r;
+}
