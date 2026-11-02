@@ -19,6 +19,9 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.33** (not yet run on the phone): the address bar is the phone's own combo box again, with its
+  own buttons, as in 0.28: 0.29's subclass (`EBrCtAddressCombo`, a custom control to keep Go on top)
+  panicked BAFL 4 (a resource read past its end) when Go to was pressed. Native controls stay native.
 - **0.32** (not yet run on the phone): **Tools > Speed test** (`about:speed`, `src/speed.cpp`): the
   phone's own time for a double add / subtract / multiply / divide, int <-> double, compare, an int
   divide, and a 4 KB copy (our assembly vs Mem::Copy), each looped until it takes 0.3 s less the same
@@ -66,7 +69,7 @@ receives logs (`localserver\ota_server.js`).
     sites send their desktop layout; the page reloads. Saved in the settings (`desktop=`).
   - **The log** appends what is new (it rewrote up to 60 KB at each trace: ~0.7 s a line with
     logging on) and keeps its file server session.
-- **0.29** (not yet run on the phone): the address bar's buttons: **Go** on top (as OK is in every
+- **0.29** (crashed on the phone, BAFL 4; undone in 0.33): the address bar's buttons: **Go** on top (as OK is in every
   Series 80 dialog), **History** (the pages visited, as Down) second, Cancel at the bottom. The
   phone's combo box put its Change button over the first button whenever it had the focus;
   the field is now `CBrCombo` (a custom control, `EBrCtAddressCombo`) whose `FocusChanged` takes

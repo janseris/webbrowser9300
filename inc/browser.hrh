@@ -57,9 +57,6 @@ enum TBrCommands
     EBrCmdSpeedTest
     };
 
-// the address bar's combo box (CBrCombo: the phone's, without the Change button on top)
-#define EBrCtAddressCombo 0x7100
-
 enum TBrControls
     {
     EBrTextField = 1,

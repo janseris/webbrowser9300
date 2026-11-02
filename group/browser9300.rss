@@ -161,28 +161,15 @@ RESOURCE DIALOG r_br_address_dialog
     {
     title = "Address";
     flags = EEikDialogFlagWait;
-    buttons = r_br_address_buttons;
+    buttons = R_EIK_BUTTONS_CANCEL_OK;
     items =
         {
         DLG_LINE
             {
-            type = EBrCtAddressCombo;
+            type = EEikCtComboBox;
             id = EBrTextField;
             control = COMBOBOX { width = 50; maxlength = 1000; maxarraysize = 40; };
             }
-        };
-    }
-
-// Go on top (the phone's combo box would put its Change there: CBrCombo gives the place back),
-// the list of the pages visited second
-RESOURCE CBA r_br_address_buttons
-    {
-    buttons =
-        {
-        CBA_BUTTON { id = EEikBidOk; txt = "Go"; },
-        CBA_BUTTON { id = EBrCmdAddrList; txt = "History"; },
-        CBA_BUTTON { id = EEikBidSpace; txt = ""; },
-        CBA_BUTTON { id = EEikBidCancel; txt = "Cancel"; }
         };
     }
 
