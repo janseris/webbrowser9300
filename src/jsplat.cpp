@@ -306,7 +306,10 @@ static void LogChunked(const TDesC8& aLabel, const char* aText)
     for (TInt at = 0; at < t.Length(); at += 150)
         {
         TBuf8<200> l;
-        l.Append(at ? _L8("   ...") : aLabel);
+        // (not "at ? _L8(..) : aLabel": GCC 2.9 slices that to a TDesC8 and loses the pointer,
+        // which crashed 0.36 with KERN-EXEC 3; see symbian-build/native9300/README.md)
+        if (at) l.Append(_L8("   ..."));
+        else l.Append(aLabel);
         l.Append(t.Mid(at, Min(150, t.Length() - at)));
         IgLog8(l);
         }

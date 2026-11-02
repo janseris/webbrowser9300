@@ -19,6 +19,9 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.37** (not yet run on the phone): 0.36 crashed (KERN-EXEC 3) when the JavaScript test wrote
+  its log: `l.Append(at ? _L8("   ...") : aLabel)`, the GCC 2.9 ternary that slices a `TPtrC8`
+  temporary mixed with a `const TDesC8&` (0.28's Wikipedia crash). An if / else now.
 - **0.36** (not yet run on the phone): 0.35 ran all 16 JavaScript tests on the phone, 14 right;
   the other two (c_math, c_numbers) had results longer than the 160 characters the test kept,
   so the cut result could not match: now 512, and the log has every whole result (and the
