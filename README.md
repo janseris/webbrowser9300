@@ -19,6 +19,12 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.27** (not yet run on the phone): finding the KERN-EXEC 3 on `en.m.wikipedia.org/wiki/Nokia_9300`.
+  0.26's log stopped after "pictures cleared", before "icon set". The page, its stylesheets, its
+  favicon and its headers all pass the PC tests (ASan, every allocation made to fail in turn), so
+  with Tools > Logging on this build logs every step from there to the layout and checks the heap
+  (RHeap::Check) at "page received", "parsed and styled", "pictures cleared" and "address kept":
+  "heap check: X" without "X" after it means the heap was already corrupt.
 - **0.26** (not yet run on the phone): a faster start. Work that isn't needed for the start page
   now waits until it is:
   - **The four HTTP clients** (page, pictures, stylesheets, the helper) open their socket server

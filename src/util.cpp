@@ -178,6 +178,18 @@ void IgTrace(const TDesC& aStep)
     IgLogFlush();
     }
 
+// The heap is checked first (RHeap::Check panics on a corrupt heap): "heap check: X" in the log
+// without "X" after it means the heap was already broken before X.
+void IgTraceHeap(const TDesC& aStep)
+    {
+    if (!IgLogEnabled()) return;
+    TBuf<80> t(_L("heap check: "));
+    t.Append(aStep.Left(60));
+    IgTrace(t);
+    User::Heap().Check();
+    IgTrace(aStep);
+    }
+
 void IgTraceF(const TDesC& aFormat, TInt aValue)
     {
     if (!IgLogEnabled()) return;
