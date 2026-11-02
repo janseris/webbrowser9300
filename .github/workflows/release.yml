@@ -1,0 +1,79 @@
+# Publishes a GitHub Release for each new version: when a push to master brings a version (inc/browser.h,
+# KBrVersion) that has no release yet, it creates v<version> with bin/browser9300.sis and the README's
+# Status entries since the previous release as the notes. Nothing to do for a version already released.
+name: Release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - inc/browser.h
+      - bin/browser9300.sis
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        run: |
+          ver=$(sed -n 's/.*KBrVersion, "\([0-9.]*\)".*/\1/p' inc/browser.h)
+          test -n "$ver"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          if gh release view "v$ver" >/dev/null 2>&1; then echo "exists=1" >> "$GITHUB_OUTPUT"; else echo "exists=0" >> "$GITHUB_OUTPUT"; fi
+          prev=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""' | sed 's/^v//')
+          echo "previous=$prev" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Notes
+        if: steps.v.outputs.exists == '0'
+        run: |
+          python3 - "${{ steps.v.outputs.version }}" "${{ steps.v.outputs.previous }}" <<'PY'
+          import re, sys
+          ver, prev = sys.argv[1], sys.argv[2]
+          text = open("README.md", encoding="utf-8").read()
+          status = text.split("## Status", 1)[1]
+          # the entries: "- **0.NN** ..." with their indented continuation lines
+          entries, cur = [], None
+          for line in status.splitlines():
+              m = re.match(r"- \*\*(\d+\.\d+)\*\*", line)
+              if m:
+                  cur = [m.group(1), [line]]; entries.append(cur)
+              elif cur and (line.startswith("  ") or not line.strip()) and not line.startswith("## "):
+                  cur[1].append(line)
+              elif line.startswith("## "):
+                  break
+              else:
+                  cur = None
+          def num(v): return tuple(int(x) for x in v.split("."))
+          if prev:
+              keep = [e for e in entries if num(prev) < num(e[0]) <= num(ver)]
+          else:
+              keep = [e for e in entries if num(e[0]) <= num(ver)][:8]
+          out = ["A web browser for the Nokia 9300 / 9500 (Series 80 2.0, Symbian 7.0s).",
+                 "",
+                 "**Install:** download `browser9300.sis` below, copy it to the phone and open it. HTTPS needs the patched `ssladaptor.dll` (see the README).",
+                 "",
+                 "## Changes" + (" since " + prev if prev else ""), ""]
+          for v, lines in keep:
+              out.append("\n".join(l.rstrip() for l in lines).rstrip())
+          out += ["", "The whole history is in the README's Status section."]
+          open("notes.md", "w", encoding="utf-8").write("\n".join(out) + "\n")
+          PY
+          cat notes.md
+
+      - name: Release
+        if: steps.v.outputs.exists == '0'
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" bin/browser9300.sis \
+            --title "Browser 9300 ${{ steps.v.outputs.version }}" --notes-file notes.md --target "$GITHUB_SHA"
+        env:
+          GH_TOKEN: ${{ github.token }}

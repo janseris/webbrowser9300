@@ -6,8 +6,9 @@ a plain-C core. **Everything runs on the phone**: fetching (HTTP/1.1, TLS throug
 precomputed on the PC. The PC is only used during development: it serves test builds and
 receives logs (`localserver\ota_server.js`).
 
-**Download:** [`bin/browser9300.sis`](bin/browser9300.sis), the latest build (the version is in the
-first line of Status below). Copy it to the phone and open it, or open its address in the phone's
+**Download:** the [latest release](https://github.com/janseris/webbrowser9300/releases/latest) (each version's notes and its sis), or
+[`bin/browser9300.sis`](bin/browser9300.sis), the latest build (its version is the first line of
+Status below). Copy it to the phone and open it, or open its address in the phone's
 own browser; it installs on the Nokia 9300 and 9500.
 
 ```
@@ -29,16 +30,16 @@ own browser; it installs on the Nokia 9300 and 9500.
   DOM, document.write is the only way a script changes the page, so the engine starts only when an
   inline script calls it; inline scripts over 64 KB are not run; the 8 s limit is also checked
   before each script (compiling counts). The DNS retry status is just "DNS retry".
-- **0.40** (not yet run on the phone): a failed name lookup (-5120, the DNS server's answer
+- **0.40**: a failed name lookup (-5120, the DNS server's answer
   lost or the link just up) is tried twice more, 1.5 s apart, on a new resolver, before the page
   fails (with 0.39's Go to keeping the address).
-- **0.39** (not yet run on the phone): Go to keeps the address that did not load: after a page
+- **0.39**: Go to keeps the address that did not load: after a page
   fails (or is stopped, or is still loading) the address bar offers the address asked for, not
   the page still on the screen, so it can be retried or corrected. 0.38 on the phone: the
   page-script tests (`localserver/jstest`) all right: 21 / 21 checks, a windows-1250 page, a
   runaway script stopped at 8 s with the page shown; ~230 ms of setup per page with scripts
   (compiling the prelude), 360 KB of heap.
-- **0.38** (not yet run on the phone): **pages' inline scripts run** (View > JavaScript, on by
+- **0.38**: **pages' inline scripts run** (View > JavaScript, on by
   default, at the top of the menu; it reloads the page). Before a page is read, its `<script>`
   elements run in order on the JavaScript thread (`js/bwhost.c`) and each is replaced by what it
   wrote with `document.write`; written text with a script in it is read again, so its scripts run
@@ -56,22 +57,22 @@ own browser; it installs on the Nokia 9300 and 9500.
   `Number.isNaN` / `isInteger` / ..., `Math.sign` / `trunc` / `log10` / ..., `escape`, `unescape`.
   Checked on a PC (`js/test/pagetest.c`, `page1.html`) and in the ARM emulator as the phone builds
   it (`js/test/emu/run_page.py`: the same page out); about 30 ms a page for the setup.
-- **0.37** (not yet run on the phone): 0.36 crashed (KERN-EXEC 3) when the JavaScript test wrote
+- **0.37**: 0.36 crashed (KERN-EXEC 3) when the JavaScript test wrote
   its log: `l.Append(at ? _L8("   ...") : aLabel)`, the GCC 2.9 ternary that slices a `TPtrC8`
   temporary mixed with a `const TDesC8&` (0.28's Wikipedia crash). An if / else now.
-- **0.36** (not yet run on the phone): 0.35 ran all 16 JavaScript tests on the phone, 14 right;
+- **0.36**: 0.35 ran all 16 JavaScript tests on the phone, 14 right;
   the other two (c_math, c_numbers) had results longer than the 160 characters the test kept,
   so the cut result could not match: now 512, and the log has every whole result (and the
   expected one when wrong). Menus: the things being tested on top (Tools: JavaScript test, Speed
   test; View: Desktop pages). Phone times: b_obj 6.1 s, b_loop 1.3 s, b_json 1.25 s, b_str 0.9 s,
   c_memory 5.6 s; the runaway script stopped at its 2 s.
-- **0.35** (not yet run on the phone): 0.34's JavaScript test stopped at `c_math` with the
+- **0.35**: 0.34's JavaScript test stopped at `c_math` with the
   engine's thread panicking USER-EXEC 3 (the browser went on): EUSER's soft float raises an
   exception for 1/0, 0/0 or an overflow, where IEEE (and GCC's own, in the emulator) just gives
   Infinity / NaN, and the thread had no handler. It has one now, which does nothing, so the
   operation returns the IEEE value. On the phone 0.34 got the first 9 right: b_inline 47 ms,
   b_json 1.25 s, b_loop 1.3 s, b_obj 6.1 s, b_str 0.9 s.
-- **0.34** (not yet run on the phone): **the JavaScript engine is in**, not yet used by pages:
+- **0.34**: **the JavaScript engine is in**, not yet used by pages:
   **Tools > JavaScript test** (`about:js`, `src/jsplat.cpp`) runs 16 scripts on the phone (the five
   benchmarks, numbers, Math, strings, regular expressions, errors, closures, dates, objects / JSON,
   memory, deep nesting, a runaway loop) and checks each result against Node's, with its time and heap.
@@ -102,17 +103,17 @@ own browser; it installs on the Nokia 9300 and 9500.
     `Promise`, arrow functions, `let` / `const`, classes. Next (0.35): inline scripts and
     `document.write` while a page is parsed, a little `window` / `document` / `location`, the
     common missing methods, View > JavaScript.
-- **0.33** (not yet run on the phone): the address bar is the phone's own combo box again, with its
+- **0.33**: the address bar is the phone's own combo box again, with its
   own buttons, as in 0.28: 0.29's subclass (`EBrCtAddressCombo`, a custom control to keep Go on top)
   panicked BAFL 4 (a resource read past its end) when Go to was pressed. Native controls stay native.
-- **0.32** (not yet run on the phone): **Tools > Speed test** (`about:speed`, `src/speed.cpp`): the
+- **0.32**: **Tools > Speed test** (`about:speed`, `src/speed.cpp`): the
   phone's own time for a double add / subtract / multiply / divide, int <-> double, compare, an int
   divide, and a 4 KB copy (our assembly vs Mem::Copy), each looped until it takes 0.3 s less the same
   loop without it; shown as a page (ns, cycles at 150 MHz, next to GCC's own soft float in the
   emulator) and in the log. For the JavaScript engine choice (`webbrowser9300/jsbench`): every JS
   number is a double, and the SDK has only EUSER's import library, so its speed can only be
   measured on the phone.
-- **0.31** (not yet run on the phone): pictures decoded by Maps 9300's own decoders
+- **0.31**: pictures decoded by Maps 9300's own decoders
   (`src/pngdec.cpp`, `src/jpegdec.cpp`, `src/jpegasm.c`, copied from `maps9300` 1.19; the IDCT is
   FFmpeg's simple IDCT via mp4player9300, LGPL-2.1-or-later). In Maps the phone's ICL took a median
   0.41 s a 256 px PNG and 171 ms a JPEG (one in ten 3 s or more); these ~30-50 ms and ~110-200 ms,
@@ -124,7 +125,7 @@ own browser; it installs on the Nokia 9300 and 9500.
   size 28.8 dB, progressive refused.
   - **RAM**: the caches leave 512 KB free (was 2.5-3 MB), as Maps 9300's 3D view: one app runs at a
     time. Free RAM counts what is free inside the browser's heap too.
-- **0.30** (not yet run on the phone): faster, and the things asked for on 2026-11-02.
+- **0.30**: faster, and the things asked for on 2026-11-02.
   - **Parsing ~38 % fewer instructions** (Wikipedia's page with its 854 CSS rules: 46.6 M to
     28.9 M in the ARM emulator, `test/emu/`: the phone's GCC 2.9 code in Unicorn, per function;
     the same output to the byte on every test page). GCC 2.9 -O2 doesn't inline: `is_ws` (a call
@@ -157,7 +158,7 @@ own browser; it installs on the Nokia 9300 and 9500.
   phone's combo box put its Change button over the first button whenever it had the focus;
   the field is now `CBrCombo` (a custom control, `EBrCtAddressCombo`) whose `FocusChanged` takes
   that button away again.
-- **0.28** (not yet run on the phone): fixes the KERN-EXEC 3 on `en.m.wikipedia.org/wiki/Nokia_9300`
+- **0.28**: fixes the KERN-EXEC 3 on `en.m.wikipedia.org/wiki/Nokia_9300`
   (and any page where the stack happened to hold the wrong value). 0.27's log ended at
   "icon: address set" with the heap intact, which left one line: the side bar's host name was
   taken with `TPtrC8 rest = s >= 0 ? aUrl.Mid(s + 2) : aUrl;`. A `TPtrC8` temporary and a
@@ -165,13 +166,13 @@ own browser; it installs on the Nokia 9300 and 9500.
   the host was read through stack garbage. Now `rest.Set()` in an `if`. The other ternaries over
   descriptors were checked (both sides `TPtrC8`, safe). The extra traces of 0.27 are gone; its
   `IgTraceHeap` (a step logged after `RHeap::Check`) stays for the next hunt.
-- **0.27** (not yet run on the phone): finding the KERN-EXEC 3 on `en.m.wikipedia.org/wiki/Nokia_9300`.
+- **0.27**: finding the KERN-EXEC 3 on `en.m.wikipedia.org/wiki/Nokia_9300`.
   0.26's log stopped after "pictures cleared", before "icon set". The page, its stylesheets, its
   favicon and its headers all pass the PC tests (ASan, every allocation made to fail in turn), so
   with Tools > Logging on this build logs every step from there to the layout and checks the heap
   (RHeap::Check) at "page received", "parsed and styled", "pictures cleared" and "address kept":
   "heap check: X" without "X" after it means the heap was already corrupt.
-- **0.26** (not yet run on the phone): a faster start. Work that isn't needed for the start page
+- **0.26**: a faster start. Work that isn't needed for the start page
   now waits until it is:
   - **The four HTTP clients** (page, pictures, stylesheets, the helper) open their socket server
     sessions on their first request, not at start. Four `RSocketServ::Connect`s, the first of
@@ -185,7 +186,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     second after start.
   - The startup time is logged ("startup: N ms") and shown in Page info, so the next steps can be
     measured on the phone.
-- **0.25** (not yet run on the phone): the USER 23 crash on downloads fixed.
+- **0.25**: the USER 23 crash on downloads fixed.
   - **Cause**: `CHttpClient::SinkWrite` (from Instagram 9300) took a `TPtr8` to its buffer,
     flushed the full buffer to the file, then appended through the old `TPtr8`. That pointer still
     had the full length, so the Append overflowed (USER 23, an 8-bit descriptor exceeding its
@@ -195,7 +196,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     any flush.
   - The internal pages (Downloads, History, Bookmarks, Start) now size their buffers for the
     worst escaping ('&' becomes 5 bytes, UTF-8 up to 3), so links full of `&` can't overflow them.
-- **0.24** (not yet run on the phone): the downloads list; replacing a file is asked.
+- **0.24**: the downloads list; replacing a file is asked.
   - **Bookmarks > Downloads (Ctrl+J)** opens `about:downloads`: every file downloaded
     (newest first, up to 100, kept in `downloads.txt`). For each: its name, folder, size or
     "deleted", and **[open]**, **[delete]** and **[download again]**.
@@ -204,7 +205,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     the entries whose files are gone.
   - **A name that's taken**: "name is there already. Replace it?". Yes overwrites it, which is
     the usual answer for an installer. No keeps both ("name (2).ext").
-- **0.23** (not yet run on the phone): Down in the address bar.
+- **0.23**: Down in the address bar.
   - The phone's virtual cursor (the pointer) takes the arrow keys while it's on, so Down never
     reached the address field. While a text dialog is open (the address bar, Find, form
     fields) it's now set to `ESuspended`, the state Symbian provides for edit fields that
@@ -221,14 +222,14 @@ own browser; it installs on the Nokia 9300 and 9500.
   `tools/make_icon.py` (original, numpy, 8x supersampled; the 25x20 size gets a wider ring).
   The masks are black on the icon, as this phone wants; edges are blended toward the Desk's
   light background, because the mask is 1-bit.
-- **0.21** (not yet run on the phone): history across restarts; the update path.
+- **0.21**: history across restarts; the update path.
   - **The history is kept**: the pages visited, newest first, each once, up to 200, in
     `C:\System\Data\browser9300\history.txt` (URL TAB title, UTF-8). It's saved when the
     browser goes to the background or exits, in one write. The History page (with "Clear the
     history") and the address bar's list use it. Back / Forward stay per run, as on a computer.
   - Tools > Update from the PC fetches `/browser9300.sis` (the `.sis` in the local server's
     folder itself, not in a `browser9300\` subfolder).
-- **0.20** (not yet run on the phone): downloads bigger than the RAM; the app icon fixed.
+- **0.20**: downloads bigger than the RAM; the app icon fixed.
   - **Every accepted download now streams to its file.** Before, chunked replies (the common
     kind for generated files) were collected in RAM, and gzip replies would have been saved
     compressed. Now the body goes through `bw_dechunk` (chunked framing removed as it
@@ -242,7 +243,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     where the mask is black (as Instagram 9300 found for `BitBltMasked`). Desk showed a white
     rectangle with the globe cut out. `aif/icon25_mask.bmp` and `icon64_mask.bmp` are now
     black on the icon, white around it. Desk may keep the old icon until the phone restarts.
-- **0.19** (not yet run on the phone): asks before downloading a file.
+- **0.19**: asks before downloading a file.
   - When a reply turns out to be a file (not HTML / text / XML / a picture, or sent as
     `Content-Disposition: attachment`, or a `.jad`), the transfer **pauses at its headers**
     (`MHttpObserver::HttpHeadersArrived` returns EFalse; nothing more is read and the
@@ -258,12 +259,12 @@ own browser; it installs on the Nokia 9300 and 9500.
     becomes "name (2).ext". **Cancel** drops the transfer.
   - When it's done: "Downloaded. Open it?" (a `.sis` goes to the installer, as before);
     otherwise "Saved: path".
-- **0.18** (not yet run on the phone): the address bar is a combo box.
+- **0.18**: the address bar is a combo box.
   - Its list holds the pages visited (newest first, each once, up to 40; no `about:` pages),
     using Series 80's own `CEikComboBox` with its history popout. **Down** opens the list; pick
     with Up/Down and Enter, which puts the address in the field; **Enter** again goes there.
     Typing, select-all of the current address and search for non-addresses work as before.
-- **0.17** (not yet run on the phone): .ico files are never given to the phone's ICO decoder.
+- **0.17**: .ico files are never given to the phone's ICO decoder.
   - **The likely crash**: since 0.14 every web page fetched its site's `/favicon.ico` right
     after the download, and handed it to Symbian's own ICO decoder. Modern favicons often hold
     PNG images (since Windows Vista), which a 2004 decoder misreads; a crash inside it takes the
@@ -275,14 +276,14 @@ own browser; it installs on the Nokia 9300 and 9500.
     copies.
   - The 0.16 trace stays (with Logging on). With View > Load pictures off, no icon is loaded
     either, so that's a quick test if it still crashes.
-- **0.16** (not yet run on the phone): a trace for the crash after a page arrives (0.15 still
+- **0.16**: a trace for the crash after a page arrives (0.15 still
   crashed, so it wasn't only the stack). With Tools > Logging on, every step after a download
   writes a "trace: ..." line and saves the log at once. The steps: show the page, parsed and
   styled, pictures cleared, icon set, laid out, the first draws, title kept, history trimmed,
   each picture's fetch / decode / done, the CPU probe's start. After a crash, start the
   browser again and open Tools > Show the previous log: the last trace line is the last step
   that worked.
-- **0.15** (not yet run on the phone): the crash on every page (KERN-EXEC 3) fixed, very likely
+- **0.15**: the crash on every page (KERN-EXEC 3) fixed, very likely
   a stack overflow.
   - **Cause**: an app's main thread on EKA1 has only ~8 KB of stack. A page arrived deep in the
     network callbacks (HTTP client 324 B, page loader 1,088 B, ...) and was parsed, laid out and
@@ -296,7 +297,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     can be read on the phone without a cable. After a crash, start the browser again and open
     the previous log. It's written only with Tools > Logging on. It's now also saved right
     after a page arrives and after it's parsed, so it shows how far a crash got.
-- **0.14** (not yet run on the phone): the page's icon.
+- **0.14**: the page's icon.
   - **Favicon**: shown in front of the site's name at the top of the side bar, or in front of the
     title in the top bar (16 px).
     - The parser picks the best `<link rel=icon>` (`shortcut icon`, `apple-touch-icon`): PNG / GIF
@@ -306,7 +307,7 @@ own browser; it installs on the Nokia 9300 and 9500.
       no icon.
     - It's fetched first, before the page's pictures, and isn't counted in "Pictures: ...".
       With pictures off, it isn't loaded either.
-- **0.13** (not yet run on the phone): CPU without CPU times, the bar's place and width, the
+- **0.13**: CPU without CPU times, the bar's place and width, the
   pointer's top.
   - **CPU works without the kernel's CPU times** (the phone showed "?"). Once a second, a thread
     at the lowest priority counts how far it gets in about 0.1 s. It only runs when nothing else
@@ -320,7 +321,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     remembers the highest point the cursor has reached and treats resting there (if it's in the
     top quarter) as the top edge. Push the cursor up as far as it goes and wait.
   - The download progress no longer shows a percentage ("12 / 40 KB" says it).
-- **0.12** (not yet run on the phone): CPU and RAM shown, and more RAM used.
+- **0.12**: CPU and RAM shown, and more RAM used.
   - **View > CPU and RAM** (on by default): three lines at the bottom of the side bar (or in
     the top bar's row), updated once a second while the browser is in front. Only the bar is
     redrawn, not the page.
@@ -339,7 +340,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     Each leaves 2.5 MB free for the phone. Pictures keep their 3 MB reserve, so they give way
     first. The heap may grow to 32 MB (was 24). After pages are dropped, the heap is
     compressed, so the RAM goes back to the phone.
-- **0.11** (not yet run on the phone): progress in more detail.
+- **0.11**: progress in more detail.
   - **The status has a line for each part:**
     - the page: its stage ("Connecting to the server...", "TLS handshake..."), then
       "12 / 40 KB, 30%, 9 KB/s" while it arrives (the size, when the server sends it), then
@@ -352,7 +353,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     every 2 KB (was 4).
   - **Fixed: "1 pictures to load" stayed** after the last picture arrived (the empty "done"
     message was dropped). Pictures now report their counts, and the line shows the final tally.
-- **0.10** (not yet run on the phone): search from the address bar; Enter goes.
+- **0.10**: search from the address bar; Enter goes.
   - **What isn't an address is searched for** on DuckDuckGo Lite, which works without JavaScript
     (`https://lite.duckduckgo.com/lite/?q=...`, UTF-8, percent-encoded). An address is
     something with a scheme and `//` (or `about:`, `file:`, `data:`, `mailto:`, `tel:`),
@@ -363,7 +364,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     breaks any more. A textarea still takes Enter as a new line.
   - **Edge scrolling up works**: the cursor stops a few pixels short of the top of the screen,
     so the strip that scrolls up is now 12 px tall (including the side bar's top) instead of 3.
-- **0.9** (not yet run on the phone): full screen with a side bar.
+- **0.9**: full screen with a side bar.
   - **Full screen is the default.** The side buttons are hidden (the Menu key still works).
     The bar that was across the top is now a 100 px column at the right, where the buttons
     were. It shows the page title at the top, the address of the link under the pointer (or
@@ -373,7 +374,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     again. It's stored as `full=`, so older settings files that said `fullscreen=0` start full
     screen once.
   - A click on the side bar's top half pages up, on its bottom half pages down.
-- **0.8** (not yet run on the phone): Opera-style Up/Down, and the pointer fixed.
+- **0.8**: Opera-style Up/Down, and the pointer fixed.
   - **Up/Down move between links and fields** the way the 9300's built-in Opera does: the next
     (previous) one if it is on the screen, otherwise the page scrolls a step. Long text between
     links still reads by pressing Down. **Ctrl+Up/Down** scroll a step without moving the
@@ -388,7 +389,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     normal. With a text field focused, they're typed into it.
   - **Typing on the page no longer opens the address bar** (Ctrl+L, the Go to button or the
     menu do). A letter goes into the focused text field, or does nothing.
-- **0.7** (not yet run on the phone): zoom and the original size.
+- **0.7**: zoom and the original size.
   - **View > Original size** lays the page out 1024 px wide, as on a computer: CSS margins and
     paddings as given (not halved), list indents at 40 px, pictures and tables up to their real
     width. Left/Right (Shift: a screen) scroll sideways, with a bar at the bottom. Tab, Find and
@@ -397,7 +398,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     between links.
   - **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom like a desktop browser, through the three text
     sizes. The page reflows to the width, so zooming never needs sideways scrolling.
-- **0.6** (not yet run on the phone): speed.
+- **0.6**: speed.
   - **A quadratic copy fixed**: the element numbering for `:hover` (0.5) copied a whole array on
     every start tag. On the 490 KB test page it took 81 % of the work. The page now needs
     336 M instructions instead of 1,665 M (5x fewer).
@@ -411,7 +412,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     `test/armtest.sh` runs the assembled code in the Unicorn ARM emulator against Python
     references: 4,000 random sizes and alignments with guard bytes, overlaps, and register and
     stack checks.
-- **0.5** (not yet run on the phone): the mouse pointer and desktop-style keys.
+- **0.5**: the mouse pointer and desktop-style keys.
   - **Hover**: the joystick's pointer is on by default (View > Mouse pointer). The cursor is
     polled about 8 times a second, because move events don't always arrive. The link under it
     is underlined (pictures get a frame) and its address shows in the header. When the pointer
@@ -429,7 +430,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     top/end, Left/Right for the previous/next link, and Ctrl+Left/Right for back/forward.
   - Core: `:hover` selectors, element numbers on ops/boxes, `bw_doc_parse_hover`,
     `bw_doc_hover_chain`, `bw_doc_copy_form_state` and `bw_layout_hit_box` (unit-tested).
-- **0.4** (not yet run on the phone): more HTML5 and CSS, all on the phone.
+- **0.4**: more HTML5 and CSS, all on the phone.
   - **Address bar only**: the start page has no search boxes; typing a letter or digit on a
     page opens the address bar with it, and the bar opens with the page's address selected.
   - **CSS box model**: `margin`, `padding`, `border` (shorthands, sides, width / style / color),
@@ -462,7 +463,7 @@ own browser; it installs on the Nokia 9300 and 9500.
     `readonly` fields, textarea placeholders, table `width` attributes (columns and
     `width=100%` tables), soft hyphens / zero-width characters / emoji not drawn as boxes.
 
-- **0.3** (not yet run on the phone):
+- **0.3**:
   - **Tables with columns**: rows and cells are now in the op stream (TABLE / ROW / CELL
     start and end); the layout measures every cell's narrowest and widest form (min / max
     content, long words capped at 150 px since they are broken anyway), sizes the columns as
@@ -484,7 +485,7 @@ own browser; it installs on the Nokia 9300 and 9500.
   - Measured on the PC: 390 KB of random nested tables (58,000 ops, 18,000 boxes) parse and lay
     out in 24 ms.
 
-- **0.2** (not yet run on the phone):
+- **0.2**:
   - **External stylesheets**: `<link rel=stylesheet>` (with its `media`) and `@import` in
     `<style>` are loaded on the phone after the page is on the screen, one at a time over a
     connection of their own (cookies, gzip, redirects, 30 s watchdog, up to 400 KB each, 8 per
@@ -507,7 +508,7 @@ own browser; it installs on the Nokia 9300 and 9500.
   - **Password fields** are typed in a secret editor (the text is not shown).
   - Ctrl+F is now Find; Forward is in the Page menu.
 
-- **0.1** (first version, not yet run on the phone):
+- **0.1** (the first version):
   - HTML: tolerant parsing (implied `</p>`, `</li>`, `</td>`, `</option>`..., stray end tags,
     raw text in script/style/textarea/title, comments, CDATA), 378 named entities + numeric,
     UTF-8 / windows-1250 / ISO-8859-2 / windows-1252 (HTTP header, `<meta charset>`, BOM, or a
