@@ -410,10 +410,19 @@ struct TJsPageJob
     TInt iResult;      // -1: no engine / the prelude failed
     };
 
+// asked before each script: the time limit counts compiling too (the hook sees only running)
+static int JsExpired(void* aCtx)
+    {
+    TJsCtx* c = (TJsCtx*)aCtx;
+    return (TInt)(c->iDeadline - JsMs()) <= 0;
+    }
+
 static void PageOnThread(TAny* aJob)
     {
     TJsPageJob* job = (TJsPageJob*)aJob;
     JsInitCtx(job->iCtx, KJsPageMs);
+    job->iPage.expired = JsExpired;
+    job->iPage.ctx = &job->iCtx;
     js_State* J = JsNew(job->iCtx);
     if (!J) { job->iResult = -1; return; }
     job->iResult = bw_js_page(J, &job->iPage);
@@ -461,6 +470,7 @@ HBufC8* BrRunPageScriptsL(const TDesC8& aHtml, const TDesC8& aUrl, const TDesC8&
         aSummary.Format(_L("Scripts: %d run"), pg.run);
         if (pg.failed) aSummary.AppendFormat(_L(", %d failed"), pg.failed);
         if (pg.external) aSummary.AppendFormat(_L(", %d external not loaded"), pg.external);
+        if (pg.big) aSummary.AppendFormat(_L(", %d over 64 KB not run"), pg.big);
         if (pg.stopped) aSummary.Append(_L(", stopped (time / memory)"));
         aSummary.AppendFormat(_L(", %d ms"), ms);
         }

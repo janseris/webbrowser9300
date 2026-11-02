@@ -497,7 +497,7 @@ void CHttpClient::RunL()
                     if (!iRetryTimerOpen && iRetryTimer.CreateLocal() == KErrNone) iRetryTimerOpen = ETrue;
                     if (iRetryTimerOpen)
                         {
-                        Progress(_L("Looking up the server again..."));
+                        Progress(_L("DNS retry"));
                         iState = EResolveWait;
                         iRetryTimer.After(iStatus, 1500000);
                         SetActive();

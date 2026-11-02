@@ -11,12 +11,12 @@ J, _ = e.call("mj_new")
 src = open(sys.argv[1], "rb").read()
 e.write(0x2000000, src + b"\0")
 pg, n = e.call("mj_page", J, 0x2000000, len(src))
-f = struct.unpack("<7I6i", e.read(pg + 7 * 4 + 8, 0))  if False else None
-raw = e.read(pg, 4 * 20)
-v = struct.unpack("<20I", raw)
-# html len href ua ref lang w h out outLen say sayLen run failed skipped external written stopped
-out, outLen, say, sayLen = v[8], v[9], v[10], v[11]
-run, failed, skipped, external, written, stopped = v[12:18]
+raw = e.read(pg, 4 * 21)
+v = struct.unpack("<21I", raw)
+# html len href ua ref lang w h expired ctx out outLen say sayLen run failed skipped external written big stopped
+out, outLen, say, sayLen = v[10], v[11], v[12], v[13]
+run, failed, skipped, external, written = v[14:19]
+stopped = v[20]
 print("instructions %d: run %d failed %d skipped %d external %d written %d stopped %d" % (n, run, failed, skipped, external, written, stopped))
 print(e.read(say, sayLen).decode("utf-8", "replace") if say else "", end="")
 page = e.read(out, outLen) if out else src

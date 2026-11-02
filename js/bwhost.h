@@ -18,16 +18,20 @@ typedef struct BwJsPage
     const char* ref;
     const char* lang;
     int w, h;               /* the screen */
+    int (*expired)(void* ctx);  /* asked before each script: 1 when the time is up (may be NULL) */
+    void* ctx;
     /* out (malloc'ed, the caller frees them) */
     char* out;              /* the page with each script replaced by what it wrote; NULL: as it was */
     unsigned int outLen;
     char* say;              /* errors, alert(), console.log(): lines for the log */
     unsigned int sayLen;
     int run, failed, skipped, external, written;
+    int big;                /* inline scripts over 64 KB, not run */
     int stopped;            /* 1: the time or memory ran out, the scripts after were not run */
     } BwJsPage;
 
-/* 1 if the page has a script element at all (no engine needed otherwise) */
+/* 1 if an inline script (64 KB at most) calls document.write: the only way scripts change the
+ * page until there is a DOM, so no engine is started otherwise */
 int bw_js_has_scripts(const char* html, unsigned int len);
 
 /* Runs the scripts of pg->html in order in J (the host made it: its allocator and limits), each

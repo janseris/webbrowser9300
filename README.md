@@ -19,6 +19,12 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.41** (not yet run on the phone): page scripts only where they can change something. On the
+  phone 0.40 spent 24.5 s on seznam.cz's scripts (an inline script of page data: compiling it is
+  not under the time limit) and 5.2 s on google.com's, writing 414 B and nothing. Until there is a
+  DOM, document.write is the only way a script changes the page, so the engine starts only when an
+  inline script calls it; inline scripts over 64 KB are not run; the 8 s limit is also checked
+  before each script (compiling counts). The DNS retry status is just "DNS retry".
 - **0.40** (not yet run on the phone): a failed name lookup (-5120, the DNS server's answer
   lost or the link just up) is tried twice more, 1.5 s apart, on a new resolver, before the page
   fails (with 0.39's Go to keeping the address).

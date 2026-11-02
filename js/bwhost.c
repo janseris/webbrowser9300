@@ -17,6 +17,8 @@
 #define BW_MAX_SCRIPTS 500
 #define BW_MAX_WRITTEN (2 * 1024 * 1024)
 #define BW_MAX_SAY 8192
+#define BW_MAX_SCRIPT_BYTES (64 * 1024)   /* bigger inline ones (frameworks, page data) are not run:
+                                           * compiling one is not covered by the time limit */
 
 typedef struct { char* p; unsigned int n, cap; int oom; } Gb;
 
@@ -209,12 +211,23 @@ static int next_script(const char* s, unsigned int n, unsigned int i, Script* sc
     return 0;
 }
 
+/* "document.write" in s[a..b) */
+static int has_write(const char* s, unsigned int a, unsigned int b)
+{
+    unsigned int i;
+    for (i = a; i + 14 <= b; i++) if (s[i] == 'd' && memcmp(s + i, "document.write", 14) == 0) return 1;
+    return 0;
+}
+
 int bw_js_has_scripts(const char* html, unsigned int len)
 {
+    /* Without a DOM, document.write is the only way a script changes the page: none of the
+     * inline scripts calls it, none runs (modern pages: their time is spent for nothing) */
     Script sc;
     unsigned int i = 0;
     while (next_script(html, len, i, &sc)) {
-        if (sc.isJs && !sc.hasSrc) return 1;
+        if (sc.isJs && !sc.hasSrc && sc.contentEnd - sc.contentStart <= BW_MAX_SCRIPT_BYTES &&
+            has_write(html, sc.contentStart, sc.contentEnd)) return 1;
         i = sc.end;
     }
     return 0;
@@ -278,7 +291,7 @@ int bw_js_page(js_State* J, BwJsPage* pg)
     memset(&h, 0, sizeof h);
     memset(&out, 0, sizeof out);
     pg->out = 0; pg->outLen = 0; pg->say = 0; pg->sayLen = 0;
-    pg->run = pg->failed = pg->skipped = pg->external = pg->written = pg->stopped = 0;
+    pg->run = pg->failed = pg->skipped = pg->external = pg->written = pg->stopped = pg->big = 0;
 
     js_setcontext(J, &h);
     js_newcfunction(J, h_write, "__write", 1); js_setglobal(J, "__write");
@@ -296,8 +309,11 @@ int bw_js_page(js_State* J, BwJsPage* pg)
 
     while (next_script(in, n, pos, &sc)) {
         char* src;
-        if (!sc.isJs || sc.hasSrc || pg->stopped || pg->run >= BW_MAX_SCRIPTS) {
+        if (!pg->stopped && pg->expired && pg->expired(pg->ctx)) pg->stopped = 1;   /* compiling counts too */
+        if (!sc.isJs || sc.hasSrc || pg->stopped || pg->run >= BW_MAX_SCRIPTS ||
+            sc.contentEnd - sc.contentStart > BW_MAX_SCRIPT_BYTES) {
             if (sc.hasSrc && sc.isJs) pg->external++;
+            else if (sc.isJs && sc.contentEnd - sc.contentStart > BW_MAX_SCRIPT_BYTES) pg->big++;
             else if (sc.isJs) pg->skipped++;
             gb_add(&out, in + pos, sc.end - pos);       /* as it was */
             pos = sc.end;
