@@ -6,6 +6,10 @@ a plain-C core. **Everything runs on the phone**: fetching (HTTP/1.1, TLS throug
 precomputed on the PC. The PC is only used during development: it serves test builds and
 receives logs (`localserver\ota_server.js`).
 
+**Download:** [`bin/browser9300.sis`](bin/browser9300.sis), the latest build (the version is in the
+first line of Status below). Copy it to the phone and open it, or open its address in the phone's
+own browser; it installs on the Nokia 9300 and 9500.
+
 ```
  bytes ──► core/bwhtml.c   tokenizer + implied end tags + a little CSS ──► BwDoc (a flat op stream:
             (C89, tested       styled text, blocks, images, form fields, anchors)
