@@ -51,8 +51,12 @@ enum TBrCommands
     EBrCmdBarTop,
     EBrCmdBarNarrow,
     EBrCmdBarSide,
-    EBrCmdBarWide
+    EBrCmdBarWide,
+    EBrCmdAddrList                  // the address bar's second button: the pages visited
     };
+
+// the address bar's combo box (CBrCombo: the phone's, without the Change button on top)
+#define EBrCtAddressCombo 0x7100
 
 enum TBrControls
     {

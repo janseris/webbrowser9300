@@ -21,6 +21,7 @@
 #include <eikdoc.h>
 #include <eikappui.h>
 #include <eikdialg.h>
+#include <eikfctry.h>
 #include <coecntrl.h>
 #include <bitdev.h>
 #include <bitstd.h>
@@ -28,8 +29,8 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.28");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.28");
+_LIT(KBrVersion, "0.29");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.29");
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -581,6 +582,7 @@ public:
     void PreLayoutDynInitL();
     TBool OkToExitL(TInt aButtonId);
     TKeyResponse OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCode aType);
+    SEikControlInfo CreateCustomControlL(TInt aControlType);
 private:
     TDes& iText;
     CDesCArray* iHistory;          // ours until the combo box takes it

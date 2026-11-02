@@ -86,13 +86,31 @@ TBool CTextDialog::OkToExitL(TInt aButtonId)
 
 // ------------------------------------------------------------------ the address bar
 
-// (the combo box's list opening and state are protected: reached through this, which adds nothing)
+// The address bar's combo box. The phone's one puts its Change button over the dialog's first
+// button whenever it has the focus; this one takes it away again, so Go stays on top and the
+// list is the dialog's second button (and Down). Its list opening and state are protected:
+// reached through here.
 class CBrCombo : public CEikComboBox
     {
 public:
     TBool ListShown() { return PopupDisplayed(); }
     void OpenListL() { HandleChangeButtonL(); }
+    void FocusChanged(TDrawNow aDrawNow)
+        {
+        CEikComboBox::FocusChanged(aDrawNow);
+        if (!PopupDisplayed()) AddOrRemoveChangeButton(EFalse);
+        }
     };
+
+SEikControlInfo CAddressDialog::CreateCustomControlL(TInt aControlType)
+    {
+    SEikControlInfo info;
+    info.iControl = NULL;
+    info.iTrailerTextId = 0;
+    info.iFlags = 0;
+    if (aControlType == EBrCtAddressCombo) info.iControl = new (ELeave) CBrCombo;
+    return info;
+    }
 
 CAddressDialog::~CAddressDialog()
     {
@@ -160,6 +178,12 @@ TKeyResponse CAddressDialog::OfferKeyEventL(const TKeyEvent& aKeyEvent, TEventCo
 
 TBool CAddressDialog::OkToExitL(TInt aButtonId)
     {
+    if (aButtonId == EBrCmdAddrList)
+        {
+        CBrCombo* cb = (CBrCombo*)Control(EBrTextField);
+        if (cb && !cb->ListShown()) cb->OpenListL();
+        return EFalse;
+        }
     if (aButtonId == EEikBidOk)
         {
         CEikComboBox* cb = (CEikComboBox*)Control(EBrTextField);

@@ -19,6 +19,11 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.29** (not yet run on the phone): the address bar's buttons: **Go** on top (as OK is in every
+  Series 80 dialog), **History** (the pages visited, as Down) second, Cancel at the bottom. The
+  phone's combo box put its Change button over the first button whenever it had the focus;
+  the field is now `CBrCombo` (a custom control, `EBrCtAddressCombo`) whose `FocusChanged` takes
+  that button away again.
 - **0.28** (not yet run on the phone): fixes the KERN-EXEC 3 on `en.m.wikipedia.org/wiki/Nokia_9300`
   (and any page where the stack happened to hold the wrong value). 0.27's log ended at
   "icon: address set" with the heap intact, which left one line: the side bar's host name was
