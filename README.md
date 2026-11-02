@@ -19,6 +19,9 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.40** (not yet run on the phone): a failed name lookup (-5120, the DNS server's answer
+  lost or the link just up) is tried twice more, 1.5 s apart, on a new resolver, before the page
+  fails (with 0.39's Go to keeping the address).
 - **0.39** (not yet run on the phone): Go to keeps the address that did not load: after a page
   fails (or is stopped, or is still loading) the address bar offers the address asked for, not
   the page still on the screen, so it can be retried or corrected. 0.38 on the phone: the

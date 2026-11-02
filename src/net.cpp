@@ -35,6 +35,7 @@ void CHttpClient::ConstructL()
 CHttpClient::~CHttpClient()
     {
     Cancel();
+    if (iRetryTimerOpen) iRetryTimer.Close();
     CloseSocket();
     CloseConnection();
     if (iSsOpen) iSs.Close();
@@ -67,6 +68,7 @@ void CHttpClient::RequestL(const TDesC8& aHost, const TDesC8& aMethod, const TDe
                            const TDesC8& aHeaders, const TDesC8& aBody, MHttpObserver& aObserver,
                            TBool aSecure, TInt aPort)
     {
+    iLookupTries = 0;
     EnsureSessionL();
     if (iState != EIdle) User::Leave(KErrInUse);
     iRequestStart.UniversalTime();
@@ -486,6 +488,22 @@ void CHttpClient::RunL()
         case EResolving:
             if (err != KErrNone)
                 {
+                // a lookup just after the link came up (or a lost DNS reply) often fails once:
+                // two more tries, 1.5 s apart, on a new resolver
+                if (++iLookupTries < 3 && err != KErrCancel)
+                    {
+                    IgLogF2(_L("name lookup failed (%d), try %d of 3 in 1.5 s"), err, iLookupTries + 1);
+                    if (iResolverOpen) { iResolver.Close(); iResolverOpen = EFalse; }
+                    if (!iRetryTimerOpen && iRetryTimer.CreateLocal() == KErrNone) iRetryTimerOpen = ETrue;
+                    if (iRetryTimerOpen)
+                        {
+                        Progress(_L("Looking up the server again..."));
+                        iState = EResolveWait;
+                        iRetryTimer.After(iStatus, 1500000);
+                        SetActive();
+                        return;
+                        }
+                    }
                 iLastError.Format(_L("Name lookup failed (%d)"), err);
                 FinishL(err);
                 return;
@@ -494,6 +512,10 @@ void CHttpClient::RunL()
             iCachedHost = iHost;
             iCachedAddr = iAddr;
             ConnectL();
+            break;
+
+        case EResolveWait:
+            ResolveL();
             break;
 
         case EConnecting:
@@ -657,6 +679,9 @@ void CHttpClient::DoCancel()
             break;
         case EResolving:
             iResolver.Cancel();
+            break;
+        case EResolveWait:
+            iRetryTimer.Cancel();
             break;
         case EConnecting:
             iSocket.CancelConnect();
