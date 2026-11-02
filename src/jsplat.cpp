@@ -153,9 +153,18 @@ struct TJsThreadJob
     TAny* iArg;
     };
 
+// EUSER's soft float raises an exception where IEEE gives an infinity or a NaN (1/0, 0/0, an
+// overflow), and a thread without a handler panics USER-EXEC 3. JavaScript needs those values:
+// the handler does nothing, the operation goes on and returns the IEEE result. (An integer divide
+// by zero is ignored too, rather than ending the scripts.)
+static void JsIgnoreException(TExcType /*aType*/)
+    {
+    }
+
 static TInt JsThreadMain(TAny* aJob)
     {
     TJsThreadJob* job = (TJsThreadJob*)aJob;
+    RThread().SetExceptionHandler(JsIgnoreException, KExceptionFpe | KExceptionInteger);
     CTrapCleanup* tc = CTrapCleanup::New();
     if (!tc) return KErrNoMemory;
     job->iFunc(job->iArg);

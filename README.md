@@ -19,6 +19,12 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.35** (not yet run on the phone): 0.34's JavaScript test stopped at `c_math` with the
+  engine's thread panicking USER-EXEC 3 (the browser went on): EUSER's soft float raises an
+  exception for 1/0, 0/0 or an overflow, where IEEE (and GCC's own, in the emulator) just gives
+  Infinity / NaN, and the thread had no handler. It has one now, which does nothing, so the
+  operation returns the IEEE value. On the phone 0.34 got the first 9 right: b_inline 47 ms,
+  b_json 1.25 s, b_loop 1.3 s, b_obj 6.1 s, b_str 0.9 s.
 - **0.34** (not yet run on the phone): **the JavaScript engine is in**, not yet used by pages:
   **Tools > JavaScript test** (`about:js`, `src/jsplat.cpp`) runs 16 scripts on the phone (the five
   benchmarks, numbers, Math, strings, regular expressions, errors, closures, dates, objects / JSON,
