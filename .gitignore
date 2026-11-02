@@ -1,2 +1,16 @@
 *.o
 /bin/*.pkg
+
+
+# The workspace around the repo (this folder is both), not published:
+# every version's source tarball; the Instagram 9300 code the browser started from; icon drafts
+# (with a third-party reference picture); the JavaScript engine comparison (its results are in
+# the README); handoff notes for other chats
+/archive/
+/_to_delete/
+/browser-kit/
+/icons/
+/fastmem/
+/jsbench/
+/request-tracking.cpp
+/FOR-OTHER-CHATS-*.md
