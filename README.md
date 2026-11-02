@@ -19,6 +19,14 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.28** (not yet run on the phone): fixes the KERN-EXEC 3 on `en.m.wikipedia.org/wiki/Nokia_9300`
+  (and any page where the stack happened to hold the wrong value). 0.27's log ended at
+  "icon: address set" with the heap intact, which left one line: the side bar's host name was
+  taken with `TPtrC8 rest = s >= 0 ? aUrl.Mid(s + 2) : aUrl;`. A `TPtrC8` temporary and a
+  `const TDesC8&` meet in a sliced `TDesC8` copy that keeps the length but not the pointer, so
+  the host was read through stack garbage. Now `rest.Set()` in an `if`. The other ternaries over
+  descriptors were checked (both sides `TPtrC8`, safe). The extra traces of 0.27 are gone; its
+  `IgTraceHeap` (a step logged after `RHeap::Check`) stays for the next hunt.
 - **0.27** (not yet run on the phone): finding the KERN-EXEC 3 on `en.m.wikipedia.org/wiki/Nokia_9300`.
   0.26's log stopped after "pictures cleared", before "icon set". The page, its stylesheets, its
   favicon and its headers all pass the PC tests (ASan, every allocation made to fail in turn), so

@@ -666,7 +666,6 @@ void CBrAppUi::SetPageIconL(const TDesC8& aUrl, const BwDoc* aDoc)
     TBool web = aUrl.Left(7).CompareF(_L8("http://")) == 0 || aUrl.Left(8).CompareF(_L8("https://")) == 0;
     if (!web) { iView->SetIconL(KNullDesC8); return; }
     char* icon = NULL;
-    IgTraceF(_L("icon: the page names one %d"), aDoc->iconUrl ? 1 : 0);
     if (aDoc->iconUrl) icon = ig_strdup(aDoc->iconUrl);
     else
         {
@@ -675,15 +674,17 @@ void CBrAppUi::SetPageIconL(const TDesC8& aUrl, const BwDoc* aDoc)
         CleanupStack::PopAndDestroy(z);
         }
     if (!icon) { iView->SetIconL(KNullDesC8); return; }
-    if (IgLogEnabled()) { TPtrC8 il((const TUint8*)icon); IgLog8(il.Left(200)); }
     TPtrC8 ip((const TUint8*)icon);
     TRAPD(err, iView->SetIconL(ip));
     ig_free(icon);
-    IgTraceF(_L("icon: address set %d"), err);
     User::LeaveIfError(err);
     // the site's name for the side bar: the host without "www."
+    // (not "s >= 0 ? aUrl.Mid(s + 2) : aUrl": a TPtrC8 and a TDesC8& meet in a TDesC8 copy that
+    // has the length but not the pointer, so the text was read through stack garbage; KERN-EXEC 3
+    // on en.wikipedia.org in 0.26)
     TInt s = aUrl.Find(_L8("//"));
-    TPtrC8 rest = s >= 0 ? aUrl.Mid(s + 2) : aUrl;
+    TPtrC8 rest(aUrl);
+    if (s >= 0) rest.Set(aUrl.Mid(s + 2));
     TInt e = 0;
     while (e < rest.Length() && rest[e] != '/' && rest[e] != ':' && rest[e] != '?' && rest[e] != '#') e++;
     TPtrC8 host = rest.Left(e);
@@ -1330,7 +1331,7 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         doc = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), iForceCs,
                                  NULL, NULL, 0, (const int*)iHover, iHoverCount, iSettings->iFullSize ? BW_PARSE_FULLSIZE : 0);
         if (doc) doc = ApplyStylesL(doc, aBody, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse);
-        IgTraceHeap(_L("parsed and styled"));
+        IgTrace(_L("parsed and styled"));
         }
     CleanupStack::PopAndDestroy(2);
     if (!doc) { Say(_L("Out of memory: the page cannot be shown")); return; }
@@ -1346,20 +1347,17 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         IgLogFlush();
         }
     if (!aReparse) iImages->ClearAll();
-    IgTraceHeap(_L("pictures cleared"));
+    IgTrace(_L("pictures cleared"));
     // the sizes of pictures already decoded (a new layout of the same page)
     for (TUint i = 0; i < doc->imageCount; i++)
         {
         TSize full;
         if (doc->images[i].src && iImages->FullSize(doc->images[i].src, full)) { doc->images[i].natW = full.iWidth; doc->images[i].natH = full.iHeight; }
         }
-    IgTraceF(_L("picture sizes: %d"), (TInt)doc->imageCount);
     HBufC8* cur = aUrl.AllocL();
     delete iCurrentUrl;
     iCurrentUrl = cur;
-    IgTraceHeap(_L("address kept"));
     iView->SetLoading(EFalse);
-    IgTrace(_L("loading off"));
     // the same page again: what was typed and ticked stays
     if (aReparse && iView->Doc()) bw_doc_copy_form_state(doc, iView->Doc());
     if (!aReparse) SetPageIconL(aUrl, doc);        // (before the first draw, which asks for it)
@@ -1441,7 +1439,6 @@ void CBrAppUi::PageLoaded(const TDesC8& aUrl, const TDesC8& aContentType, HBufC8
     iPageBytes = aBody->Length();
     IgLogF2(_L("page: HTTP %d, %d bytes"), aStatus, aBody->Length());
     IgLogFlush();                                   // (if the next steps crash, the log says how far it got)
-    IgTraceHeap(_L("page received"));
     DropPendingPage();
     iPendUrl = aUrl.Alloc();
     iPendCt = aContentType.Alloc();
