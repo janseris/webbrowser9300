@@ -208,7 +208,7 @@ struct TJsTestResult
     TInt iMs;
     TInt iPeakKb;
     TInt iOk;            // 1 right, 0 wrong, -1 not run
-    char iGot[160];
+    char iGot[512];      // (0.35 kept 160: c_math's and c_numbers' results were cut and so "WRONG")
     };
 
 struct TJsTestRun
@@ -246,7 +246,7 @@ static void JsTestsOnThread(TAny* aRun)
         if (!J) { CopyC(r.iGot, sizeof r.iGot, "(no memory for the engine)"); r.iOk = 0; continue; }
         TUint32 t0 = JsMs();
         const char* res;
-        char buf[160];
+        char buf[512];
         if (js_ploadstring(J, t.iName, t.iSource)) { CopyC(buf, sizeof buf, "compile: "); res = js_tostring(J, -1); }
         else
             {
@@ -300,6 +300,18 @@ static void AppendHtmlUtf8(TDes8& aP, const char* aS)
         }
     }
 
+static void LogChunked(const TDesC8& aLabel, const char* aText)
+    {
+    TPtrC8 t((const TUint8*)aText);
+    for (TInt at = 0; at < t.Length(); at += 150)
+        {
+        TBuf8<200> l;
+        l.Append(at ? _L8("   ...") : aLabel);
+        l.Append(t.Mid(at, Min(150, t.Length() - at)));
+        IgLog8(l);
+        }
+    }
+
 HBufC8* BrJsTestPageLC()
     {
     TJsTestRun* run = (TJsTestRun*)User::Alloc(sizeof(TJsTestRun));
@@ -312,7 +324,7 @@ HBufC8* BrJsTestPageLC()
     TInt err = RunOnJsThread(JsTestsOnThread, run, why);
     TInt totalMs = (TInt)(JsMs() - t0);
 
-    HBufC8* h = HBufC8::NewLC(16384 + KJsTestCount * 600);
+    HBufC8* h = HBufC8::NewLC(16384 + KJsTestCount * 2400);
     TPtr8 p = h->Des();
     TInt good = 0, done = 0;
     for (TInt i = 0; i < KJsTestCount; i++) { if (run->iRes[i].iOk >= 0) done++; if (run->iRes[i].iOk == 1) good++; }
@@ -366,10 +378,11 @@ HBufC8* BrJsTestPageLC()
             {
             const TJsTestResult& r = run->iRes[i];
             TBuf8<200> l8;
-            l8.Format(_L8("js %s: %s, %d ms, %d KB: "), KJsTests[i].iName, r.iOk == 1 ? "ok" : r.iOk == 0 ? "WRONG" : "not run", r.iMs, r.iPeakKb);
-            TPtrC8 got((const TUint8*)r.iGot);
-            l8.Append(got.Left(l8.MaxLength() - l8.Length()));
+            l8.Format(_L8("js %s: %s, %d ms, %d KB"), KJsTests[i].iName, r.iOk == 1 ? "ok" : r.iOk == 0 ? "WRONG" : "not run", r.iMs, r.iPeakKb);
             IgLog8(l8);
+            // the whole result (and what was expected, when wrong), 150 characters a line
+            LogChunked(_L8("   got "), r.iGot);
+            if (r.iOk == 0) LogChunked(_L8("   expected "), KJsTests[i].iExpect);
             }
         IgLogFlush();
         }

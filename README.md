@@ -19,6 +19,12 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.36** (not yet run on the phone): 0.35 ran all 16 JavaScript tests on the phone, 14 right;
+  the other two (c_math, c_numbers) had results longer than the 160 characters the test kept,
+  so the cut result could not match: now 512, and the log has every whole result (and the
+  expected one when wrong). Menus: the things being tested on top (Tools: JavaScript test, Speed
+  test; View: Desktop pages). Phone times: b_obj 6.1 s, b_loop 1.3 s, b_json 1.25 s, b_str 0.9 s,
+  c_memory 5.6 s; the runaway script stopped at its 2 s.
 - **0.35** (not yet run on the phone): 0.34's JavaScript test stopped at `c_math` with the
   engine's thread panicking USER-EXEC 3 (the browser went on): EUSER's soft float raises an
   exception for 1/0, 0/0 or an overflow, where IEEE (and GCC's own, in the emulator) just gives
