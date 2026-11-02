@@ -91,6 +91,10 @@ struct TLogState
     TBool iOn;
     HBufC8* iBuf;
     TBool iDirty;
+    TInt iWritten;                 // the start of iBuf already in the file
+    TBool iRewrite;                // iBuf was cut: the file is written anew
+    RFs iFs;                       // kept open (a session a flush was a part of its cost)
+    TBool iFsOpen;
     };
 
 static TLogState* LogState()
@@ -103,6 +107,9 @@ static TLogState* LogState()
         st->iOn = EFalse;
         st->iBuf = HBufC8::New(KLogMax);
         st->iDirty = EFalse;
+        st->iWritten = 0;
+        st->iRewrite = ETrue;
+        st->iFsOpen = EFalse;
         Dll::SetTls(st);
         }
     return st;
@@ -131,6 +138,7 @@ void IgLog8(const TDesC8& aText)
         TInt cut = p.Length() / 2;
         p.Delete(0, cut);
         p.Insert(0, _L8("...\r\n"));
+        st->iRewrite = ETrue;
         }
     TTime now;
     now.HomeTime();
@@ -143,29 +151,55 @@ void IgLog8(const TDesC8& aText)
     st->iDirty = ETrue;
     }
 
+// Only what was added since the last flush is appended (0.29 and before wrote the whole buffer,
+// up to 60 KB, at every trace: ~0.7 s each with the log on); the whole file again after a cut.
 void IgLogFlush()
     {
     TLogState* st = (TLogState*)Dll::Tls();
     if (!st || !st->iBuf || !st->iDirty) return;
-    RFs fs;
-    if (fs.Connect() != KErrNone) return;
+    if (!st->iFsOpen)
+        {
+        if (st->iFs.Connect() != KErrNone) return;
+        st->iFsOpen = ETrue;
+        }
     RFile f;
-    TInt err = f.Replace(fs, KLogFile, EFileWrite | EFileShareAny);
-    if (err != KErrNone) { fs.MkDirAll(KLogFile); err = f.Replace(fs, KLogFile, EFileWrite | EFileShareAny); }
+    TInt len = st->iBuf->Length();
+    TBool whole = st->iRewrite || st->iWritten > len;
+    TInt err = KErrGeneral;
+    if (!whole)
+        {
+        err = f.Open(st->iFs, KLogFile, EFileWrite | EFileShareAny);
+        if (err == KErrNone)
+            {
+            TInt pos = 0;
+            err = f.Seek(ESeekEnd, pos);
+            if (err == KErrNone) err = f.Write(st->iBuf->Mid(st->iWritten));
+            f.Close();
+            }
+        }
+    if (whole || err != KErrNone)
+        {
+        err = f.Replace(st->iFs, KLogFile, EFileWrite | EFileShareAny);
+        if (err != KErrNone) { st->iFs.MkDirAll(KLogFile); err = f.Replace(st->iFs, KLogFile, EFileWrite | EFileShareAny); }
+        if (err == KErrNone)
+            {
+            err = f.Write(*st->iBuf);
+            f.Close();
+            }
+        }
     if (err == KErrNone)
         {
-        f.Write(*st->iBuf);
-        f.Close();
+        st->iWritten = len;
+        st->iRewrite = EFalse;
         st->iDirty = EFalse;
         }
-    fs.Close();
     }
 
 void IgLogClose()
     {
     IgLogFlush();
     TLogState* st = (TLogState*)Dll::Tls();
-    if (st) { delete st->iBuf; delete st; Dll::SetTls(NULL); }
+    if (st) { if (st->iFsOpen) st->iFs.Close(); delete st->iBuf; delete st; Dll::SetTls(NULL); }
     }
 
 // (heap buffers: the log is used deep in call chains and the stack is small)

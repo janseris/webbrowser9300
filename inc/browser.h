@@ -29,8 +29,12 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.29");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.29");
+_LIT(KBrVersion, "0.30");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.30");
+// View > Desktop pages: a desktop browser's, so sites send the layout for a wide screen (the mobile
+// ones are made for portrait phones); the version stays at the end
+_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.30");
+const TDesC8& BrUserAgent();            // the one the settings ask for
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
 // ------------------------------------------------------------------ util.cpp
@@ -70,6 +74,8 @@ class MHttpObserver
 public:
     virtual void HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders, const TDesC8& aBody) = 0;
     virtual void HttpProgress(const TDesC& aText) = 0;
+    // a step that blocks for a while (unzipping): shown on the screen before it starts
+    virtual void HttpStep(const TDesC& aText) { HttpProgress(aText); }
     // the reply's headers are in: EFalse pauses the transfer (Resume / Abort it later)
     virtual TBool HttpHeadersArrived(const TDesC8& /*aHeaders*/, TInt /*aStatus*/) { return ETrue; }
     };
@@ -194,6 +200,7 @@ public:
     virtual void DownloadOffered(const TDesC& aName, const TDesC8& aContentType, TInt aLength) = 0;
     virtual void PageFailed(const TDesC& aText) = 0;
     virtual void PageProgress(const TDesC& aText) = 0;
+    virtual void PageStep(const TDesC& aText) { PageProgress(aText); }   // shown at once
     };
 
 class CPageLoader : public CBase, public MHttpObserver
@@ -211,6 +218,7 @@ public:
     // MHttpObserver
     void HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders, const TDesC8& aBody);
     void HttpProgress(const TDesC& aText);
+    void HttpStep(const TDesC& aText);
     TBool HttpHeadersArrived(const TDesC8& aHeaders, TInt aStatus);
     // the offered file is wanted: it goes to aPath as it arrives
     void AcceptDownloadL(const TDesC& aPath);
@@ -304,6 +312,7 @@ public:
     TInt Pending() const;         // the page's pictures still to load (not the icon: priority < 0)
     TInt LoadedCount() const { return iLoadedCount; }   // this page's pictures so far
     TInt FailedCount() const { return iFailedCount; }
+    TBool Decoding(TSize& aSize) const { aSize = iFullNow; return iDecoder != NULL; }   // a picture being decoded, its full size
     TInt CachedKb() const { return iBytes / 1024; }
     TBool FullSize(const char* aUrl, TSize& aSize);     // a cached picture's original size
     // MHttpObserver
@@ -394,6 +403,7 @@ public:
     TBool iFullScreen;              // on by default ("full="; "fullscreen", off before 0.9, is ignored)
     TInt iTextSize;                 // -1, 0, 1
     TBool iFullSize;                // View > Original size: laid out 1024 px wide, scrolls sideways
+    TBool iDesktop;                 // View > Desktop pages: the desktop User-Agent
     TBool iStatsOn;                 // View > CPU and RAM (on by default)
     TInt iBar;                      // View > Bar: 0 top, else the side bar's width (80 / 100 / 130)
     TBool iPromptAccessPoint;
@@ -434,6 +444,7 @@ public:
     void Relayout();                       // widths, fonts or image sizes changed
     void ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize);
     void SetStatus(const TDesC& aText);    // the header's right part
+    void StatusNow(const TDesC& aText);    // the same, the bar drawn and on the screen at once (a long step follows)
     void SetStats(const TDesC& aText);     // CPU and RAM (lines separated by '\n'); redraws only the bar
     void SetTitle(const TDesC& aText);     // the header's left part (title or address)
     void SetIconL(const TDesC8& aUrl);     // the page's icon (favicon); empty: none
@@ -467,12 +478,14 @@ private:
     void ConstructL(const TRect& aRect);
     void EnsureBufferL();
     void Render();                         // asks for a redraw: DoRender runs from its own callback
+    void RenderLight();                    // the same when only the scroll position or the bars changed:
+                                           // the page part is moved and only the strip it uncovers drawn
     void DoRender();                       // into iBuffer, then DrawDeferred
     static TInt RenderCallback(TAny* aSelf);
     void RenderSide(CFbsBitGc& aGc);       // full screen: the bar at the right (title, link address, status)
     void RenderHeader(CFbsBitGc& aGc);     // otherwise the bar at the top
     TInt DrawWrapped(CFbsBitGc& aGc, const CFont* aFont, const TDesC& aText, TInt aX, TInt aY, TInt aW, TInt aMaxLines);
-    void RenderPage(CFbsBitGc& aGc);
+    void RenderPage(CFbsBitGc& aGc, TInt aStripTop = -1, TInt aStripH = 0);   // a strip (screen y): only what is in it
     void RenderList(CFbsBitGc& aGc);
     void DrawControl(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect, TBool aFocused);
     void DrawImage(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect, TInt aPriority);
@@ -529,6 +542,11 @@ private:
     TInt iHoverSent;                       // the element the page was last styled for
     TInt iHoverQuiet;                      // ticks it has rested on iHoverElem
     TInt iEdgeTicks;                       // ticks at the top / bottom edge (scrolling speeds up)
+    // what the buffer shows, for RenderLight: a full draw is needed unless only these moved
+    TBool iNeedFull;
+    TBool iDrawnOk;
+    TInt iDrawnY, iDrawnX, iDrawnFocus, iDrawnHover, iDrawnFind, iDrawnFindOff;
+    const BwLayout* iDrawnLayout;
     TInt iPointerMinY;                     // the highest the cursor has been (it stops short of the top)
     TInt iFindBox, iFindOff, iFindLen;     // the last match (box index; -1 none)
     // the list
@@ -626,6 +644,7 @@ class CBrAppUi : public CEikAppUi, public MPageObserver, public MImageObserver, 
 public:
     void ConstructL();
     ~CBrAppUi();
+    CBrSettings* Settings() const { return iSettings; }
     void HandleCommandL(TInt aCommand);
     void DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane);
     void HandleForegroundEventL(TBool aForeground);
@@ -666,7 +685,9 @@ public:
     void AskDownloadL();
     void PageFailed(const TDesC& aText);
     void PageProgress(const TDesC& aText);
-    void UpdateStatus();                  // the status from its parts: the page, stylesheets, pictures
+    void PageStep(const TDesC& aText);
+    void StepNow(const TDesC& aText);   // the page's status line, drawn now (before a long step)
+    void UpdateStatus(TBool aNow = EFalse);   // the status from its parts: the page, stylesheets, pictures
     // MImageObserver
     void ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize);
     void ImageProgress(const TDesC& aText);

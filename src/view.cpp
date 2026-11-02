@@ -119,6 +119,7 @@ void CBrView::EnsureBufferL()
     delete iBufferGc; iBufferGc = NULL;
     delete iBufferDev; iBufferDev = NULL;
     delete iBuffer; iBuffer = NULL;
+    iDrawnOk = EFalse;
     iBuffer = new (ELeave) CFbsBitmap;
     User::LeaveIfError(iBuffer->Create(s, EColor64K));
     iBufferDev = CFbsBitmapDevice::NewL(iBuffer);
@@ -291,13 +292,26 @@ void CBrView::SetStatus(const TDesC& aText)
     {
     if (iStatusText == aText.Left(iStatusText.MaxLength())) return;
     iStatusText.Copy(aText.Left(iStatusText.MaxLength()));
-    Render();
+    RenderLight();          // the bars only
+    }
+
+// Before a step that keeps the thread busy (parsing, laying out, unzipping): a queued Render
+// would only run after it, so the bar is drawn into the buffer and the window now.
+void CBrView::StatusNow(const TDesC& aText)
+    {
+    iStatusText.Copy(aText.Left(iStatusText.MaxLength()));
+    if (!iBufferGc || iListOpen || !IsVisible()) { Render(); return; }
+    iBufferGc->Reset();
+    if (iSideBar) RenderSide(*iBufferGc); else RenderHeader(*iBufferGc);
+    iBufferGc->DiscardFont();
+    DrawNow();
+    iCoeEnv->WsSession().Flush();
     }
 
 void CBrView::SetTitle(const TDesC& aText)
     {
     iTitle.Copy(aText.Left(iTitle.MaxLength()));
-    Render();
+    RenderLight();
     }
 
 void CBrView::SetLoading(TBool aLoading)
@@ -333,7 +347,7 @@ void CBrView::ScrollTo(TInt aY)
     {
     iScrollY = aY;
     ClampScroll();
-    Render();
+    RenderLight();          // (DoRender draws it all if more than the position changed)
     }
 
 void CBrView::ScrollToAnchor(const TDesC8& aName)
@@ -436,15 +450,13 @@ void CBrView::HoverAt(TPoint aPos, TBool aTick)
             }
         else if (dir && ((dir < 0 && iScrollY > 0) || (dir > 0 && iScrollY + PageHeightOnScreen() < iLayout->height)))
             {
+            // at once (no waiting ticks), then gently faster: 6, 9, 12 ... px a tick, at most 60
             iEdgeTicks++;
-            if (iEdgeTicks > 2)
-                {
-                TInt step = 8 + (iEdgeTicks - 3) * 6;
-                if (step > 90) step = 90;
-                iScrollY += dir * step;
-                ClampScroll();
-                redraw = ETrue;
-                }
+            TInt step = 6 + (iEdgeTicks - 1) * 3;
+            if (step > 60) step = 60;
+            iScrollY += dir * step;
+            ClampScroll();
+            redraw = ETrue;
             }
         else iEdgeTicks = 0;
         }
@@ -462,11 +474,11 @@ void CBrView::HoverAt(TPoint aPos, TBool aTick)
     else if (aTick && elem != iHoverSent && ++iHoverQuiet >= KHoverRestTicks && iEdgeTicks <= 2)
         {
         iHoverSent = elem;
-        if (redraw) Render();
+        if (redraw) RenderLight();
         iAppUi.HoverElementL(elem);       // may lay the page out again
         return;
         }
-    if (redraw) Render();
+    if (redraw) RenderLight();      // (a new link under the pointer: DoRender sees it, draws it all)
     }
 
 // ------------------------------------------------------------------ drawing
@@ -487,9 +499,14 @@ void CBrView::Draw(const TRect& /*aRect*/) const
 // drawing happens from the callback, right after the current event, once for several requests.
 void CBrView::Render()
     {
+    iNeedFull = ETrue;
     if (iRender && !iRender->IsActive()) iRender->CallBack();
     }
 
+void CBrView::RenderLight()
+    {
+    if (iRender && !iRender->IsActive()) iRender->CallBack();
+    }
 TInt CBrView::RenderCallback(TAny* aSelf)
     {
     ((CBrView*)aSelf)->DoRender();
@@ -503,7 +520,33 @@ void CBrView::DoRender()
     if (err != KErrNone || !iBufferGc) return;
     CFbsBitGc& gc = *iBufferGc;
     gc.Reset();
-    RenderPage(gc);
+    // only scrolled up or down by less than the page part (and nothing else changed): the picture
+    // is moved and the strip it uncovers drawn, instead of every line again
+    TInt top = PageTop();
+    TInt hc = PageHeightOnScreen() - (iLayoutW > PageWidthOnScreen() ? KScrollBarH : 0);
+    TInt dy = iScrollY - iDrawnY;
+    TBool light = !iNeedFull && iDrawnOk && iLayout && iDrawnLayout == iLayout && !iListOpen &&
+                  iDrawnX == iScrollX && iDrawnFocus == iFocus && iDrawnHover == iHoverTarget && iDrawnFind == iFindBox && iDrawnFindOff == iFindOff &&
+                  Abs(dy) < hc - 16;
+    if (light && dy)
+        {
+        TInt wc = PageAreaW() - KScrollBarW;
+        if (dy > 0)
+            {
+            gc.CopyRect(TPoint(0, -dy), TRect(0, top + dy, wc, top + hc));
+            RenderPage(gc, top + hc - dy, dy);
+            }
+        else
+            {
+            gc.CopyRect(TPoint(0, -dy), TRect(0, top, wc, top + hc + dy));
+            RenderPage(gc, top, -dy);
+            }
+        }
+    else if (!light) RenderPage(gc);
+    iNeedFull = EFalse;
+    iDrawnOk = ETrue;
+    iDrawnY = iScrollY; iDrawnX = iScrollX; iDrawnFocus = iFocus; iDrawnHover = iHoverTarget; iDrawnFind = iFindBox; iDrawnFindOff = iFindOff;
+    iDrawnLayout = iLayout;
     if (iSideBar) RenderSide(gc); else RenderHeader(gc);
     if (iListOpen) RenderList(gc);
     gc.DiscardFont();
@@ -874,12 +917,18 @@ void CBrView::DrawControl(CFbsBitGc& aGc, const BwBox& aBox, const TRect& aRect,
     aGc.SetBrushStyle(CGraphicsContext::ENullBrush);
     }
 
-void CBrView::RenderPage(CFbsBitGc& aGc)
+void CBrView::RenderPage(CFbsBitGc& aGc, TInt aStripTop, TInt aStripH)
     {
     TInt top = PageTop();
     TInt h = PageHeightOnScreen();
     TInt w = PageAreaW();
     TRect area(TPoint(0, top), TSize(w, h));
+    TBool strip = aStripTop >= 0;
+    // a strip: drawn up to the scroll bar (which is drawn whole after)
+    if (strip) area = TRect(TPoint(0, aStripTop), TSize(w - KScrollBarW, aStripH));
+    // the strip in page coordinates (boxes outside it are only asked for their pictures)
+    TInt sy0 = strip ? iScrollY + aStripTop - top : iScrollY;
+    TInt sy1 = strip ? sy0 + aStripH : iScrollY + h;
     aGc.SetPenStyle(CGraphicsContext::ENullPen);
     aGc.SetBrushStyle(CGraphicsContext::ESolidBrush);
     aGc.SetBrushColor(iDoc ? Rgb(iDoc->bgColor) : KRgbWhite);
@@ -890,7 +939,7 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
     for (TUint i = 0; i < iLayout->fillCount; i++)
         {
         const BwFill& f = iLayout->fills[i];
-        if (f.h <= 0 || f.y + f.h <= iScrollY || f.y >= iScrollY + h) continue;
+        if (f.h <= 0 || f.y + f.h <= sy0 || f.y >= sy1) continue;
         if (f.x + f.w <= iScrollX || f.x - iScrollX >= w) continue;
         TRect fr(TPoint(f.x - iScrollX, top + f.y - iScrollY), TSize(f.w, f.h));
         if (f.outline)
@@ -933,6 +982,17 @@ void CBrView::RenderPage(CFbsBitGc& aGc)
                     TInt d = b.y >= viewBottom ? b.y - viewBottom : iScrollY - (b.y + b.h);
                     iImages.Get(im.src, 1000 + d);
                     }
+                }
+            continue;
+            }
+        if (strip && (b.y >= sy1 || b.y + b.h <= sy0))
+            {
+            // on the screen but not in the strip: already drawn; its picture is still asked
+            // for (EndPass drops requests nobody asked for in this pass)
+            if (b.kind == BW_BOX_IMAGE)
+                {
+                const BwImage& im = iDoc->images[b.ref];
+                if (im.src && !im.failed) iImages.Get(im.src, Abs(b.y - iScrollY) / 8);
                 }
             continue;
             }
@@ -1224,7 +1284,7 @@ void CBrView::MoveFocus(TInt aDir)
     iScrollY += aDir * KScrollStep;
     ClampScroll();
     if (iFocus >= 0 && !TargetVisible(iFocus, EFalse)) SetFocusTarget(-1);
-    if (iScrollY != before || cand < 0) Render();
+    if (iScrollY != before || cand < 0) RenderLight();
     }
 
 void CBrView::JumpFocus(TInt aDir)

@@ -19,6 +19,34 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.30** (not yet run on the phone): faster, and the things asked for on 2026-11-02.
+  - **Parsing ~38 % fewer instructions** (Wikipedia's page with its 854 CSS rules: 46.6 M to
+    28.9 M in the ARM emulator, `test/emu/`: the phone's GCC 2.9 code in Unicorn, per function;
+    the same output to the byte on every test page). GCC 2.9 -O2 doesn't inline: `is_ws` (a call
+    a character, 16 %) is a macro; `has_class` compares while scanning and skips words with one
+    compare a character; `word_is` checks the literal's length first (a macro with `sizeof`);
+    a rule's index bucket is hashed once, not at every rebuild after a `<style>`;
+    `contains_ci("var(")` compares only where the first letter matches; `invisible` has a fast
+    path below U+00AD.
+  - **Scrolling**: when only the position changed (keys, the pointer at an edge), the page part of
+    the buffer is moved (`CopyRect`) and only the uncovered strip drawn; any other change (focus,
+    the link under the pointer, a picture, the find box) draws everything as before. The status
+    and title redraw only the bars.
+  - **Pictures decode in a thread of their own** (`EOptionAlwaysThread`): a big PNG kept the app
+    busy ~2.5 s and keys and scrolling waited.
+  - **Progress** for the long steps, drawn before each starts: "Unzipping N KB...", "Reading the
+    page (N KB)...", "Applying the stylesheets...", "Laying out...", and "decoding WxH" in the
+    pictures' line.
+  - **Not downloaded**: SVG / WebP / AVIF pictures (the phone can't show them; their alt text is
+    shown). A `srcset` with only 1.5x / 2x copies keeps `src` (the 1x one: the phone's screen is
+    1x; Wikipedia's photo 250 px, not the 180 KB 500 px one).
+  - **The pointer reaches the top**: in full screen the pointer's area stayed the normal client
+    area (below where the title bar was); it is set to the whole view. At the top / bottom edge
+    the page scrolls at once (no waiting ticks), 6, 9, 12 ... px a tick, at most 60.
+  - **View > Desktop pages**: a desktop Firefox User-Agent (with Browser9300/0.N at its end), so
+    sites send their desktop layout; the page reloads. Saved in the settings (`desktop=`).
+  - **The log** appends what is new (it rewrote up to 60 KB at each trace: ~0.7 s a line with
+    logging on) and keeps its file server session.
 - **0.29** (not yet run on the phone): the address bar's buttons: **Go** on top (as OK is in every
   Series 80 dialog), **History** (the pages visited, as Down) second, Cancel at the bottom. The
   phone's combo box put its Change button over the first button whenever it had the focus;

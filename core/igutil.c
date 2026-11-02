@@ -47,16 +47,16 @@ int ig_streq(const char* a, const char* b)
     return *a == *b;
 }
 
-static int ig_lower(int c)
-{
-    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
-}
-
 int ig_strieq_n(const char* a, const char* b, unsigned int n)
 {
     while (n--) {
-        if (ig_lower((unsigned char)*a) != ig_lower((unsigned char)*b)) return 0;
-        if (!*a) return 1;
+        unsigned int x = (unsigned char)*a, y = (unsigned char)*b;
+        if (x != y) {
+            if (x - 'A' < 26u) x += 32;
+            if (y - 'A' < 26u) y += 32;
+            if (x != y) return 0;
+        }
+        if (!x) return 1;
         a++; b++;
     }
     return 1;

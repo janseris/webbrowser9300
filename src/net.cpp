@@ -735,6 +735,12 @@ void CHttpClient::FinishL(TInt aError)
     TPtrC8 all(iResponse->Ptr(), iRespLen);
     TPtrC8 headers(all.Left(iInfo.headerLen));
     TPtrC8 rawBody(all.Mid(iInfo.headerLen));
+    if (obs && iInfo.gzip && rawBody.Length() > 4096)
+        {
+        TBuf<40> t;
+        t.Format(_L("Unzipping %d KB..."), rawBody.Length() / 1024);
+        obs->HttpStep(t);
+        }
     HBufC8* body = DecodeBodyL(rawBody, iInfo.chunked, iInfo.gzip);
     CleanupStack::PushL(body);
     IgLogF(_L("HTTP body decoded: %d bytes"), body->Length());

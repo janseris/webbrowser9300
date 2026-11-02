@@ -224,7 +224,7 @@ void CImageLoader::FetchL(const TDesC8& aUrl)
     HBufC8* h = HBufC8::NewLC(3500);
     TPtr8 hp = h->Des();
     hp.Append(_L8("User-Agent: "));
-    hp.Append(KBrUserAgent);
+    hp.Append(BrUserAgent());
     hp.Append(_L8("\r\nAccept: image/jpeg,image/png,image/gif,image/*;q=0.5\r\n"));
     HBufC8* zp = HBufC8::NewLC(pathLen + 1);
     zp->Des().Copy(TPtrC8((const TUint8*)path, pathLen));
@@ -315,7 +315,8 @@ void CImageLoader::DecodeL()
             }
         else User::Leave(KErrNotSupported);
         }
-    iDecoder = CImageDecoder::DataNewL(iFs, *iData, CImageDecoder::EOptionNoDither);
+    // in a thread of its own: a big PNG took ~2.5 s of this thread, keys and scrolling waited
+    iDecoder = CImageDecoder::DataNewL(iFs, *iData, (CImageDecoder::TOptions)(CImageDecoder::EOptionNoDither | CImageDecoder::EOptionAlwaysThread));
     IgTrace(_L("picture: decoder made"));
     const TFrameInfo& info = iDecoder->FrameInfo(0);
     TSize full = info.iOverallSizeInPixels;
@@ -348,6 +349,7 @@ void CImageLoader::DecodeL()
     iDecoded->UnlockHeap();
     iDecoder->Convert(&iStatus, *iDecoded, 0);
     SetActive();
+    iObserver.ImageProgress(KNullDesC);      // "decoding WxH" in the status
     }
 
 // A bitmap .ico: its pixels over the bar's blue (the icon) or white, into iDecoded; RunL scales it

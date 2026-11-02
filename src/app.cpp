@@ -716,18 +716,34 @@ void CBrAppUi::SetPageIconL(const TDesC8& aUrl, const BwDoc* aDoc)
     iView->SetHost(host);
     }
 
+// (the loaders have no settings of their own: they ask the app, through the environment)
+const TDesC8& BrUserAgent()
+    {
+    CBrAppUi* ui = (CBrAppUi*)CEikonEnv::Static()->EikAppUi();
+    return ui && ui->Settings() && ui->Settings()->iDesktop ? (const TDesC8&)KBrDesktopAgent : (const TDesC8&)KBrUserAgent;
+    }
+
 void CBrAppUi::ApplyCursor()
     {
     TEikVirtualCursor& vc = iEikonEnv->VirtualCursor();
     TRAPD(err, vc.SetCursorStateL(iSettings->iMouseOn ? TEikVirtualCursor::EOn : TEikVirtualCursor::EOff, *iEikonEnv));
     IgLogF2(_L("cursor: asked %d, error %d"), iSettings->iMouseOn ? 1 : 0, err);
+    // the area the pointer may move in: the system keeps the normal client area (below where the
+    // title bar was), so in full screen the top ~10 % was out of reach: the whole view
+    if (iView)
+        {
+        RWsSession& ws = iCoeEnv->WsSession();
+        TRect old = ws.PointerCursorArea();
+        TRect want(iView->PositionRelativeToScreen(), iView->Size());
+        if (old != want) ws.SetPointerCursorArea(want);
+        IgLogF2(_L("cursor: area top %d -> %d"), old.iTl.iY, ws.PointerCursorArea().iTl.iY);
+        }
     IgLogF2(_L("cursor: state now %d, pointer cursor mode %d"), (TInt)vc.CursorState(*iEikonEnv), (TInt)iCoeEnv->WsSession().PointerCursorMode());
     }
 
 void CBrAppUi::ApplySettingsL()
     {
-    ApplyFullScreenL();
-    ApplyCursor();
+    ApplyFullScreenL();            // (and the cursor)
     UpdateStatsTimer(ETrue);
     iView->SetPointerOn(iSettings->iMouseOn);
     }
@@ -747,6 +763,7 @@ void CBrAppUi::ApplyFullScreenL()
         iView->SetBar(iSettings->iBar);
         iView->SetRect(ClientRect());
         }
+    ApplyCursor();      // (the pointer's area follows the view's)
     }
 
 void CBrAppUi::Say(const TDesC& aText)
@@ -828,6 +845,12 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
             iSettings->iFullScreen = !iSettings->iFullScreen;
             iSettings->Save();
             ApplyFullScreenL();
+            break;
+        case EBrCmdDesktop:
+            iSettings->iDesktop = !iSettings->iDesktop;
+            iSettings->Save();
+            Say(iSettings->iDesktop ? _L("Desktop pages: on") : _L("Desktop pages: off (mobile)"));
+            if (iCurrentUrl && iCurrentUrl->Left(6) != _L8("about:")) ReloadL();
             break;
         case EBrCmdFullSize:
             iSettings->iFullSize = !iSettings->iFullSize;
@@ -940,6 +963,7 @@ void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
         }
         aMenuPane->SetItemButtonState(EBrCmdFullScreen, iSettings->iFullScreen ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdFullSize, iSettings->iFullSize ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        aMenuPane->SetItemButtonState(EBrCmdDesktop, iSettings->iDesktop ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdMouse, iSettings->iMouseOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdStats, iSettings->iStatsOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdBarTop, iSettings->iBar == 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
@@ -1268,6 +1292,7 @@ BwDoc* CBrAppUi::ApplyStylesL(BwDoc* aDoc, const TDesC8& aBody, const char* aUrl
         (void)err;
         }
     if (!cached) return aDoc;
+    StepNow(_L("Applying the stylesheets..."));
     BwDoc* d = bw_doc_parse_hover((const char*)aBody.Ptr(), aBody.Length(), aUrl, aCt, iForceCs, css, len, aDoc->styleCount,
                                   (const int*)iHover, iHoverCount, iSettings->iFullSize ? BW_PARSE_FULLSIZE : 0);
     if (!d) return aDoc;
@@ -1333,6 +1358,14 @@ void CBrAppUi::ApplyArrivedStyles()
 void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const TDesC8& aBody, TInt aScrollY, TInt aFocus, TBool aReparse)
     {
     if (!aReparse) { iStyles->Stop(); iHoverCount = 0; iView->ResetHover(); }
+    // the steps below keep the thread busy: each is on the screen before it starts
+    TBuf<80> keepStatus(iPageStatus);
+    {
+    TBuf<60> st;
+    if (aReparse) st.Copy(_L("Applying the stylesheets..."));
+    else st.Format(_L("Reading the page (%d KB)..."), aBody.Length() / 1024);
+    StepNow(st);
+    }
     TUint32 t0 = TickMs();
     HBufC8* zurl = ZeroTermLC(aUrl);
     HBufC8* zct = ZeroTermLC(aContentType);
@@ -1386,8 +1419,11 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
     if (aReparse && iView->Doc()) bw_doc_copy_form_state(doc, iView->Doc());
     if (!aReparse) SetPageIconL(aUrl, doc);        // (before the first draw, which asks for it)
     IgTrace(_L("icon set"));
+    StepNow(_L("Laying out..."));
     iView->SetDocumentL(doc, aScrollY, aFocus);
     IgTrace(_L("laid out"));
+    iPageStatus.Copy(keepStatus);
+    UpdateStatus();
     IgLogF2(_L("layout %d ms, %d boxes"), iView->LayoutMs(), iView->BoxCount());
     UpdateTitle();
     // a #fragment
@@ -1907,11 +1943,22 @@ void CBrAppUi::PageProgress(const TDesC& aText)
     UpdateStatus();
     }
 
+void CBrAppUi::PageStep(const TDesC& aText)
+    {
+    StepNow(aText);
+    }
+
+void CBrAppUi::StepNow(const TDesC& aText)
+    {
+    iPageStatus.Copy(aText.Left(iPageStatus.MaxLength()));
+    UpdateStatus(ETrue);
+    }
+
 // One line per part (the side bar shows them as lines, the top bar in one row):
 //   the page:        "Connecting to the server...", "12 / 40 KB, 30%, 9 KB/s", "34 KB, 1.2 s"
 //   stylesheets:     "Styles: 2 to load"
 //   pictures:        "Pictures: 5, 3 to load, 1 failed" (the ones near the screen are asked for)
-void CBrAppUi::UpdateStatus()
+void CBrAppUi::UpdateStatus(TBool aNow)
     {
     TBuf<200> t;
     t.Copy(iPageStatus);
@@ -1929,9 +1976,11 @@ void CBrAppUi::UpdateStatus()
             t.AppendFormat(_L("Pictures: %d"), done);
             if (left) t.AppendFormat(_L(", %d to load"), left);
             if (bad) t.AppendFormat(_L(", %d failed"), bad);
+            TSize ds;
+            if (iImages->Decoding(ds)) t.AppendFormat(_L(", decoding %dx%d"), ds.iWidth, ds.iHeight);
             }
         }
-    iView->SetStatus(t);
+    if (aNow) iView->StatusNow(t); else iView->SetStatus(t);
     }
 
 void CBrAppUi::ImageArrived(const TDesC8& aUrl, TBool aOk, TSize aFullSize)
@@ -2723,7 +2772,7 @@ void CBrAppUi::UpdateFromPcL()
     iHelperHttp->SetSinkFile(KUpdateFile);
     TBuf8<200> h;
     h.Append(_L8("User-Agent: "));
-    h.Append(KBrUserAgent);
+    h.Append(BrUserAgent());
     h.Append(_L8("\r\nAccept: */*\r\n"));
     iHelperHttp->RequestL(iSettings->iServerHost, _L8("GET"), KUpdatePath, h, KNullDesC8, *this, EFalse, iSettings->iServerPort);
     Say(_L("Downloading the update from the PC..."));

@@ -183,6 +183,7 @@ typedef struct {
     unsigned char pseudo;          /* 1 ::before, 2 ::after (only its content counts) */
     char* content;
     unsigned char contentAttr;
+    unsigned int bucket;           /* rule_bucket(), worked out once when it is first indexed */
 } CssRule;
 
 typedef struct {
@@ -241,7 +242,9 @@ typedef struct {
 
 /* ------------------------------------------------------------------ small helpers */
 static int lower(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
-static int is_ws(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
+/* (a macro: GCC 2.9 -O2 doesn't inline, and a call a character was 16 % of a Wikipedia parse)
+ * space, \t \n \f \r (9, 10, 12, 13; not \v); the argument has no side effects anywhere */
+#define is_ws(c) ((c) == ' ' || ((unsigned int)((c) - 9) < 5u && (c) != 11))
 static int is_alnum(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'); }
 
 static int lookup_tag(const char* name, unsigned int n)
@@ -409,6 +412,7 @@ static unsigned int read_entity(const char* s, unsigned int n, unsigned int* i, 
  * variation selectors, BOM): not drawn */
 static int invisible(unsigned int c)
 {
+    if (c < 0xAD && c != SKIP_CHAR) return 0;      /* (nearly every character: one compare) */
     return c == SKIP_CHAR || c == 0xAD || (c >= 0x200B && c <= 0x200F) || (c >= 0x2060 && c <= 0x2064) ||
            c == 0xFEFF || c == 0xFE0E || c == 0xFE0F || (c >= 0x202A && c <= 0x202E) || c == 0x034F;
 }
@@ -812,16 +816,36 @@ static int parse_color(const char* s, unsigned int n)
     return -1;
 }
 
-static int word_is(const char* s, unsigned int n, const char* lit)
+/* s[0..n) is lit, case-insensitively (no strlen of lit: it ends where s does) */
+static int word_is_f(const char* s, unsigned int n, const char* lit)
 {
-    unsigned int ln = ig_strlen(lit);
-    return n == ln && ig_strieq_n(s, lit, n);
+    unsigned int i;
+    for (i = 0; i < n; i++) {
+        unsigned int a = (unsigned char)s[i], b = (unsigned char)lit[i];
+        if (!b) return 0;
+        if (a - 'A' < 26u) a += 32;
+        if (b - 'A' < 26u) b += 32;
+        if (a != b) return 0;
+    }
+    return lit[n] == 0;
 }
+/* with a string literal: its length (sizeof, at compile time) first, so the long chains of
+ * property and value names cost a compare each, not a call (7 % of a Wikipedia parse) */
+#define word_is(s, n, lit) ((n) == sizeof(lit) - 1 && word_is_f(s, n, lit))
 
+/* (the whole comparison only where the first letter matches: every CSS value is searched for
+ * "var(") */
 static int contains_ci(const char* s, unsigned int n, const char* lit)
 {
-    unsigned int ln = ig_strlen(lit), i;
-    for (i = 0; i + ln <= n; i++) if (ig_strieq_n(s + i, lit, ln)) return 1;
+    unsigned int ln = ig_strlen(lit), i, f;
+    if (!ln) return 1;
+    f = (unsigned char)lit[0];
+    if (f - 'A' < 26u) f += 32;
+    for (i = 0; i + ln <= n; i++) {
+        unsigned int c = (unsigned char)s[i];
+        if (c - 'A' < 26u) c += 32;
+        if (c == f && ig_strieq_n(s + i, lit, ln)) return 1;
+    }
     return 0;
 }
 
@@ -1216,7 +1240,7 @@ static void parse_decls(P* pp, const char* s, unsigned int n, CssProps* prNormal
                 int c = split_words(v, vl, ws, we, 3), k, q;
                 for (k = 0; k < c; k++)
                     for (q = 0; q < (int)(sizeof(kLsV)); q++)
-                        if (word_is(v + ws[k], we[k] - ws[k], kLs[q])) { pr->listStyle = kLsV[q]; pr->mask |= CSS_LIST; }
+                        if (word_is_f(v + ws[k], we[k] - ws[k], kLs[q])) { pr->listStyle = kLsV[q]; pr->mask |= CSS_LIST; }
             } else if (word_is(p, pl, "content")) {
                 /* "text" "more" / attr(x) / none; escapes like \201C decoded */
                 IgBuf c;
@@ -1871,6 +1895,7 @@ static void free_rules(P* p)
     ig_free(p->start);
     p->idx = p->start = 0;
     p->ruleCount = p->ruleCap = 0;
+    p->indexedRules = 0;
 }
 
 /* ------------------------------------------------------------------ attributes */
@@ -1924,18 +1949,25 @@ static int attr_int(P* p, const char* name, int def)
 }
 
 /* class list contains the class? */
+/* cls is one of the words of list (compared while scanning: no strlen per call) */
 static int has_class(const char* list, const char* cls)
 {
-    unsigned int cl = ig_strlen(cls), i = 0;
-    if (!list) return 0;
-    while (list[i]) {
-        unsigned int st;
-        while (list[i] && is_ws((unsigned char)list[i])) i++;
-        st = i;
-        while (list[i] && !is_ws((unsigned char)list[i])) i++;
-        if (i - st == cl && ig_memcmp(list + st, cls, cl) == 0) return 1;
+    if (!list || !*cls) return 0;
+    for (;;) {
+        const char* c;
+        while (is_ws((unsigned char)*list)) list++;
+        if (!*list) return 0;
+        c = cls;
+        while (*c && *c == *list) { c++; list++; }
+        if (!*c && (!*list || is_ws((unsigned char)*list))) return 1;
+        /* to the word's end: anything above a space is in it (one compare a character), then the
+         * rare control characters that aren't white space */
+        for (;;) {
+            while ((unsigned char)*list > ' ') list++;
+            if (!*list || is_ws((unsigned char)*list)) break;
+            list++;
+        }
     }
-    return 0;
 }
 
 /* Reads the attributes of a start tag at s[*i] up to '>' (values decoded to UTF-8). */
@@ -2175,14 +2207,16 @@ static int build_index(P* p)
     p->idx = (unsigned int*)ig_malloc((p->ruleCount ? p->ruleCount : 1) * sizeof(unsigned int));
     if (!p->idx) return 0;
     for (i = 0; i <= N_BUCKETS; i++) p->start[i] = 0;
-    for (i = 0; i < p->ruleCount; i++) p->start[rule_bucket(&p->rules[i]) + 1]++;
+    /* (the index is rebuilt after each <style>: hash only the rules new since the last build) */
+    for (i = p->indexedRules; i < p->ruleCount; i++) p->rules[i].bucket = rule_bucket(&p->rules[i]);
+    for (i = 0; i < p->ruleCount; i++) p->start[p->rules[i].bucket + 1]++;
     for (i = 1; i <= N_BUCKETS; i++) p->start[i] += p->start[i - 1];
     {
         /* fill in rule order (each bucket stays sorted by source order) */
         unsigned int* fill = (unsigned int*)ig_malloc(N_BUCKETS * sizeof(unsigned int));
         if (!fill) { ig_free(p->idx); p->idx = 0; return 0; }
         for (i = 0; i < N_BUCKETS; i++) fill[i] = p->start[i];
-        for (i = 0; i < p->ruleCount; i++) p->idx[fill[rule_bucket(&p->rules[i])]++] = i;
+        for (i = 0; i < p->ruleCount; i++) p->idx[fill[p->rules[i].bucket]++] = i;
         ig_free(fill);
     }
     p->indexedRules = p->ruleCount;
@@ -2855,13 +2889,15 @@ static int decodable(const char* u, unsigned int n)
     while (e < n && u[e] != '?' && u[e] != '#') e++;
     if (e >= 5 && (ig_strieq_n(u + e - 5, ".webp", 5) || ig_strieq_n(u + e - 5, ".avif", 5))) return 0;
     if (e >= 4 && ig_strieq_n(u + e - 4, ".svg", 4)) return 0;
+    if (e >= 5 && ig_strieq_n(u + e - 5, ".svgz", 5)) return 0;
     if (e >= 5 && ig_strieq_n(u + e - 5, ".heic", 5)) return 0;
     return 1;
 }
 
 /* The candidate of a srcset to load: the smallest that is at least 480 px wide (else the
- * widest), or the 1x one; decodable formats first. A new string, or NULL. */
-static char* pick_srcset(const char* s)
+ * widest), or the 1x one; decodable formats first. A new string, or NULL. *densX: its density
+ * descriptor x 100 (100: 1x or none, 0: a width descriptor) */
+static char* pick_srcset(const char* s, int* densX)
 {
     unsigned int i = 0, n = ig_strlen(s);
     unsigned int bestS = 0, bestL = 0;
@@ -2902,6 +2938,7 @@ static char* pick_srcset(const char* s)
         }
     }
     if (bestW < 0) return 0;
+    *densX = bestW > 0 ? 0 : best1x;
     return ig_strndup(s + bestS, bestL);
 }
 
@@ -2916,6 +2953,7 @@ static void handle_image(P* p, int tag, int cssW, int cssH)
     BwImage* im;
     BwOp* op;
     char* chosen = 0;
+    int densX = 100;
     int w = attr_int(p, "width", 0), h = attr_int(p, "height", 0);
     (void)tag;
     if (e->hidden || capturing(p)) return;
@@ -2926,8 +2964,13 @@ static void handle_image(P* p, int tag, int cssW, int cssH)
     if (ds && ds[0] && (!src || !src[0] || ig_strieq_n(src, "data:", 5))) src = ds;
     if (!ss || !ss[0]) ss = attr(p, "data-srcset");
     /* <picture>: the <source> chosen; else this img's srcset, if src is missing or undecodable */
-    if (p->picSrc && in_stack(p, T_PICTURE)) chosen = pick_srcset(p->picSrc);
-    else if (ss && ss[0]) chosen = pick_srcset(ss);       /* (src is often the biggest one) */
+    if (p->picSrc && in_stack(p, T_PICTURE)) chosen = pick_srcset(p->picSrc, &densX);
+    else if (ss && ss[0]) {
+        chosen = pick_srcset(ss, &densX);                 /* (src is often the biggest one) */
+        /* only 1.5x / 2x copies listed: src is the 1x one, and the phone's screen is 1x
+         * (Wikipedia: a 180 KB 500 px picture instead of the 250 px one) */
+        if (chosen && densX > 100 && src && src[0] && !ig_strieq_n(src, "data:", 5) && decodable(src, ig_strlen(src))) { ig_free(chosen); chosen = 0; }
+    }
     if (chosen && !decodable(chosen, ig_strlen(chosen)) && src && src[0] && decodable(src, ig_strlen(src))) { ig_free(chosen); chosen = 0; }
     if (chosen) src = chosen;
     if ((w > 0 && w <= 2) || (h > 0 && h <= 2)) { ig_free(chosen); return; }     /* tracking pixels, spacers */
@@ -2941,6 +2984,9 @@ static void handle_image(P* p, int tag, int cssW, int cssH)
     ig_memset(im, 0, sizeof(BwImage));
     if (ig_strieq_n(src, "data:", 5)) im->src = 0;
     else im->src = bw_url_resolve(d->baseUrl, src, ig_strlen(src));
+    /* SVG, WebP, AVIF: the phone can't show them, so they aren't downloaded (as a failed picture:
+     * its alt text or nothing) */
+    if (im->src && !decodable(im->src, ig_strlen(im->src))) im->failed = 1;
     /* <noscript><img> after the lazy-loaded copy of the same picture: once is enough */
     if (im->src && d->imageCount && in_stack(p, T_NOSCRIPT) && d->images[d->imageCount - 1].src &&
         ig_streq(d->images[d->imageCount - 1].src, im->src)) {

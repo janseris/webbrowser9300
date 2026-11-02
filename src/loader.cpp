@@ -93,7 +93,7 @@ void CPageLoader::SendL()
     HBufC8* headers = HBufC8::NewLC(4096 + (iReferer ? iReferer->Length() : 0));
     TPtr8 h = headers->Des();
     h.Append(_L8("User-Agent: "));
-    h.Append(KBrUserAgent);
+    h.Append(BrUserAgent());
     h.Append(_L8("\r\nAccept: text/html,application/xhtml+xml,text/plain;q=0.9,image/*;q=0.5,*/*;q=0.3\r\n"
                  "Accept-Language: cs,en;q=0.8\r\nAccept-Encoding: gzip\r\n"));
     if (iReferer && iReferer->Length() && iReferer->Length() < 1000 && iReferer->Left(4) == _L8("http"))
@@ -181,6 +181,11 @@ void CPageLoader::StoreCookies(const TDesC8& aHeaders)
 void CPageLoader::HttpProgress(const TDesC& aText)
     {
     iObserver.PageProgress(aText);
+    }
+
+void CPageLoader::HttpStep(const TDesC& aText)
+    {
+    iObserver.PageStep(aText);
     }
 
 static void DownloadName(const TDesC8& aUrl, const TDesC8& aDisposition, TDes& aName);
@@ -459,7 +464,7 @@ void CStyleFetcher::SendL()
     HBufC8* h = HBufC8::NewLC(3500);
     TPtr8 hp = h->Des();
     hp.Append(_L8("User-Agent: "));
-    hp.Append(KBrUserAgent);
+    hp.Append(BrUserAgent());
     hp.Append(_L8("\r\nAccept: text/css,*/*;q=0.1\r\nAccept-Encoding: gzip\r\n"));
     HBufC8* zp = HBufC8::NewLC(pathLen + 1);
     zp->Des().Copy(TPtrC8((const TUint8*)path, pathLen));
