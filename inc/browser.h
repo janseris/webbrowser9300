@@ -29,11 +29,11 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.30");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.30");
+_LIT(KBrVersion, "0.31");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.31");
 // View > Desktop pages: a desktop browser's, so sites send the layout for a wide screen (the mobile
 // ones are made for portrait phones); the version stays at the end
-_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.30");
+_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.31");
 const TDesC8& BrUserAgent();            // the one the settings ask for
 _LIT(KBrDataDir, "C:\\System\\Data\\browser9300\\");
 
@@ -312,7 +312,7 @@ public:
     TInt Pending() const;         // the page's pictures still to load (not the icon: priority < 0)
     TInt LoadedCount() const { return iLoadedCount; }   // this page's pictures so far
     TInt FailedCount() const { return iFailedCount; }
-    TBool Decoding(TSize& aSize) const { aSize = iFullNow; return iDecoder != NULL; }   // a picture being decoded, its full size
+    TBool Decoding(TSize& aSize) const { aSize = iFullNow; return iDecoder != NULL || iJob != NULL; }   // a picture being decoded, its full size
     TInt CachedKb() const { return iBytes / 1024; }
     TBool FullSize(const char* aUrl, TSize& aSize);     // a cached picture's original size
     // MHttpObserver
@@ -346,6 +346,11 @@ private:
     void FetchL(const TDesC8& aUrl);
     void DecodeL();
     void DecodeIcoL(BwIcoImage& aIco);
+    TBool OwnDecodeL();                 // PNG / baseline JPEG: our decoders (Maps 9300's) in a thread
+    void DecodeIclL();                  // the rest (GIF, progressive JPEG...): the phone's ICL
+    TBool OwnDecodeDone();              // RunL: the thread's result into iDecoded (EFalse: try ICL)
+    void FreeJob();
+    static TInt DecodeThread(TAny* aJob);
     void Finish(CFbsBitmap* aBitmap);
     CEntry* Find(const TDesC8& aUrl);
     void TrimFor(TInt aBytes);
@@ -360,6 +365,9 @@ private:
     CRequest* iCurrent;
     HBufC8* iData;
     CImageDecoder* iDecoder;
+    struct TDecodeJob* iJob;            // our decoder's work, while its thread runs
+    RThread iDecThread;
+    TInt iDecSerial;                    // (a new thread name each time)
     CFbsBitmap* iDecoded;
     TSize iFullNow;
     TUint iUse;

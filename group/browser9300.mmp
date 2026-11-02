@@ -10,7 +10,7 @@ EPOCSTACKSIZE     0x5000
 OPTION GCC        -O2
 
 SOURCEPATH        ..\src
-SOURCE            app.cpp view.cpp loader.cpp net.cpp images.cpp fonts.cpp settings.cpp util.cpp
+SOURCE            app.cpp view.cpp loader.cpp net.cpp images.cpp fonts.cpp settings.cpp util.cpp jpegdec.cpp pngdec.cpp jpegasm.c
 
 SOURCEPATH        ..\core
 SOURCE            igutil.c igarm.c ighttp.c bwurl.c bwcharset.c bwhtml.c bwform.c bwlayout.c bwcookie.c bwico.c bwstream.c

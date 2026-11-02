@@ -36,7 +36,7 @@ const TInt KCacheMaxBytes = 16 * 1024 * 1024;
 const TInt KCacheOneMax = 4 * 1024 * 1024;
 const TInt KCssCacheMax = 4 * 1024 * 1024;
 const TInt KCssCacheMin = 900 * 1024;             // kept even when RAM is short (as before 0.12)
-const TInt KCacheRamReserve = 2560 * 1024;        // the free RAM the caches leave for the system
+const TInt KCacheRamReserve = 512 * 1024;         // the free RAM the caches leave for the system (as Maps 9300's 3D view: one app at a time)
 const TInt KStatsTickUs = 1000000;
 
 // the internal pages' start

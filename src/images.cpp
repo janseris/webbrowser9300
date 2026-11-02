@@ -8,9 +8,29 @@
 #include <fbs.h>
 #include <hal.h>
 #include "browser.h"
+#include "pngdec.h"
+#include "jpegdec.h"
+
+// Our decoder's work for its thread (the shared heap): Maps 9300's PNG and baseline JPEG decoders,
+// straight into RGB565. The phone's ICL took a median 0.41 s a 256 px PNG and 171 ms a JPEG (one
+// in ten 3 s or more) in Maps 9300; these ~30-50 ms and ~110-200 ms, a JPEG at half size from its
+// lowest frequencies when that is still big enough.
+struct TDecodeJob
+    {
+    const unsigned char* iData;
+    TInt iLen;
+    TBool iPng;
+    TInt iHalf;
+    TUint16* iOut;                     // iW x iH, iW a row
+    TInt iW, iH;
+    unsigned char* iWork;
+    TInt iWorkLen;
+    TUint iBg;                         // under transparent pixels: 0xRRGGBB
+    TInt iResult;                      // KPngOk / KJpegOk (0) or an error
+    };
 
 const TUint16 KIconUnder565 = 0x19CD;              // the bar's blue (0x1C3A6E) in RGB565: under the icon
-const TInt KRamReserve = 3 * 1024 * 1024;
+const TInt KRamReserve = 512 * 1024;       // free RAM left when pictures are kept (as Maps 9300's 3D view)
 const TInt KMaxImageFile = 700 * 1024;
 const TInt KMaxImageRedirects = 4;
 
@@ -43,6 +63,7 @@ void CImageLoader::ConstructL()
 CImageLoader::~CImageLoader()
     {
     Cancel();
+    FreeJob();
     delete iKicker;
     delete iDecoder;
     delete iDecoded;
@@ -63,9 +84,7 @@ CImageLoader::CEntry* CImageLoader::Find(const TDesC8& aUrl)
 
 static TInt FreeRam()
     {
-    TInt freeRam = 0;
-    HAL::Get(HALData::EMemoryRAMFree, freeRam);
-    return freeRam;
+    return BrFreeRam();
     }
 
 void CImageLoader::TrimFor(TInt aBytes)
@@ -171,7 +190,8 @@ CFbsBitmap* CImageLoader::Get(const char* aUrl, TInt aPriority)
 void CImageLoader::ClearAll()
     {
     iQueue.ResetAndDestroy();
-    if (IsActive()) Cancel();
+    if (IsActive()) Cancel();           // (our decoder's thread: Cancel waits for it to end)
+    FreeJob();
     delete iDecoder; iDecoder = NULL;
     delete iDecoded; iDecoded = NULL;
     delete iData; iData = NULL;
@@ -315,7 +335,14 @@ void CImageLoader::DecodeL()
             }
         else User::Leave(KErrNotSupported);
         }
-    // in a thread of its own: a big PNG took ~2.5 s of this thread, keys and scrolling waited
+    if (OwnDecodeL()) return;
+    DecodeIclL();
+    }
+
+// the phone's ICL, in a thread of its own: a big PNG took ~2.5 s of this thread, keys and scrolling
+// waited
+void CImageLoader::DecodeIclL()
+    {
     iDecoder = CImageDecoder::DataNewL(iFs, *iData, (CImageDecoder::TOptions)(CImageDecoder::EOptionNoDither | CImageDecoder::EOptionAlwaysThread));
     IgTrace(_L("picture: decoder made"));
     const TFrameInfo& info = iDecoder->FrameInfo(0);
@@ -384,8 +411,120 @@ void CImageLoader::DecodeIcoL(BwIcoImage& aIco)
     User::RequestComplete(s, KErrNone);
     }
 
+TInt CImageLoader::DecodeThread(TAny* aJob)
+    {
+    TDecodeJob* j = (TDecodeJob*)aJob;
+    if (j->iPng) j->iResult = PngDecode565(j->iData, j->iLen, j->iWork, j->iWorkLen, j->iOut, j->iW, j->iBg);
+    else j->iResult = JpegDecode565Scaled(j->iData, j->iLen, j->iWork, j->iWorkLen, j->iOut, j->iW, j->iHalf);
+    return 0;
+    }
+
+void CImageLoader::FreeJob()
+    {
+    if (!iJob) return;
+    iDecThread.Close();
+    User::Free(iJob->iOut);
+    User::Free(iJob->iWork);
+    User::Free(iJob);
+    iJob = NULL;
+    }
+
+// A PNG (not interlaced) or a baseline JPEG: decoded by our code in a thread of its own (the heap
+// shared; it touches nothing else). EFalse: not one of those, too big, or no memory (ICL then).
+TBool CImageLoader::OwnDecodeL()
+    {
+    const unsigned char* d = iData->Ptr();
+    TInt len = iData->Length();
+    PngHeader ph;
+    JpegHeader jh;
+    TBool png = PngInfo(d, len, ph) == KPngOk && !ph.interlace;
+    TBool jpeg = !png && JpegInfo(d, len, jh) == KJpegOk;
+    if (!png && !jpeg) return EFalse;
+    TInt w = png ? ph.width : jh.width, h = png ? ph.height : jh.height;
+    TInt workLen = png ? ph.workBytes : jh.workBytes;
+    if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || workLen <= 0 || workLen > 8 * 1024 * 1024) return EFalse;
+    // the size it gets on the page; a JPEG at half size when that still covers it
+    TSize fit(w, h);
+    if (fit.iWidth > iMax.iWidth) { fit.iHeight = Max(1, fit.iHeight * iMax.iWidth / fit.iWidth); fit.iWidth = iMax.iWidth; }
+    if (fit.iHeight > iMax.iHeight) { fit.iWidth = Max(1, fit.iWidth * iMax.iHeight / fit.iHeight); fit.iHeight = iMax.iHeight; }
+    TInt half = jpeg && w >= 32 && (w + 1) / 2 >= fit.iWidth && (h + 1) / 2 >= fit.iHeight ? 1 : 0;
+    TInt ow = half ? (w + 1) / 2 : w, oh = half ? (h + 1) / 2 : h;
+    if (ow * oh > 2000000) return EFalse;
+    TrimFor(workLen + ow * oh * 4 + fit.iWidth * fit.iHeight * 2);
+    TDecodeJob* j = (TDecodeJob*)User::Alloc(sizeof(TDecodeJob));
+    if (!j) return EFalse;
+    Mem::FillZ(j, sizeof(TDecodeJob));
+    iJob = j;
+    j->iOut = (TUint16*)User::Alloc(ow * oh * 2);
+    j->iWork = (unsigned char*)User::Alloc(workLen);
+    if (!j->iOut || !j->iWork) { User::Free(j->iOut); User::Free(j->iWork); User::Free(j); iJob = NULL; return EFalse; }
+    j->iData = d;
+    j->iLen = len;
+    j->iPng = png;
+    j->iHalf = half;
+    j->iW = ow;
+    j->iH = oh;
+    j->iWorkLen = workLen;
+    j->iBg = iCurrent && iCurrent->iPriority < 0 ? 0x1C3A6E : 0xFFFFFF;    // the bar's blue under the icon
+    j->iResult = -1;
+    iFullNow = TSize(w, h);
+    TBuf<24> name;
+    name.Format(_L("br9300dec%d"), ++iDecSerial);
+    if (iDecThread.Create(name, DecodeThread, 0x4000, &User::Heap(), j) != KErrNone)
+        {
+        User::Free(j->iOut); User::Free(j->iWork); User::Free(j); iJob = NULL;
+        return EFalse;
+        }
+    iDecThread.SetPriority(EPriorityLess);
+    iStatus = KRequestPending;
+    iDecThread.Logon(iStatus);
+    SetActive();
+    iDecThread.Resume();
+    IgTraceF(png ? _L("picture: own PNG decoder, %d px") : _L("picture: own JPEG decoder, %d px"), ow * oh);
+    iObserver.ImageProgress(KNullDesC);      // "decoding WxH" in the status
+    return ETrue;
+    }
+
+// The thread ended: its picture into iDecoded. EFalse if it failed (then ICL gets the picture).
+TBool CImageLoader::OwnDecodeDone()
+    {
+    TDecodeJob* j = iJob;
+    TBool ok = iStatus.Int() == KErrNone && iDecThread.ExitType() == EExitKill && j->iResult == 0;
+    if (!ok) IgLogF2(_L("own decoder failed: %d, exit %d"), j->iResult, iStatus.Int());
+    if (ok)
+        {
+        delete iDecoded;
+        iDecoded = new CFbsBitmap;
+        if (!iDecoded || iDecoded->Create(TSize(j->iW, j->iH), EColor64K) != KErrNone) ok = EFalse;
+        else
+            {
+            iDecoded->LockHeap();
+            TUint8* base = (TUint8*)iDecoded->DataAddress();
+            TInt stride = CFbsBitmap::ScanLineLength(j->iW, EColor64K);
+            for (TInt y = 0; y < j->iH; y++) Mem::Copy(base + y * stride, j->iOut + y * j->iW, j->iW * 2);
+            iDecoded->UnlockHeap();
+            }
+        if (!ok) { delete iDecoded; iDecoded = NULL; }
+        }
+    FreeJob();
+    return ok;
+    }
+
 void CImageLoader::RunL()
     {
+    if (iJob)
+        {
+        if (!iCurrent) { FreeJob(); return; }
+        if (!OwnDecodeDone())
+            {
+            // not ours after all: the phone's decoder (it comes back through RunL)
+            TRAPD(err, DecodeIclL());
+            if (err != KErrNone) Finish(NULL);
+            return;
+            }
+        IgTrace(_L("picture: own decoder done"));
+        iStatus = KErrNone;
+        }
     if (iStatus.Int() != KErrNone || !iCurrent)
         {
         IgLogF(_L("image convert %d"), iStatus.Int());

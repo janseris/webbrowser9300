@@ -19,6 +19,18 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.31** (not yet run on the phone): pictures decoded by Maps 9300's own decoders
+  (`src/pngdec.cpp`, `src/jpegdec.cpp`, `src/jpegasm.c`, copied from `maps9300` 1.19; the IDCT is
+  FFmpeg's simple IDCT via mp4player9300, LGPL-2.1-or-later). In Maps the phone's ICL took a median
+  0.41 s a 256 px PNG and 171 ms a JPEG (one in ten 3 s or more); these ~30-50 ms and ~110-200 ms,
+  straight into RGB565, a JPEG at half size from its lowest frequencies when that still covers the
+  page's size. They run in a thread of their own (`br9300dec<n>`, the shared heap, EPriorityLess)
+  and the picture is copied into the bitmap when it ends; GIFs, progressive JPEGs, interlaced
+  PNGs, anything that fails: the phone's ICL as before (its own thread). Checked on the PC against
+  PIL: Wikipedia's RGBA PNG 41.4 dB (blended over white), JPEG 4:2:0 37.9 dB, 4:4:4 41.2 dB, half
+  size 28.8 dB, progressive refused.
+  - **RAM**: the caches leave 512 KB free (was 2.5-3 MB), as Maps 9300's 3D view: one app runs at a
+    time. Free RAM counts what is free inside the browser's heap too.
 - **0.30** (not yet run on the phone): faster, and the things asked for on 2026-11-02.
   - **Parsing ~38 % fewer instructions** (Wikipedia's page with its 854 CSS rules: 46.6 M to
     28.9 M in the ARM emulator, `test/emu/`: the phone's GCC 2.9 code in Unicorn, per function;

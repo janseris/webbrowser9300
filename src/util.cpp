@@ -39,11 +39,14 @@ HBufC8* UnicodeToUtf8L(const TDesC& aText)
 const TDesC& LogFileName() { return KLogFile; }
 const TDesC& LogPrevFileName() { return KLogPrev; }
 
+// The phone's free RAM plus what is free inside our heap (memory deleted there stays in the
+// heap: the phone's count doesn't go up; Maps 9300's notes)
 TInt BrFreeRam()
     {
     TInt freeRam = 0;
     HAL::Get(HALData::EMemoryRAMFree, freeRam);
-    return freeRam;
+    TInt biggest = 0;
+    return freeRam + User::Available(biggest);
     }
 
 TUint32 TickMs()
