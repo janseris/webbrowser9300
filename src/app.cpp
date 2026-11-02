@@ -396,6 +396,7 @@ void CBrAppUi::EnsureCookies()
 CBrAppUi::~CBrAppUi()
     {
     delete iScriptedBody;
+    delete iRequestedUrl;
     if (iSettings) iSettings->Save();
     SaveCookies();
     SaveVisits();
@@ -998,6 +999,13 @@ void CBrAppUi::GoToDialogL(TUint aFirstChar)
     HBufC* buf = HBufC::NewLC(1000);
     TPtr t = buf->Des();
     if (aFirstChar) t.Append((TChar)aFirstChar);
+    else if (iRequestedUrl && *iRequestedUrl != *iCurrentUrl)
+        {
+        // the last address did not come (failed, stopped, still loading): it again, to retry or fix
+        HBufC* r = Utf8ToUnicodeL(iRequestedUrl->Left(1000));
+        t.Copy(*r);
+        delete r;
+        }
     else if (iCurrentUrl->Left(6) != _L8("about:")) t.Copy(iCurrentUrl->Left(1000));
     TBool ok;
     {
@@ -1087,6 +1095,10 @@ void CBrAppUi::OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost, TBool aAddHisto
         return;
         }
     iLoadStartMs = (TInt)TickMs();
+    {
+    HBufC8* req = aUrl.Alloc();
+    if (req) { delete iRequestedUrl; iRequestedUrl = req; }
+    }
     HBufC8* referer = iCurrentUrl->AllocLC();
     if (referer->Left(6) == _L8("about:")) referer->Des().Zero();
     iLoader->LoadL(aUrl, aPost, *referer);
@@ -1453,6 +1465,7 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
     HBufC8* cur = aUrl.AllocL();
     delete iCurrentUrl;
     iCurrentUrl = cur;
+    if (!aReparse) { delete iRequestedUrl; iRequestedUrl = NULL; }   // a page came
     iView->SetLoading(EFalse);
     // the same page again: what was typed and ticked stays
     if (aReparse && iView->Doc()) bw_doc_copy_form_state(doc, iView->Doc());

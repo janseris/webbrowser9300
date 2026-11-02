@@ -19,6 +19,12 @@ receives logs (`localserver\ota_server.js`).
 
 ## Status
 
+- **0.39** (not yet run on the phone): Go to keeps the address that did not load: after a page
+  fails (or is stopped, or is still loading) the address bar offers the address asked for, not
+  the page still on the screen, so it can be retried or corrected. 0.38 on the phone: the
+  page-script tests (`localserver/jstest`) all right: 21 / 21 checks, a windows-1250 page, a
+  runaway script stopped at 8 s with the page shown; ~230 ms of setup per page with scripts
+  (compiling the prelude), 360 KB of heap.
 - **0.38** (not yet run on the phone): **pages' inline scripts run** (View > JavaScript, on by
   default, at the top of the menu; it reloads the page). Before a page is read, its `<script>`
   elements run in order on the JavaScript thread (`js/bwhost.c`) and each is replaced by what it

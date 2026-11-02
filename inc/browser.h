@@ -29,11 +29,11 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.38");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.38");
+_LIT(KBrVersion, "0.39");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.39");
 // View > Desktop pages: a desktop browser's, so sites send the layout for a wide screen (the mobile
 // ones are made for portrait phones); the version stays at the end
-_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.38");
+_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.39");
 const TDesC8& BrUserAgent();
 HBufC8* BrJsTestPageLC();
 // a page's inline scripts (jsplat.cpp): the page with each script replaced by what it wrote, NULL
@@ -724,6 +724,8 @@ private:
     void CopyAddressL();
     TBuf<80> iPageStatus;               // the page's part of the status (stage, KB, the result)
     TInt iForceCs;                      // the encoding chosen by hand for this page (-1: automatic)
+    HBufC8* iRequestedUrl;              // the last address asked for, until a page is shown (Go to
+                                        // offers it again when that load failed or was stopped)
     // the last page after its scripts (UTF-8), for the same body read again (stylesheets came)
     HBufC8* iScriptedBody;              // NULL: the scripts wrote nothing (the body as it is)
     TBool iScriptedValid;
