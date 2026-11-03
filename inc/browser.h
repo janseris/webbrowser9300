@@ -29,11 +29,11 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.44");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.44");
+_LIT(KBrVersion, "0.45");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.45");
 // View > Desktop pages: a desktop browser's, so sites send the layout for a wide screen (the mobile
 // ones are made for portrait phones); the version stays at the end
-_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.44");
+_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.45");
 const TDesC8& BrUserAgent();
 HBufC8* BrJsTestPageLC();
 // a page's scripts (jsplat.cpp, js/bwhost.c): aHtml (UTF-8) run with the external scripts aFetch
@@ -151,6 +151,9 @@ private:
     struct z_stream_s* iZs;
     void ReceivedSoFarL();                 // after the headers: done, or receive more
     TBool iPaused, iSinkUsed;
+    TBool iPauseReading;                   // paused at a file's headers, the body still read into RAM
+    TBool iPauseDone;                      // ... and it all came (or the server closed): finish on Resume
+    TInt iPauseMax;                        // how much of it the RAM takes meanwhile
     TBool SinkFlush();
     void CloseSink();
 
@@ -202,6 +205,7 @@ private:
     RFs iSinkFs;
     TBool iSinkFsOpen;
     TInt iLastProgressKb;
+    TTime iLastProgress;                   // the progress text is redrawn every KProgressMs at most
     };
 
 // ------------------------------------------------------------------ loader.cpp

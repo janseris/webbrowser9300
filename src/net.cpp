@@ -10,6 +10,10 @@
 #include "browser.h"
 
 const TInt KMaxResponse = 4 * 1024 * 1024;
+// the body read into RAM while the download question is up (over Bluetooth ~35 KB a second)
+const TInt KPauseRam = 512 * 1024;
+// the progress text at most this often (each redraw is the CPU the Bluetooth stack runs on)
+const TInt KProgressMs = 300;
 _LIT(KTlsProtocol, "TLS1.0");     // the protocol name CSecureSocket looks up; the adaptor speaks TLS 1.2
 
 CHttpClient* CHttpClient::NewL()
@@ -122,9 +126,12 @@ void CHttpClient::RequestL(const TDesC8& aHost, const TDesC8& aMethod, const TDe
     iSinkBytes = 0;
     iSinkUsed = EFalse;
     iPaused = EFalse;
+    iPauseReading = EFalse;
+    iPauseDone = EFalse;
     iFramed = EFalse;
     iReused = EFalse;
     iLastProgressKb = 0;
+    iLastProgress = TTime(TInt64(0));
     if (iSinkOpen) CloseSink();
     ig_memset(&iInfo, 0, sizeof(iInfo));
 
@@ -347,7 +354,13 @@ void CHttpClient::ResumeL(const TDesC& aFile)
     if (!iPaused) return;
     iPaused = EFalse;
     iSinkName.Copy(aFile);
-    TryOpenSink();
+    TryOpenSink();                         // (what came meanwhile goes to the file first)
+    if (iPauseReading)
+        {
+        iPauseReading = EFalse;
+        if (iPauseDone) { iPauseDone = EFalse; iFramed = iSinkOpen ? SinkDone() : ETrue; FinishL(KErrNone); return; }
+        if (IsActive()) return;            // a read is out: RunL goes on into the file
+        }
     ReceivedSoFarL();
     }
 
@@ -576,13 +589,17 @@ void CHttpClient::RunL()
                         {
                         iHeadersDone = ETrue;
                         Progress(_L("Receiving..."));
-                        // the observer may want to ask first (a file to download): pause here
+                        // the observer may want to ask first (a file to download): the answer waits,
+                        // the body does not (read into RAM meanwhile, up to iPauseMax)
                         if (iObserver && !iObserver->HttpHeadersArrived(TPtrC8(iResponse->Ptr(), iInfo.headerLen), iInfo.status))
                             {
                             iPaused = ETrue;
-                            return;
+                            iPauseReading = ETrue;
+                            iPauseDone = EFalse;
+                            TInt room = BrFreeRam() / 8;
+                            iPauseMax = room < KPauseRam ? room : KPauseRam;
                             }
-                        TryOpenSink();
+                        else TryOpenSink();
                         }
                     }
                 else if (iSinkOpen)
@@ -602,6 +619,15 @@ void CHttpClient::RunL()
                 TBool complete;
                 if (iSinkOpen) complete = SinkDone();
                 else complete = iHeadersDone && ig_http_body_complete((const char*)iResponse->Ptr(), iRespLen, &iInfo);
+                if (iPaused)
+                    {
+                    // the question is still up: all of it here, or the RAM's share, and the
+                    // reading stops until the answer (ResumeL / Abort)
+                    if (complete) { iPauseDone = ETrue; return; }
+                    if (!iPauseReading || iRespLen - (TInt)iInfo.headerLen >= iPauseMax) return;
+                    ReceiveNext();
+                    return;
+                    }
                 if (complete)
                     {
                     iFramed = ETrue;
@@ -609,14 +635,15 @@ void CHttpClient::RunL()
                     return;
                     }
                 TInt got = iSinkOpen ? iSinkBytes : iRespLen;
-                if (got / 2048 != iLastProgressKb)
+                TTime now; now.UniversalTime();
+                if (got / 2048 != iLastProgressKb && now.MicroSecondsFrom(iLastProgress).Int64() >= TInt64(KProgressMs * 1000))
                     {
+                    iLastProgress = now;
                     // "12 / 40 KB" (the body when its length is known), then the speed
                     TInt body = iSinkOpen ? iSinkBytes : (iHeadersDone ? iRespLen - (TInt)iInfo.headerLen : 0);
                     TBuf<60> t;
                     if (iHeadersDone && iInfo.contentLength > 0) t.Format(_L("%d / %d KB"), body / 1024, iInfo.contentLength / 1024);
                     else t.Format(_L("%d KB"), got / 1024);
-                    TTime now; now.UniversalTime();
                     TInt ms = (now.MicroSecondsFrom(iRequestStart).Int64() / TInt64(1000)).GetTInt();
                     if (ms > 500) { t.Append(_L(", ")); t.AppendNum(got / ms); t.Append(_L(" KB/s")); }
                     iLastProgressKb = got / 2048;
@@ -626,6 +653,12 @@ void CHttpClient::RunL()
                 }
             else if (err == KErrEof || err == KErrDisconnected || err == KErrNone)
                 {
+                if (iPaused && iHeadersDone)
+                    {
+                    // the server closed it while the question is up: finish on the answer
+                    iPauseDone = ETrue;
+                    return;
+                    }
                 if (iReused && iRespLen == 0)
                     {
                     // the kept connection had been closed by the server: start a new one
@@ -645,6 +678,7 @@ void CHttpClient::RunL()
                 }
             else
                 {
+                if (iPaused && iHeadersDone) { iPauseDone = ETrue; return; }   // (as a close: on the answer)
                 if (iHeadersDone && iRespLen > (TInt)iInfo.headerLen) FinishL(KErrNone);   // partial body
                 else
                     {

@@ -24,6 +24,14 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.45** (not yet run on the phone): **a download goes on while its question is up.** GnuBox
+  Share's logs (the PC side of internet over Bluetooth, 3 Nov) showed every download standing still
+  while the "download it?" dialog was open: 3 s without a byte for browser9300.sis in 0.43 (of
+  10.5 s), ~100 KB at the link's 34 kB/s; the steady speed was the same in 0.38 and 0.43. Now the
+  body is read into RAM meanwhile (512 KB at most, an eighth of the free RAM), written to the file
+  on OK, dropped on Cancel; a file that came whole while the question was up is saved at once.
+  The progress text is redrawn every 300 ms at most (it was every 2 KB, ~17 times a second at
+  35 kB/s), leaving the CPU to the Bluetooth stack, which runs on it too.
 - **0.44** (not yet run on the phone): **the JavaScript engine gets its own allocator.** On the
   phone 0.43 passed all 21 tests but ran them 3-5 times slower than 0.42 did (b_obj 19.7 s, was
   6.2 s; c_memory 29.8 s, was 5.9 s) while the emulated phone build ran the same instructions as
