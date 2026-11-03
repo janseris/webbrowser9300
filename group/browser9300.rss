@@ -57,7 +57,8 @@ RESOURCE MENU_BAR r_br_menubar
         MENU_TITLE { menu_pane = r_br_menu_page; txt = "Page"; },
         MENU_TITLE { menu_pane = r_br_menu_bookmarks; txt = "Bookmarks"; },
         MENU_TITLE { menu_pane = r_br_menu_view; txt = "View"; },
-        MENU_TITLE { menu_pane = r_br_menu_tools; txt = "Tools"; }
+        MENU_TITLE { menu_pane = r_br_menu_tools; txt = "Tools"; },
+        MENU_TITLE { menu_pane = r_br_menu_tests; txt = "Tests & log"; }
         };
     }
 
@@ -121,20 +122,28 @@ RESOURCE MENU_PANE r_br_menu_view
         };
     }
 
-RESOURCE MENU_PANE r_br_menu_tools
+// the tests send the log to the PC by themselves when they are over (as Maps 9300's do)
+RESOURCE MENU_PANE r_br_menu_tests
     {
     items =
         {
-        MENU_ITEM { command = EBrCmdJsTest; txt = "JavaScript test"; },
-        MENU_ITEM { command = EBrCmdSpeedTest; txt = "Speed test"; flags = EEikMenuItemSeparatorAfter; },
-        MENU_ITEM { command = EBrCmdUpdate; txt = "Update from the PC"; },
+        MENU_ITEM { command = EBrCmdJsTest; txt = "JavaScript test (about 30 s, then the log to the PC)"; },
+        MENU_ITEM { command = EBrCmdSpeedTest; txt = "Speed test (about 10 s, then the log to the PC)"; flags = EEikMenuItemSeparatorAfter; },
         MENU_ITEM { command = EBrCmdSendLog; txt = "Send the log to the PC"; },
         MENU_ITEM { command = EBrCmdSendPrevLog; txt = "Send the previous log"; },
         MENU_ITEM { command = EBrCmdShowLog; txt = "Show the log"; },
         MENU_ITEM { command = EBrCmdShowPrevLog; txt = "Show the previous log"; },
-        MENU_ITEM { command = EBrCmdScreenshot; txt = "Send a screenshot"; },
+        MENU_ITEM { command = EBrCmdScreenshot; txt = "Send a screenshot"; flags = EEikMenuItemSeparatorAfter; },
+        MENU_ITEM { command = EBrCmdLogging; txt = "Logging"; flags = EEikMenuItemCheckBox; }
+        };
+    }
+
+RESOURCE MENU_PANE r_br_menu_tools
+    {
+    items =
+        {
+        MENU_ITEM { command = EBrCmdUpdate; txt = "Update from the PC"; },
         MENU_ITEM { command = EBrCmdServer; txt = "PC server address..."; flags = EEikMenuItemSeparatorAfter; },
-        MENU_ITEM { command = EBrCmdLogging; txt = "Logging"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdPromptAp; txt = "Ask for the access point"; flags = EEikMenuItemCheckBox; },
         MENU_ITEM { command = EBrCmdDropConnection; txt = "Drop the connection"; },
         MENU_ITEM { command = EBrCmdClearCookies; txt = "Delete cookies"; flags = EEikMenuItemSeparatorAfter; },

@@ -1,7 +1,7 @@
 // Browser 9300 - JavaScript (MuJS, js/mujs, built as mujs.lib with js/shim and js/bwlibc.c).
 //
 // Here: the platform half of MuJS's C library (the heap, Math::, the clock and the time zone), the
-// thread scripts run on, and Tools > JavaScript test (about:js).
+// thread scripts run on, and Tests & log > JavaScript test (about:js).
 //
 // The thread: the app's own stack is a few KB, and MuJS needs ~35 KB for a regular expression and
 // ~150 bytes for each nested call (1024 deep at most: ~150 KB), so scripts run on a thread with a
@@ -389,7 +389,7 @@ HBufC8* BrJsTestPageLC()
         }
     p.Append(_L8("</table><p>The clock as scripts see it: "));
     AppendHtmlUtf8(p, run->iInfo[0] ? run->iInfo : "-");
-    p.Append(_L8("</p><p>Send it with Tools &gt; Send a screenshot, or the log (with Logging on).</p></body></html>"));
+    p.Append(_L8("</p><p>Send it with Tests &amp; log &gt; Send a screenshot; the log (with Logging on) went to the PC by itself.</p></body></html>"));
 
     if (IgLogEnabled())
         {

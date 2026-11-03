@@ -24,7 +24,14 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
-- **0.45** (not yet run on the phone): **a download goes on while its question is up.** GnuBox
+- **0.46** (not yet run on the phone): **a Tests & log menu; a test sends the log by itself.**
+  As in Maps 9300: the JavaScript test, the speed test, sending / showing the logs, a screenshot
+  and Logging are in their own menu, and a test sends the log to the PC when it is over. A log
+  over 200 KB is sent from its end (it was its start: a test's results were cut off). After the
+  download question each step's time is in the log, and the history is written once the transfer
+  goes on (0.45 on the phone: the body came for ~4 s while the question was up, then the reading
+  stopped for 2 s before the file was written, the time unknown).
+- **0.45** (run on the phone, 4 Nov: maps9300.sis 7.7 s over Bluetooth, was 10 s with the reading stopped at the question; Maps 9300 itself 5.9 s): **a download goes on while its question is up.** GnuBox
   Share's logs (the PC side of internet over Bluetooth, 3 Nov) showed every download standing still
   while the "download it?" dialog was open: 3 s without a byte for browser9300.sis in 0.43 (of
   10.5 s), ~100 KB at the link's 34 kB/s; the steady speed was the same in 0.38 and 0.43. Now the
@@ -32,7 +39,7 @@ own browser; it installs on the Nokia 9300 and 9500.
   on OK, dropped on Cancel; a file that came whole while the question was up is saved at once.
   The progress text is redrawn every 300 ms at most (it was every 2 KB, ~17 times a second at
   35 kB/s), leaving the CPU to the Bluetooth stack, which runs on it too.
-- **0.44** (not yet run on the phone): **the JavaScript engine gets its own allocator.** On the
+- **0.44** (run on the phone, 4 Nov: 21 of 21 tests right in 24 s, 0.43 took 90 s; b_obj 5.3 s, c_memory 3.5 s, both faster than 0.42's 6.2 s and 5.9 s): **the JavaScript engine gets its own allocator.** On the
   phone 0.43 passed all 21 tests but ran them 3-5 times slower than 0.42 did (b_obj 19.7 s, was
   6.2 s; c_memory 29.8 s, was 5.9 s) while the emulated phone build ran the same instructions as
   0.42: User::Alloc is first fit over the whole app heap's free list, and the ES runtime's

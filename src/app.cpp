@@ -647,7 +647,7 @@ HBufC8* CBrAppUi::LogPageLC(TBool aPrevious)
     p.Append(KPageStyle);
     p.Append(aPrevious ? _L8("<h1>The previous log</h1>") : _L8("<h1>The log</h1>"));
     if (!raw || !raw->Length())
-        p.Append(_L8("<p>Empty. Turn on Tools &gt; Log (it is written only then); after a crash, start the browser again and open Tools &gt; Show the previous log.</p>"));
+        p.Append(_L8("<p>Empty. Turn on Tests &amp; log &gt; Logging (it is written only then); after a crash, start the browser again and open Tests &amp; log &gt; Show the previous log.</p>"));
     else
         {
         p.Append(_L8("<div style='font-size:small'>"));
@@ -971,9 +971,12 @@ void CBrAppUi::DynInitMenuPaneL(TInt aResourceId, CEikMenuPane* aMenuPane)
         aMenuPane->SetItemButtonState(EBrCmdTextNormal, iSettings->iTextSize == 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         aMenuPane->SetItemButtonState(EBrCmdTextBigger, iSettings->iTextSize > 0 ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         }
-    else if (aResourceId == R_BR_MENU_TOOLS)
+    else if (aResourceId == R_BR_MENU_TESTS)
         {
         aMenuPane->SetItemButtonState(EBrCmdLogging, iSettings->iLogOn ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
+        }
+    else if (aResourceId == R_BR_MENU_TOOLS)
+        {
         aMenuPane->SetItemButtonState(EBrCmdPromptAp, iSettings->iPromptAccessPoint ? EEikMenuItemSymbolOn : EEikMenuItemSymbolIndeterminate);
         }
     else if (aResourceId == R_BR_MENU_PAGE)
@@ -1905,6 +1908,8 @@ void CBrAppUi::AskDownloadL()
     TFileName full(path);
     full.Append(name);
     TEntry ent;
+    // (the time each step takes after the answer: the transfer reads on only between them)
+    TUint32 tAns = TickMs();
     // a file of that name is there: replace it (asked; an installer is only an installer), or
     // else keep both ("name (2).ext")
     if (fs.Entry(full, ent) == KErrNone)
@@ -1924,7 +1929,9 @@ void CBrAppUi::AskDownloadL()
             }
         }
     // a file bigger than the free space would fail at the end: say so first
+    TUint32 tFree = TickMs();
     TInt64 freeB = FreeSpace(fs, full);
+    IgLogF2(_L("download: name checked %d ms, free space %d ms"), (TInt)(tFree - tAns), (TInt)(TickMs() - tFree));
     if (iOfferLength > 0 && freeB >= TInt64(0) && TInt64(iOfferLength) + TInt64(64 * 1024) > freeB)
         {
         TBuf<100> q;
@@ -1945,16 +1952,16 @@ void CBrAppUi::AskDownloadL()
     IgLog(full);
     iPageStatus.Copy(_L("Downloading..."));
     UpdateStatus();
-    // the link goes into the history too, under the file's name
-    {
     TBuf<120> title(_L("Download: "));
     title.Append(name.Left(100));
     HBufC8* u = iLoader->Url().AllocLC();
+    TUint32 tGo = TickMs();
+    iLoader->AcceptDownloadL(full);       // (first: the transfer goes on into the file)
+    IgLogF2(_L("download: %d ms after the answer, on (%d ms)"), (TInt)(tGo - tAns), (TInt)(TickMs() - tGo));
+    // the link goes into the history too, under the file's name
     TRAPD(verr, RecordVisitL(*u, &title));
     (void)verr;
     CleanupStack::PopAndDestroy(u);
-    }
-    iLoader->AcceptDownloadL(full);
     }
 
 void CBrAppUi::PageDownloaded(const TDesC& aFile, const TDesC8& aContentType)
@@ -2724,7 +2731,14 @@ void CBrAppUi::ShowInternalL(const TDesC8& aUrl)
         delete iHistory[iHistoryPos].iTitle;
         iHistory[iHistoryPos].iTitle = TPtrC((const TUint16*)d->title, d->titleLen).Alloc();
         }
+    // a test is over: its results go to the PC by themselves (as Maps 9300's do)
+    TBool test = u.CompareF(_L8("about:js")) == 0 || u.CompareF(_L8("about:speed")) == 0;
     CleanupStack::PopAndDestroy(2);     // body, url
+    if (test)
+        {
+        TRAPD(lerr, SendLogL());
+        (void)lerr;
+        }
     }
 
 // ------------------------------------------------------------------ bookmarks
@@ -3010,12 +3024,17 @@ void CBrAppUi::SendLogL()
     IgLog(_L("sending the log"));
     IgLogFlush();
     RFile f;
-    if (f.Open(iCoeEnv->FsSession(), LogFileName(), EFileRead | EFileShareAny) != KErrNone) { Say(_L("No log yet (Tools > Logging)")); return; }
+    if (f.Open(iCoeEnv->FsSession(), LogFileName(), EFileRead | EFileShareAny) != KErrNone) { Say(_L("No log yet (Tests & log > Logging)")); return; }
     TInt size = 0;
     f.Size(size);
-    if (size > 200 * 1024) size = 200 * 1024;
-    HBufC8* d = HBufC8::NewLC(size);
+    // its last 200 KB (the newest: a test's results are at the end)
+    TInt from = size > 200 * 1024 ? size - 200 * 1024 : 0;
+    size -= from;
+    HBufC8* d = HBufC8::New(size);
+    if (!d) { f.Close(); User::Leave(KErrNoMemory); }
+    CleanupStack::PushL(d);
     TPtr8 dp = d->Des();
+    f.Seek(ESeekStart, from);
     f.Read(dp);
     f.Close();
     iHelperOp = EHelperLog;

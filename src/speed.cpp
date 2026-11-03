@@ -1,4 +1,4 @@
-// Browser 9300 - Tools > Speed test (about:speed): how long the phone takes for the operations a
+// Browser 9300 - Tests & log > Speed test (about:speed): how long the phone takes for the operations a
 // JavaScript engine leans on. Every JS number is a double, and the 9300 has no FPU: GCC's double
 // operations call EUSER's emulation (__adddf3, __muldf3, ...), whose speed we can't measure in the
 // emulator (the SDK has only its import library). Each operation runs in a loop that doubles until
@@ -125,6 +125,6 @@ HBufC8* BrSpeedTestPageLC()
     if (ours >= 0) { p.AppendNum(ours / 10); p.Append('.'); p.AppendNum(ours % 10); p.Append(_L8(" us")); } else p.Append('-');
     p.Append(_L8(", Mem::Copy "));
     if (sys >= 0) { p.AppendNum(sys / 10); p.Append('.'); p.AppendNum(sys % 10); p.Append(_L8(" us")); } else p.Append('-');
-    p.Append(_L8(".</p><p>Send it with Tools &gt; Send a screenshot, or the log (with Logging on).</p></body></html>"));
+    p.Append(_L8(".</p><p>Send it with Tests &amp; log &gt; Send a screenshot; the log (with Logging on) went to the PC by itself.</p></body></html>"));
     return h;
     }

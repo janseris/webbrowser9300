@@ -354,6 +354,8 @@ void CHttpClient::ResumeL(const TDesC& aFile)
     if (!iPaused) return;
     iPaused = EFalse;
     iSinkName.Copy(aFile);
+    IgLogF2(_L("download: %d KB came while the question was up (all of it: %d)"), (iRespLen - (TInt)iInfo.headerLen) / 1024,
+            iPauseDone ? 1 : 0);
     TryOpenSink();                         // (what came meanwhile goes to the file first)
     if (iPauseReading)
         {
