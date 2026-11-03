@@ -24,6 +24,9 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.48** (not yet run on the phone): the end of a download says "Writing the file (N KB)..."
+  while the RAM buffer goes to the flash (the whole file at once: the progress looked stuck a
+  few KB before the end).
 - **0.47** (not yet run on the phone): a file downloaded to the temporary place (installers, to
   open at once) replaces one of the same name without a second question: in 0.45 the "Replace the
   file?" question after the download question was the likely 2 s with the transfer stopped.

@@ -224,6 +224,13 @@ TBool CHttpClient::SinkWrite(const TDesC8& aData)
 TBool CHttpClient::SinkFlush()
     {
     if (!iSinkBuf || !iSinkBuf->Length()) return ETrue;
+    // a big write takes a while on the flash (the transfer looked stuck near its end): say so first
+    if (iSinkBuf->Length() >= 16 * 1024 && iObserver)
+        {
+        TBuf<60> t;
+        t.Format(_L("Writing the file (%d KB)..."), iSinkBuf->Length() / 1024);
+        iObserver->HttpStep(t);
+        }
     TInt err = iSink.Write(*iSinkBuf);
     iSinkBuf->Des().Zero();
     return err == KErrNone;
