@@ -29,11 +29,11 @@
 #include "bwcore.h"
 
 const TUid KUidBrowser9300 = { 0x0F5A9310 };
-_LIT(KBrVersion, "0.50");
-_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.50");
+_LIT(KBrVersion, "0.51");
+_LIT8(KBrUserAgent, "Mozilla/5.0 (Series80/2.0; Nokia9300; Profile/MIDP-2.0 Configuration/CLDC-1.1) Browser9300/0.51");
 // View > Desktop pages: a desktop browser's, so sites send the layout for a wide screen (the mobile
 // ones are made for portrait phones); the version stays at the end
-_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.50");
+_LIT8(KBrDesktopAgent, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Browser9300/0.51");
 const TDesC8& BrUserAgent();
 HBufC8* BrJsTestPageLC();
 // a page's scripts (jsplat.cpp, js/bwhost.c): aHtml (UTF-8) run with the external scripts aFetch
@@ -118,6 +118,7 @@ public:
     TInt BytesReceived() const { return iRespLen + iSinkBytes; }
     const TDesC& LastError() const { return iLastError; }
     void SetQuiet(TBool aQuiet) { iQuiet = aQuiet; }
+    TBool Bluetooth() const { return iRecvWin == 16384; }   // (DetectBearer found Bluetooth dial-up)
 
 private:
     CHttpClient();
@@ -287,6 +288,10 @@ public:
     void AddL(const TDesC8& aUrl);
     void StartL();
     void Stop();
+    // Over Bluetooth a new connection costs 0.6-11 s and a third one only queues behind the link
+    // (GnuBox, test log #19): the stylesheet and script fetchers then take turns, one request at
+    // a time, on the page's own kept-alive connection; the pictures keep the second one.
+    void SetLane(CHttpClient* aPageHttp, CStyleFetcher* aPartner) { iLane = aPageHttp; iPartner = aPartner; }
     TBool Busy() const { return iCurrent != NULL || iQueue.Count() > 0; }
     TInt Waiting() const { return iQueue.Count() + (iCurrent ? 1 : 0); }
     void HttpDone(TInt aError, TInt aHttpStatus, const TDesC8& aHeaders, const TDesC8& aBody);
@@ -295,11 +300,17 @@ private:
     CStyleFetcher(MStyleObserver& aObserver, BwCookieJar& aCookies);
     void SendL();
     void Done(const TDesC8* aCss);
+    TBool LaneOn() const { return iLane && iPartner && iLane->Bluetooth(); }
+    TBool Deferred() const { return !iCurrent && iQueue.Count() > 0; }
+    void KickPartner();
     static TInt WatchdogTick(TAny* aSelf);
     MStyleObserver& iObserver;
     BwCookieJar& iCookies;
     TBool iScripts;                 // fetches scripts (ScriptArrived / ScriptsDone, 512 KB each)
-    CHttpClient* iHttp;
+    CHttpClient* iHttp;             // the one this request went on (iOwnHttp or iLane)
+    CHttpClient* iOwnHttp;
+    CHttpClient* iLane;             // the page loader's (SetLane)
+    CStyleFetcher* iPartner;
     CPeriodic* iWatchdog;
     RPointerArray<HBufC8> iQueue;
     HBufC8* iCurrent;               // the URL as the page names it (the cache key)

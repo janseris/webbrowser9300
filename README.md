@@ -24,6 +24,14 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.51** (not yet run on the phone): **two connections over Bluetooth.** After the page's HTML,
+  its stylesheets, its scripts and its pictures each had a connection of their own: three at once,
+  where GnuBox measured that a third connection only adds waiting (the link carries ~35 kB/s
+  however it is shared) and each new one costs 0.6 s, plus 1.7-11 s of TLS handshake. Over
+  Bluetooth (the bearer 0.50 detects) the stylesheet and script fetchers now take turns, one
+  request at a time, on the page loader's own connection, which is kept alive and already through
+  TLS when the page came from the same host; the pictures keep the second connection. USB and
+  the other bearers keep three as before.
 - **0.50** (not yet run on the phone): **a 16 KB TCP window over Bluetooth.** The connection's
   bearer is read as Maps 9300 does (a modem bearer on the BTCOMM port: Bluetooth dial-up); there
   new sockets ask for 16 KB, elsewhere (USB's LAN bearer, ...) 48 KB as before. GnuBox's NetTest

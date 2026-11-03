@@ -401,8 +401,9 @@ CStyleFetcher* CStyleFetcher::NewL(MStyleObserver& aObserver, BwCookieJar& aCook
     CStyleFetcher* self = new (ELeave) CStyleFetcher(aObserver, aCookies);
     self->iScripts = aScripts;
     CleanupStack::PushL(self);
-    self->iHttp = CHttpClient::NewL();
-    self->iHttp->SetQuiet(ETrue);
+    self->iOwnHttp = CHttpClient::NewL();
+    self->iOwnHttp->SetQuiet(ETrue);
+    self->iHttp = self->iOwnHttp;
     self->iWatchdog = CPeriodic::NewL(CActive::EPriorityStandard);
     CleanupStack::Pop(self);
     return self;
@@ -417,7 +418,7 @@ CStyleFetcher::~CStyleFetcher()
     {
     if (iWatchdog) iWatchdog->Cancel();
     delete iWatchdog;
-    delete iHttp;
+    delete iOwnHttp;
     iQueue.ResetAndDestroy();
     delete iCurrent;
     delete iCurrentFinal;
@@ -426,10 +427,20 @@ CStyleFetcher::~CStyleFetcher()
 void CStyleFetcher::Stop()
     {
     iWatchdog->Cancel();
-    if (iHttp->Busy()) iHttp->Abort();
+    TBool had = iCurrent != NULL;
+    if (had && iHttp->Busy()) iHttp->Abort();
+    iHttp = iOwnHttp;
     iQueue.ResetAndDestroy();
     delete iCurrent; iCurrent = NULL;
     delete iCurrentFinal; iCurrentFinal = NULL;
+    if (had) KickPartner();
+    }
+
+void CStyleFetcher::KickPartner()
+    {
+    if (!LaneOn() || !iPartner->Deferred()) return;
+    TRAPD(err, iPartner->StartL());
+    (void)err;
     }
 
 void CStyleFetcher::AddL(const TDesC8& aUrl)
@@ -444,6 +455,12 @@ void CStyleFetcher::AddL(const TDesC8& aUrl)
 void CStyleFetcher::StartL()
     {
     if (iCurrent || !iQueue.Count()) return;
+    if (LaneOn())
+        {
+        if (iPartner->iCurrent) return;              // (its Done starts this one)
+        iHttp = iLane->Busy() ? iOwnHttp : iLane;    // (busy: a download of its own)
+        }
+    else iHttp = iOwnHttp;
     iCurrent = iQueue[0];
     iQueue.Remove(0);
     iRedirects = 0;
@@ -560,7 +577,12 @@ void CStyleFetcher::Done(const TDesC8* aCss)
         if (iScripts) iObserver.ScriptArrived(*url, aCss); else iObserver.StyleArrived(*url, aCss);
         delete url;
         }
-    if (iQueue.Count())
+    if (LaneOn() && iPartner->Deferred())
+        {
+        KickPartner();                     // (turns: the partner's Done comes back to this queue)
+        if (!iQueue.Count()) { if (iScripts) iObserver.ScriptsDone(); else iObserver.StylesDone(); }
+        }
+    else if (iQueue.Count())
         {
         TRAPD(err, StartL());
         (void)err;

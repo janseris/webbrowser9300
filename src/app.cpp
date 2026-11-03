@@ -353,6 +353,8 @@ void CBrAppUi::ConstructL()
     iHelperHttp = CHttpClient::NewL();
     iStyles = CStyleFetcher::NewL(*this, iCookies);
     iScriptFetcher = CStyleFetcher::NewL(*this, iCookies, ETrue);
+    iStyles->SetLane(&iLoader->Http(), iScriptFetcher);       // (Bluetooth only: two connections)
+    iScriptFetcher->SetLane(&iLoader->Http(), iStyles);
     iRefreshTimer = CPeriodic::NewL(CActive::EPriorityStandard);
     iShowCallback = new (ELeave) CAsyncCallBack(TCallBack(ShowCallback, this), CActive::EPriorityHigh);
     iOfferCallback = new (ELeave) CAsyncCallBack(TCallBack(OfferCallback, this), CActive::EPriorityStandard);
@@ -924,6 +926,7 @@ void CBrAppUi::HandleCommandL(TInt aCommand)
             break;
         case EBrCmdDropConnection:
             iLoader->Stop();
+            iStyles->Stop(); iScriptFetcher->Stop();
             iLoader->Http().CloseConnection();
             iImages->ClearAll();
             Say(_L("Connection dropped"));
@@ -1110,6 +1113,7 @@ void CBrAppUi::OpenUrlL(const TDesC8& aUrl, const TDesC8* aPost, TBool aAddHisto
     }
     HBufC8* referer = iCurrentUrl->AllocLC();
     if (referer->Left(6) == _L8("about:")) referer->Des().Zero();
+    if (iLoader->Http().Busy()) { iStyles->Stop(); iScriptFetcher->Stop(); }  // (they had its connection)
     iLoader->LoadL(aUrl, aPost, *referer);
     CleanupStack::PopAndDestroy(referer);
     iView->SetLoading(ETrue);
