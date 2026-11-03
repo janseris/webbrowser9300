@@ -1610,10 +1610,20 @@ void CBrAppUi::ShowPageL(const TDesC8& aUrl, const TDesC8& aContentType, const T
         // its scripts first (View > JavaScript): the page as they left it, in UTF-8
         const TDesC8* html = &aBody;
         TInt cs = iForceCs;
-        if (iSettings->iJs) RunScriptsL(aUrl, aBody, (const char*)zct->Ptr(), html, cs);
+        // WAP: a WML deck becomes an HTML page (core/bwwml.c); no scripts (WMLScript is not run)
+        HBufC8* wml = NULL;
+        if (bw_is_wml((const char*)zct->Ptr()))
+            {
+            unsigned int wn = 0;
+            char* w = bw_wml_to_html((const char*)aBody.Ptr(), aBody.Length(), &wn);
+            if (w) { wml = TPtrC8((const TUint8*)w, wn).Alloc(); ig_free(w); }
+            if (wml) html = wml;
+            }
+        else if (iSettings->iJs) RunScriptsL(aUrl, aBody, (const char*)zct->Ptr(), html, cs);
         doc = bw_doc_parse_hover((const char*)html->Ptr(), html->Length(), (const char*)zurl->Ptr(), (const char*)zct->Ptr(), cs,
                                  NULL, NULL, 0, (const int*)iHover, iHoverCount, iSettings->iFullSize ? BW_PARSE_FULLSIZE : 0);
         if (doc) doc = ApplyStylesL(doc, *html, (const char*)zurl->Ptr(), (const char*)zct->Ptr(), aReparse, cs);
+        delete wml;
         IgTrace(_L("parsed and styled"));
         }
     CleanupStack::PopAndDestroy(2);

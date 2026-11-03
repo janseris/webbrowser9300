@@ -6,5 +6,5 @@ CC=${CC:-gcc}
 $CC -std=c89 -pedantic -Wall -Wextra -Wno-long-long -Wdeclaration-after-statement -g -O1 \
     -fsanitize=address,undefined -fno-omit-frame-pointer -o /tmp/bwcoretest coretest.c \
     ../core/igutil.c ../core/ighttp.c ../core/bwurl.c ../core/bwcharset.c ../core/bwhtml.c \
-    ../core/bwform.c ../core/bwlayout.c ../core/bwcookie.c ../core/bwico.c ../core/bwstream.c
+    ../core/bwform.c ../core/bwlayout.c ../core/bwcookie.c ../core/bwico.c ../core/bwstream.c ../core/bwwml.c
 /tmp/bwcoretest "$@"

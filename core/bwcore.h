@@ -227,6 +227,11 @@ typedef struct {
 
 /* Parses a page. url: the final URL (after redirects); contentType: the header value or NULL;
  * cs: a charset forced by the user (-1: sniff). Returns NULL only on out of memory. */
+/* WAP: a WML deck (text/vnd.wap.wml) as an HTML page (core/bwwml.c; ig_malloc'ed, NULL: no
+ * memory). Its cards one after another, each with its id as an anchor. */
+int bw_is_wml(const char* contentType);
+char* bw_wml_to_html(const char* wml, unsigned int len, unsigned int* outLen);
+
 BwDoc* bw_doc_parse(const char* data, unsigned int len, const char* url, const char* contentType, int cs);
 /* A plain-text page (text/plain) as a document */
 BwDoc* bw_doc_plain(const char* data, unsigned int len, const char* url, int cs);

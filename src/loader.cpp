@@ -94,7 +94,7 @@ void CPageLoader::SendL()
     TPtr8 h = headers->Des();
     h.Append(_L8("User-Agent: "));
     h.Append(BrUserAgent());
-    h.Append(_L8("\r\nAccept: text/html,application/xhtml+xml,text/plain;q=0.9,image/*;q=0.5,*/*;q=0.3\r\n"
+    h.Append(_L8("\r\nAccept: text/html,application/xhtml+xml,text/vnd.wap.wml;q=0.8,text/plain;q=0.9,image/*;q=0.5,*/*;q=0.3\r\n"
                  "Accept-Language: cs,en;q=0.8\r\nAccept-Encoding: gzip\r\n"));
     if (iReferer && iReferer->Length() && iReferer->Length() < 1000 && iReferer->Left(4) == _L8("http"))
         {

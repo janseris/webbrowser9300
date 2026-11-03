@@ -13,7 +13,7 @@ SOURCEPATH        ..\src
 SOURCE            app.cpp view.cpp loader.cpp net.cpp images.cpp fonts.cpp settings.cpp util.cpp speed.cpp jsplat.cpp jpegdec.cpp pngdec.cpp jpegasm.c
 
 SOURCEPATH        ..\core
-SOURCE            igutil.c igarm.c ighttp.c bwurl.c bwcharset.c bwhtml.c bwform.c bwlayout.c bwcookie.c bwico.c bwstream.c
+SOURCE            igutil.c igarm.c ighttp.c bwurl.c bwcharset.c bwhtml.c bwform.c bwlayout.c bwcookie.c bwico.c bwstream.c bwwml.c
 
 SOURCEPATH        ..\group
 RESOURCE          browser9300.rss

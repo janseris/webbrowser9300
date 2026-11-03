@@ -24,6 +24,15 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.49** (not yet run on the phone): **WAP pages (WML).** A WML deck (`text/vnd.wap.wml`, now
+  in the Accept header) is turned into an HTML page (`core/bwwml.c`) the parser and layout show:
+  its cards one after another, each with its id as an anchor (a link to `#card` scrolls there);
+  `<do>` and `<anchor>` as links, or the button of the card's form when their `<go>` posts;
+  `<postfield>`s as the form's fields (the inputs they take `$(var)` from renamed to them, the
+  constant ones hidden); a `<select>` whose options navigate (onpick) as a list of links; `$(var)`
+  from `<setvar>`; the first card's `<timer>` + ontimer or onenterforward as a refresh. A `<do>`
+  that only goes back is left to the browser's Back. Not done: WMLScript, the binary WMLC that
+  WAP gateways sent to old phones. Test decks: `localserver/wap/index.wml`, `week.wml`.
 - **0.48** (not yet run on the phone): the end of a download says "Writing the file (N KB)..."
   while the RAM buffer goes to the flash (the whole file at once: the progress looked stuck a
   few KB before the end).
