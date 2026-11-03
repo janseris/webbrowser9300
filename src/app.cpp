@@ -1911,8 +1911,10 @@ void CBrAppUi::AskDownloadL()
     // (the time each step takes after the answer: the transfer reads on only between them)
     TUint32 tAns = TickMs();
     // a file of that name is there: replace it (asked; an installer is only an installer), or
-    // else keep both ("name (2).ext")
-    if (fs.Entry(full, ent) == KErrNone)
+    // else keep both ("name (2).ext"). In the temporary place (to open / install at once) it is
+    // replaced without a question: a second question stopped the transfer for its time too
+    TBool temp = path.CompareF(_L("C:\\System\\Temp\\")) == 0;
+    if (!temp && fs.Entry(full, ent) == KErrNone)
         {
         TBuf<160> q(name.Left(100));
         q.Append(_L(" is there already. Replace it?"));

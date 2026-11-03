@@ -24,6 +24,9 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.47** (not yet run on the phone): a file downloaded to the temporary place (installers, to
+  open at once) replaces one of the same name without a second question: in 0.45 the "Replace the
+  file?" question after the download question was the likely 2 s with the transfer stopped.
 - **0.46** (not yet run on the phone): **a Tests & log menu; a test sends the log by itself.**
   As in Maps 9300: the JavaScript test, the speed test, sending / showing the logs, a screenshot
   and Logging are in their own menu, and a test sends the log to the PC when it is over. A log
