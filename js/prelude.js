@@ -102,6 +102,7 @@ function unescape(s) {
 }
 
 // ---- the window
+function __err(e) { var t = e && typeof e === 'object' && typeof e.stackTrace === 'string' ? e.stackTrace.split('\n').slice(1, 3).join(' ') : ''; return String(e) + t; }
 var window = this, self = this, top = this, parent = this, frames = this, globalThis = this;
 var __noop = function () {};
 var __t0 = Date.now();
@@ -169,7 +170,7 @@ function __call(t, ev) {
             var f = a[i].fn;
             if (a[i].once) __unlisten(t, ev.type, f);
             try { if (typeof f === 'function') f.call(t, ev); else if (f && typeof f.handleEvent === 'function') f.handleEvent(ev); }
-            catch (e) { __say(ev.type + ' listener: ' + e); }
+            catch (e) { __say(ev.type + ' listener: ' + __err(e)); }
         }
     }
 }
@@ -211,7 +212,6 @@ function requestAnimationFrame(fn) { return setTimeout(function () { fn(__now); 
 var cancelAnimationFrame = clearTimeout, clearImmediate = clearTimeout;
 function requestIdleCallback(fn) { return setTimeout(function () { fn({ didTimeout: false, timeRemaining: function () { return 10; } }); }, 1); }
 var cancelIdleCallback = clearTimeout;
-function queueMicrotask(fn) { setTimeout(fn, 0); }
 // the due timers up to `until` ms, `max` calls at most; how many ran
 function __runTimers(until, max) {
     var ran = 0;
@@ -225,7 +225,8 @@ function __runTimers(until, max) {
         __now = t.at;
         ran++;
         try { if (typeof t.fn === 'function') t.fn.apply(window, t.args); else eval(String(t.fn)); }
-        catch (e) { __say('timer: ' + e); }
+        catch (e) { __say('timer: ' + __err(e)); }
+        window['%runJobs'](20000);
     }
     return ran;
 }
@@ -518,6 +519,384 @@ function XMLSerializer() {}
 XMLSerializer.prototype.serializeToString = function (n) { return n.outerHTML || n.textContent || ''; };
 
 // the page is read: DOMContentLoaded, then load (and <body onload>)
+// ---- web APIs newer pages call (ES2015+ built-ins are the engine's: js/es.js)
+// node lists are arrays here
+function NodeList() { throw new TypeError('Illegal constructor'); }
+NodeList.prototype = Array.prototype;
+var HTMLCollection = NodeList, NamedNodeMap = NodeList, DOMTokenList = NodeList, StyleSheetList = NodeList, HTMLAllCollection = NodeList;
+function CSSStyleSheet() { this.cssRules = []; }
+CSSStyleSheet.prototype.insertRule = function (r, i) { this.cssRules.splice(i | 0, 0, { cssText: r }); return i | 0; };
+CSSStyleSheet.prototype.deleteRule = function (i) { this.cssRules.splice(i, 1); };
+CSSStyleSheet.prototype.replaceSync = function (t) { this.cssRules = [{ cssText: String(t) }]; };
+CSSStyleSheet.prototype.replace = function (t) { this.replaceSync(t); return Promise.resolve(this); };
+def0(Node, '%noctor', true); def0(Element, '%noctor', true); def0(Document, '%noctor', true); def0(CharacterData, '%noctor', true);
+// fetch / XMLHttpRequest: a GET's text is what the browser fetched for the page (__fetchText; null:
+// not yet, the URL is noted and the page runs again with it); other methods are not sent
+function Headers(h) {
+    def0(this, '%h', {});
+    if (h instanceof Headers) h.forEach(function (v, k) { this.set(k, v); }, this);
+    else if (h instanceof Array) for (var i = 0; i < h.length; i++) this.append(h[i][0], h[i][1]);
+    else if (h) for (var k in h) if (h.hasOwnProperty(k)) this.append(k, h[k]);
+}
+Headers.prototype.get = function (k) { var v = this['%h'][String(k).toLowerCase()]; return v === undefined ? null : v; };
+Headers.prototype.set = function (k, v) { this['%h'][String(k).toLowerCase()] = String(v); };
+Headers.prototype.append = function (k, v) { k = String(k).toLowerCase(); var o = this['%h']; o[k] = o[k] === undefined ? String(v) : o[k] + ', ' + v; };
+Headers.prototype.has = function (k) { return this['%h'][String(k).toLowerCase()] !== undefined; };
+Headers.prototype['delete'] = function (k) { delete this['%h'][String(k).toLowerCase()]; };
+Headers.prototype.forEach = function (f, t) { var o = this['%h']; for (var k in o) f.call(t, o[k], k, this); };
+Headers.prototype.entries = function () { var r = []; this.forEach(function (v, k) { r.push([k, v]); }); return r[Symbol.iterator](); };
+Headers.prototype.keys = function () { var r = []; this.forEach(function (v, k) { r.push(k); }); return r[Symbol.iterator](); };
+Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
+function __ctype(u) { return /\.json(\?|#|$)/i.test(u) ? 'application/json' : /\.js(\?|#|$)/i.test(u) ? 'text/javascript' : /\.(html?)(\?|#|$)/i.test(u) ? 'text/html' : 'text/plain'; }
+function Response(body, init) {
+    init = init || {};
+    this.status = init.status === undefined ? 200 : init.status; this.ok = this.status >= 200 && this.status < 300;
+    this.statusText = init.statusText || (this.ok ? 'OK' : ''); this.headers = new Headers(init.headers);
+    this.url = init.url || ''; this.type = 'basic'; this.redirected = false; this.bodyUsed = false;
+    def0(this, '%b', body == null ? '' : String(body));
+}
+Response.prototype.text = function () { this.bodyUsed = true; return Promise.resolve(this['%b']); };
+Response.prototype.json = function () { var b = this['%b']; this.bodyUsed = true; return new Promise(function (r) { r(JSON.parse(b)); }); };
+Response.prototype.arrayBuffer = function () { this.bodyUsed = true; return Promise.resolve(new TextEncoder().encode(this['%b']).buffer); };
+Response.prototype.blob = function () { this.bodyUsed = true; return Promise.resolve(new Blob([this['%b']], { type: this.headers.get('content-type') || '' })); };
+Response.prototype.clone = function () { return new Response(this['%b'], { status: this.status, statusText: this.statusText, headers: this.headers, url: this.url }); };
+Response.json = function (d, i) { return new Response(JSON.stringify(d), i); };
+Response.error = function () { return new Response('', { status: 0 }); };
+function Request(u, init) {
+    init = init || {};
+    if (u instanceof Request) { init = u; u = u.url; }
+    this.url = __resolve(document.baseURI || __href, String(u)); this.method = String(init.method || 'GET').toUpperCase();
+    this.headers = new Headers(init.headers); this.body = init.body === undefined ? null : init.body; this.signal = init.signal || null;
+    this.credentials = init.credentials || 'same-origin'; this.mode = init.mode || 'cors';
+}
+function __pending() { return new Promise(function () {}); }
+function fetch(u, init) {
+    var q;
+    try { q = new Request(u, init); } catch (e) { return Promise.reject(e); }
+    if (q.signal && q.signal.aborted) return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+    if (q.method !== 'GET' && q.method !== 'HEAD') { __say('fetch: ' + q.method + ' ' + q.url + ' not sent'); return __pending(); }
+    if (/^data:/i.test(q.url)) {
+        var m = /^data:([^,;]*)(;base64)?,(.*)$/i.exec(q.url) || [];
+        return Promise.resolve(new Response(m[2] ? atob(m[3] || '') : decodeURIComponent(m[3] || ''), { url: q.url, headers: { 'content-type': m[1] || 'text/plain' } }));
+    }
+    var t = __fetchText(q.url);
+    if (t === null) return __pending();
+    return Promise.resolve(new Response(q.method === 'HEAD' ? '' : t, { url: q.url, headers: { 'content-type': __ctype(q.url) } }));
+}
+function XMLHttpRequest() {
+    this.readyState = 0; this.status = 0; this.statusText = ''; this.responseText = ''; this.response = '';
+    this.responseType = ''; this.responseURL = ''; this.responseXML = null; this.timeout = 0; this.withCredentials = false;
+    this.onreadystatechange = this.onload = this.onerror = this.onloadend = this.onabort = this.ontimeout = this.onprogress = null;
+    def0(this, '%hd', {}); this.upload = { addEventListener: __noop, removeEventListener: __noop };
+}
+XMLHttpRequest.UNSENT = 0; XMLHttpRequest.OPENED = 1; XMLHttpRequest.HEADERS_RECEIVED = 2; XMLHttpRequest.LOADING = 3; XMLHttpRequest.DONE = 4;
+(function (X) {
+    function fire(x, t) {
+        var e = new Event(t); __dispatch(x, e);
+        if (typeof x['on' + t] === 'function') try { x['on' + t](e); } catch (er) { __say('xhr: ' + er); }
+    }
+    X.open = function (m, u, async) {
+        this['%m'] = String(m).toUpperCase(); this['%u'] = __resolve(document.baseURI || __href, String(u)); this['%a'] = async !== false;
+        this.readyState = 1; fire(this, 'readystatechange');
+    };
+    X.setRequestHeader = function (k, v) { this['%hd'][String(k).toLowerCase()] = String(v); };
+    X.overrideMimeType = __noop;
+    X.getResponseHeader = function (k) { return String(k).toLowerCase() === 'content-type' && this.readyState === 4 ? __ctype(this['%u']) : null; };
+    X.getAllResponseHeaders = function () { return this.readyState === 4 ? 'content-type: ' + __ctype(this['%u']) + '\r\n' : ''; };
+    X.abort = function () { this['%x'] = true; this.readyState = 0; fire(this, 'abort'); };
+    X.send = function () {
+        var x = this, t;
+        if (x['%m'] !== 'GET' && x['%m'] !== 'HEAD') { __say('XMLHttpRequest: ' + x['%m'] + ' ' + x['%u'] + ' not sent'); return; }
+        t = __fetchText(x['%u']);
+        if (t === null) { if (!x['%a']) { x.readyState = 4; x.status = 0; } return; }
+        function done() {
+            if (x['%x']) return;
+            x.status = 200; x.statusText = 'OK'; x.responseURL = x['%u']; x.responseText = t; x.readyState = 4;
+            if (x.responseType === 'json') { try { x.response = JSON.parse(t); } catch (e) { x.response = null; } }
+            else if (x.responseType === 'document') { try { x.response = x.responseXML = new DOMParser().parseFromString(t, 'text/html'); } catch (e) { x.response = null; } }
+            else x.response = t;
+            fire(x, 'readystatechange'); fire(x, 'load'); fire(x, 'loadend');
+        }
+        if (x['%a']) setTimeout(done, 0); else done();
+    };
+    X.addEventListener = function (t, f, o) { __listen(this, t, f, o); };
+    X.removeEventListener = function (t, f) { __unlisten(this, t, f); };
+    X.dispatchEvent = function (e) { return __dispatch(this, e); };
+})(XMLHttpRequest.prototype);
+function AbortSignal() { this.aborted = false; this.reason = undefined; this.onabort = null; }
+AbortSignal.prototype.addEventListener = function (t, f, o) { __listen(this, t, f, o); };
+AbortSignal.prototype.removeEventListener = function (t, f) { __unlisten(this, t, f); };
+AbortSignal.prototype.throwIfAborted = function () { if (this.aborted) throw this.reason; };
+AbortSignal.abort = function (r) { var s = new AbortSignal(); s.aborted = true; s.reason = r; return s; };
+AbortSignal.timeout = function () { return new AbortSignal(); };
+function AbortController() { this.signal = new AbortSignal(); }
+AbortController.prototype.abort = function (r) {
+    var s = this.signal; if (s.aborted) return;
+    s.aborted = true; s.reason = r === undefined ? new DOMException('signal is aborted without reason', 'AbortError') : r;
+    var e = new Event('abort'); __dispatch(s, e); if (typeof s.onabort === 'function') s.onabort(e);
+};
+function DOMException(m, n) { this.message = m === undefined ? '' : String(m); this.name = n || 'Error'; }
+DOMException.prototype = Object.create(Error.prototype); DOMException.prototype.constructor = DOMException;
+function EventTarget() {}
+EventTarget.prototype.addEventListener = function (t, f, o) { __listen(this, t, f, o); };
+EventTarget.prototype.removeEventListener = function (t, f) { __unlisten(this, t, f); };
+EventTarget.prototype.dispatchEvent = function (e) { return __dispatch(this, e); };
+
+// URL, URLSearchParams
+function URLSearchParams(init) {
+    def0(this, '%l', []);
+    if (init instanceof URLSearchParams) init = init.toString();
+    if (typeof init === 'string') {
+        init = init.replace(/^\?/, '');
+        if (init) init.split('&').forEach(function (p) {
+            if (!p) return;
+            var i = p.indexOf('='), dec = function (s) { try { return decodeURIComponent(s.replace(/\+/g, ' ')); } catch (e) { return s; } };
+            this['%l'].push(i < 0 ? [dec(p), ''] : [dec(p.substring(0, i)), dec(p.substring(i + 1))]);
+        }, this);
+    } else if (init && typeof init === 'object') {
+        var a = init instanceof Array ? init : (typeof init[Symbol.iterator] === 'function' ? Array.from(init) : Object.entries(init));
+        for (var j = 0; j < a.length; j++) this['%l'].push([String(a[j][0]), String(a[j][1])]);
+    }
+}
+(function (P) {
+    function enc(s) { return encodeURIComponent(s).replace(/%20/g, '+').replace(/[!'()~]/g, function (c) { return '%' + c.charCodeAt(0).toString(16).toUpperCase(); }); }
+    function up(p) { if (p['%u']) p['%u']['%q'](p.toString()); }
+    P.get = function (k) { var l = this['%l']; for (var i = 0; i < l.length; i++) if (l[i][0] === String(k)) return l[i][1]; return null; };
+    P.getAll = function (k) { return this['%l'].filter(function (e) { return e[0] === String(k); }).map(function (e) { return e[1]; }); };
+    P.has = function (k) { return this.get(k) !== null; };
+    P.append = function (k, v) { this['%l'].push([String(k), String(v)]); up(this); };
+    P.set = function (k, v) {
+        var l = this['%l'], f = false; k = String(k);
+        for (var i = 0; i < l.length; i++) if (l[i][0] === k) { if (f) { l.splice(i--, 1); } else { l[i][1] = String(v); f = true; } }
+        if (!f) l.push([k, String(v)]);
+        up(this);
+    };
+    P['delete'] = function (k) { def0(this, '%l', this['%l'].filter(function (e) { return e[0] !== String(k); })); up(this); };
+    P.sort = function () { this['%l'].sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; }); up(this); };
+    P.forEach = function (f, t) { var l = this['%l']; for (var i = 0; i < l.length; i++) f.call(t, l[i][1], l[i][0], this); };
+    P.toString = function () { return this['%l'].map(function (e) { return enc(e[0]) + '=' + enc(e[1]); }).join('&'); };
+    P.entries = function () { return this['%l'].map(function (e) { return [e[0], e[1]]; })[Symbol.iterator](); };
+    P.keys = function () { return this['%l'].map(function (e) { return e[0]; })[Symbol.iterator](); };
+    P.values = function () { return this['%l'].map(function (e) { return e[1]; })[Symbol.iterator](); };
+    P[Symbol.iterator] = P.entries;
+    Object.defineProperty(P, 'size', { get: function () { return this['%l'].length; } });
+})(URLSearchParams.prototype);
+function URL(u, base) {
+    var s = base === undefined ? String(u) : __resolve(String(base instanceof URL ? base.href : base), String(u));
+    var m = /^([a-z][a-z0-9+.-]*:)(\/\/(([^\/?#@]*)@)?([^\/?#:]*|\[[^\]]*\])(:(\d*))?)?([^?#]*)(\?[^#]*)?(#.*)?$/i.exec(s);
+    if (!m || (base === undefined && !/^[a-z][a-z0-9+.-]*:/i.test(s))) throw new TypeError("Failed to construct 'URL': Invalid URL");
+    var ui = (m[4] || '').split(':');
+    def0(this, '%p', { protocol: m[1].toLowerCase(), username: ui[0] || '', password: ui[1] || '', hostname: (m[5] || '').toLowerCase(),
+                       port: m[7] || '', pathname: m[8] || (m[2] ? '/' : ''), search: m[9] && m[9] !== '?' ? m[9] : '', hash: m[10] && m[10] !== '#' ? m[10] : '', slashes: !!m[2] });
+    var me = this, sp = new URLSearchParams(this['%p'].search);
+    def0(sp, '%u', this);
+    def0(this, '%q', function (q) { me['%p'].search = q ? '?' + q : ''; });
+    def0(this, '%sp', sp);
+}
+(function (P) {
+    function acc(n, set) { Object.defineProperty(P, n, { get: function () { return this['%p'][n]; }, set: set || function (v) { this['%p'][n] = String(v); }, enumerable: true, configurable: true }); }
+    ['protocol', 'username', 'password', 'hostname', 'port', 'pathname'].forEach(function (n) { acc(n); });
+    acc('search', function (v) { v = String(v); this['%p'].search = v && v !== '?' ? (v.charAt(0) === '?' ? v : '?' + v) : ''; def0(this['%sp'], '%l', new URLSearchParams(this['%p'].search)['%l']); });
+    acc('hash', function (v) { v = String(v); this['%p'].hash = v && v !== '#' ? (v.charAt(0) === '#' ? v : '#' + v) : ''; });
+    Object.defineProperty(P, 'host', { get: function () { var p = this['%p']; return p.hostname + (p.port ? ':' + p.port : ''); }, set: function (v) { var a = String(v).split(':'); this['%p'].hostname = a[0]; this['%p'].port = a[1] || ''; }, enumerable: true });
+    Object.defineProperty(P, 'origin', { get: function () { var p = this['%p']; return p.slashes ? p.protocol + '//' + this.host : 'null'; }, enumerable: true });
+    Object.defineProperty(P, 'searchParams', { get: function () { return this['%sp']; }, enumerable: true });
+    Object.defineProperty(P, 'href', { get: function () {
+        var p = this['%p'], a = p.username ? p.username + (p.password ? ':' + p.password : '') + '@' : '';
+        return p.protocol + (p.slashes ? '//' + a + this.host : '') + p.pathname + p.search + p.hash;
+    }, set: function (v) { var n = new URL(v); def0(this, '%p', n['%p']); def0(this['%sp'], '%l', n['%sp']['%l']); }, enumerable: true });
+    P.toString = P.toJSON = function () { return this.href; };
+})(URL.prototype);
+URL.canParse = function (u, b) { try { new URL(u, b); return true; } catch (e) { return false; } };
+URL.createObjectURL = function () { return 'blob:' + __loc.origin + '/0'; };
+URL.revokeObjectURL = __noop;
+var webkitURL = URL;
+
+// atob / btoa, TextEncoder / TextDecoder (UTF-8)
+var __b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function btoa(s) {
+    s = String(s); var r = '', i, a, b, c;
+    for (i = 0; i < s.length; i += 3) {
+        a = s.charCodeAt(i); b = s.charCodeAt(i + 1); c = s.charCodeAt(i + 2);
+        if (a > 255 || b > 255 || c > 255) throw new DOMException('The string to be encoded contains characters outside of the Latin1 range.', 'InvalidCharacterError');
+        r += __b64.charAt(a >> 2) + __b64.charAt(((a & 3) << 4) | (b >> 4)) +
+             (i + 1 < s.length ? __b64.charAt(((b & 15) << 2) | (c >> 6)) : '=') + (i + 2 < s.length ? __b64.charAt(c & 63) : '=');
+    }
+    return r;
+}
+function atob(s) {
+    s = String(s).replace(/[\s=]+/g, ''); var r = '', i, n = 0, bits = 0, v;
+    for (i = 0; i < s.length; i++) {
+        v = __b64.indexOf(s.charAt(i)); if (v < 0) throw new DOMException('The string to be decoded is not correctly encoded.', 'InvalidCharacterError');
+        n = (n << 6) | v; bits += 6;
+        if (bits >= 8) { bits -= 8; r += String.fromCharCode((n >> bits) & 255); }
+    }
+    return r;
+}
+function TextEncoder() { this.encoding = 'utf-8'; }
+TextEncoder.prototype.encode = function (s) {
+    s = s === undefined ? '' : String(s); var o = [], i, c, d;
+    for (i = 0; i < s.length; i++) {
+        c = s.charCodeAt(i);
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < s.length) { d = s.charCodeAt(i + 1); if (d >= 0xDC00 && d < 0xE000) { c = 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00); i++; } }
+        if (c < 0x80) o.push(c);
+        else if (c < 0x800) o.push(0xC0 | (c >> 6), 0x80 | (c & 63));
+        else if (c < 0x10000) o.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+        else o.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    }
+    return new Uint8Array(o);
+};
+function TextDecoder(l) { this.encoding = 'utf-8'; this.fatal = false; this.ignoreBOM = false; }
+TextDecoder.prototype.decode = function (b) {
+    if (b == null) return '';
+    var a = b instanceof ArrayBuffer ? new Uint8Array(b) : b.buffer instanceof ArrayBuffer && !(b instanceof Uint8Array) ? new Uint8Array(b.buffer, b.byteOffset, b.byteLength) : b;
+    var r = '', i = 0, c, n = a.length;
+    while (i < n) {
+        c = a[i++];
+        if (c >= 0xF0 && i + 2 < n + 0) { c = ((c & 7) << 18) | ((a[i] & 63) << 12) | ((a[i + 1] & 63) << 6) | (a[i + 2] & 63); i += 3; c -= 0x10000; r += String.fromCharCode(0xD800 + (c >> 10), 0xDC00 + (c & 1023)); continue; }
+        if (c >= 0xE0) { c = ((c & 15) << 12) | ((a[i] & 63) << 6) | (a[i + 1] & 63); i += 2; }
+        else if (c >= 0xC0) { c = ((c & 31) << 6) | (a[i] & 63); i++; }
+        r += String.fromCharCode(c);
+    }
+    return r;
+};
+
+// typed arrays: arrays with a typed array's prototype (no wrapping of stored values); a
+// Uint8Array over a whole ArrayBuffer shares its bytes, other views copy
+function ArrayBuffer(n) { n = n >>> 0; var b = new Array(n); for (var i = 0; i < n; i++) b[i] = 0; def0(this, '%b', b); this.byteLength = n; }
+ArrayBuffer.prototype.slice = function (s, e) { var r = new ArrayBuffer(0), a = this['%b'].slice(s, e); def0(r, '%b', a); r.byteLength = a.length; return r; };
+ArrayBuffer.isView = function (v) { return !!(v && v.buffer instanceof ArrayBuffer && typeof v.BYTES_PER_ELEMENT === 'number'); };
+var __TA = function TypedArray() {};
+__TA.prototype = Object.create(Array.prototype);
+['Int8', 'Uint8', 'Uint8Clamped', 'Int16', 'Uint16', 'Int32', 'Uint32', 'Float32', 'Float64', 'BigInt64', 'BigUint64'].forEach(function (k) {
+    var size = /8/.test(k) && !/64/.test(k) ? 1 : /16/.test(k) ? 2 : /32/.test(k) ? 4 : 8;
+    var C = function (a, off, len) {
+        var r;
+        if (a instanceof ArrayBuffer) {
+            off = off | 0;
+            if (size === 1 && !off && len === undefined) r = a['%b'];
+            else r = a['%b'].slice(off, len === undefined ? undefined : off + len * size);
+        } else if (typeof a === 'number' || a === undefined) { r = new Array(a >>> 0); for (var i = 0; i < r.length; i++) r[i] = 0; }
+        else r = Array.from(a);
+        Object.setPrototypeOf(r, C.prototype);
+        if (!(a instanceof ArrayBuffer)) { var buf = new ArrayBuffer(0); if (size === 1) def0(buf, '%b', r); buf.byteLength = r.length * size; def0(r, 'buffer', buf); }
+        else def0(r, 'buffer', a);
+        def0(r, 'byteOffset', off | 0); def0(r, 'byteLength', r.length * size);
+        return r;
+    };
+    C.prototype = Object.create(__TA.prototype);
+    def0(C.prototype, 'constructor', C); def0(C.prototype, 'BYTES_PER_ELEMENT', size); C.BYTES_PER_ELEMENT = size;
+    def0(C.prototype, 'set', function (src, off) { off = off | 0; for (var i = 0; i < src.length; i++) this[off + i] = src[i]; });
+    def0(C.prototype, 'subarray', function (s, e) { return new C(Array.prototype.slice.call(this, s, e)); });
+    def0(C.prototype, 'slice', function (s, e) { return new C(Array.prototype.slice.call(this, s, e)); });
+    def0(C.prototype, 'map', function (f, t) { return new C(Array.prototype.map.call(this, f, t)); });
+    def0(C.prototype, 'filter', function (f, t) { return new C(Array.prototype.filter.call(this, f, t)); });
+    C.from = function (a, f, t) { return new C(Array.from(a, f, t)); };
+    C.of = function () { return new C(Array.prototype.slice.call(arguments)); };
+    window[k + 'Array'] = C;
+});
+function DataView(b, off, len) { this.buffer = b; this.byteOffset = off | 0; this.byteLength = len === undefined ? b.byteLength - this.byteOffset : len; }
+(function (P) {
+    function g(n, s, f) { P['get' + n] = function (o, le) { var b = this.buffer['%b'], v = 0, i; o += this.byteOffset; for (i = 0; i < s; i++) v += b[o + (le ? i : s - 1 - i)] * Math.pow(256, i); return f(v); }; }
+    function st(n, s) { P['set' + n] = function (o, v, le) { var b = this.buffer['%b'], i; o += this.byteOffset; v = v < 0 ? v + Math.pow(256, s) : v; for (i = 0; i < s; i++) { b[o + (le ? i : s - 1 - i)] = Math.floor(v / Math.pow(256, i)) & 255; } }; }
+    g('Uint8', 1, function (v) { return v; }); g('Int8', 1, function (v) { return v > 127 ? v - 256 : v; });
+    g('Uint16', 2, function (v) { return v; }); g('Int16', 2, function (v) { return v > 32767 ? v - 65536 : v; });
+    g('Uint32', 4, function (v) { return v; }); g('Int32', 4, function (v) { return v | 0; });
+    st('Uint8', 1); st('Int8', 1); st('Uint16', 2); st('Int16', 2); st('Uint32', 4); st('Int32', 4);
+})(DataView.prototype);
+
+// Blob, File, FormData (not sent anywhere), crypto, structuredClone, customElements
+function Blob(parts, o) { var s = (parts || []).map(function (p) { return typeof p === 'string' ? p : p && p['%s'] !== undefined ? p['%s'] : String(p); }).join(''); def0(this, '%s', s); this.size = s.length; this.type = (o && o.type) || ''; }
+Blob.prototype.text = function () { return Promise.resolve(this['%s']); };
+Blob.prototype.slice = function (a, b, t) { return new Blob([this['%s'].slice(a, b)], { type: t }); };
+function File(parts, name, o) { Blob.call(this, parts, o); this.name = String(name); this.lastModified = Date.now(); }
+File.prototype = Object.create(Blob.prototype);
+function FileReader() { this.result = null; this.readyState = 0; this.onload = null; }
+FileReader.prototype.readAsText = function (b) { var r = this; setTimeout(function () { r.result = b['%s']; r.readyState = 2; if (r.onload) r.onload({ target: r }); }, 0); };
+FileReader.prototype.readAsDataURL = function (b) { var r = this; setTimeout(function () { r.result = 'data:' + b.type + ';base64,' + btoa(unescape(encodeURIComponent(b['%s']))); r.readyState = 2; if (r.onload) r.onload({ target: r }); }, 0); };
+FileReader.prototype.addEventListener = function (t, f) { if (t === 'load') this.onload = f; };
+function FormData(form) {
+    def0(this, '%l', []);
+    if (form && form.elements) for (var i = 0; i < form.elements.length; i++) { var e = form.elements[i]; if (e.name && !e.disabled && !((e.type === 'checkbox' || e.type === 'radio') && !e.checked)) this.append(e.name, e.value); }
+}
+FormData.prototype = Object.create(URLSearchParams.prototype); FormData.prototype.constructor = FormData;
+var crypto = {
+    getRandomValues: function (a) { for (var i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256); return a; },
+    randomUUID: function () { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); },
+    subtle: {}
+};
+function structuredClone(v) {
+    var seen = [];
+    function c(x) {
+        if (x === null || typeof x !== 'object') return x;
+        if (x instanceof Date) return new Date(x.getTime());
+        if (x instanceof RegExp) return new RegExp(x.source, (x.global ? 'g' : '') + (x.ignoreCase ? 'i' : '') + (x.multiline ? 'm' : ''));
+        for (var i = 0; i < seen.length; i += 2) if (seen[i] === x) return seen[i + 1];
+        var r;
+        if (x instanceof Map) { r = new Map(); seen.push(x, r); x.forEach(function (v, k) { r.set(c(k), c(v)); }); return r; }
+        if (x instanceof Set) { r = new Set(); seen.push(x, r); x.forEach(function (v) { r.add(c(v)); }); return r; }
+        r = x instanceof Array ? [] : {}; seen.push(x, r);
+        for (var k in x) if (Object.prototype.hasOwnProperty.call(x, k)) r[k] = c(x[k]);
+        return r;
+    }
+    return c(v);
+}
+var customElements = (function () {
+    var defs = {}, waits = {};
+    function upgrade(el, C) {
+        if (el['%ce']) return;
+        def0(el, '%ce', true);
+        try {
+            Object.setPrototypeOf(el, C.prototype);
+            C.call(el);
+            if (typeof el.connectedCallback === 'function') el.connectedCallback();
+            var ao = C.observedAttributes;
+            if (ao && typeof el.attributeChangedCallback === 'function')
+                for (var i = 0; i < ao.length; i++) if (el.hasAttribute(ao[i])) el.attributeChangedCallback(ao[i], null, el.getAttribute(ao[i]));
+        } catch (e) { __say('custom element <' + el.localName + '>: ' + e); }
+    }
+    var ce = {
+        define: function (n, C) {
+            n = String(n).toLowerCase();
+            if (defs[n]) throw new DOMException('the name "' + n + '" has already been used with this registry', 'NotSupportedError');
+            defs[n] = C;
+            var l = document.querySelectorAll(n);
+            for (var i = 0; i < l.length; i++) upgrade(l[i], C);
+            if (waits[n]) { waits[n].forEach(function (r) { r(C); }); delete waits[n]; }
+        },
+        get: function (n) { return defs[String(n).toLowerCase()]; },
+        whenDefined: function (n) { n = String(n).toLowerCase(); return defs[n] ? Promise.resolve(defs[n]) : new Promise(function (r) { (waits[n] = waits[n] || []).push(r); }); },
+        upgrade: function (root) { for (var n in defs) { var l = root.querySelectorAll ? root.querySelectorAll(n) : []; for (var i = 0; i < l.length; i++) upgrade(l[i], defs[n]); } },
+        '%up': function (el) { var C = el && el.localName && defs[el.localName]; if (C) upgrade(el, C); return el; }
+    };
+    return ce;
+})();
+(function (D) {
+    var ce = D.createElement;
+    D.createElement = function (n, o) { return customElements['%up'](ce.call(this, n, o)); };
+})(document);
+function MessageChannel() {
+    var a = { onmessage: null }, b = { onmessage: null };
+    a.postMessage = function (d) { setTimeout(function () { if (b.onmessage) b.onmessage({ data: d }); }, 0); };
+    b.postMessage = function (d) { setTimeout(function () { if (a.onmessage) a.onmessage({ data: d }); }, 0); };
+    a.start = b.start = a.close = b.close = __noop; a.addEventListener = function (t, f) { if (t === 'message') a.onmessage = f; }; b.addEventListener = function (t, f) { if (t === 'message') b.onmessage = f; };
+    this.port1 = a; this.port2 = b;
+}
+function BroadcastChannel() { this.postMessage = this.close = __noop; this.onmessage = null; this.addEventListener = this.removeEventListener = __noop; }
+function Worker() { throw new Error('Workers are not supported'); }
+var Reflect = {
+    apply: function (f, t, a) { return Function.prototype.apply.call(f, t, a); },
+    construct: function (C, a) { return this['%c'](C, a); },
+    defineProperty: function (o, k, d) { try { Object.defineProperty(o, k, d); return true; } catch (e) { return false; } },
+    deleteProperty: function (o, k) { return delete o[k]; },
+    get: function (o, k) { return o[k]; }, set: function (o, k, v) { o[k] = v; return true; },
+    has: function (o, k) { return k in o; }, ownKeys: function (o) { return Object.getOwnPropertyNames(o); },
+    getPrototypeOf: Object.getPrototypeOf, setPrototypeOf: function (o, p) { Object.setPrototypeOf(o, p); return true; },
+    getOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
+    isExtensible: Object.isExtensible, preventExtensions: function (o) { Object.preventExtensions(o); return true; }
+};
+def0(Reflect, '%c', window['%construct']);
+
 function __loaded(phase) {
     if (phase === 1) {
         document.readyState = 'interactive';

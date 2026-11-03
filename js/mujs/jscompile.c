@@ -7,6 +7,7 @@
 JS_NORETURN void jsC_error(js_State *J, js_Ast *node, const char *fmt, ...) JS_PRINTFLIKE(3,4);
 
 static void cfunbody(JF, js_Ast *name, js_Ast *params, js_Ast *body, int is_fun_exp);
+static js_Function *newfun(js_State *J, int line, js_Ast *name, js_Ast *params, js_Ast *body, int script, int default_strict, int is_fun_exp, int gen);
 static void cexp(JF, js_Ast *exp);
 static void cstmlist(JF, js_Ast *list);
 static void cstm(JF, js_Ast *stm);
@@ -47,7 +48,7 @@ static void checkfutureword(JF, js_Ast *exp)
 	}
 }
 
-static js_Function *newfun(js_State *J, int line, js_Ast *name, js_Ast *params, js_Ast *body, int script, int default_strict, int is_fun_exp)
+static js_Function *newfun(js_State *J, int line, js_Ast *name, js_Ast *params, js_Ast *body, int script, int default_strict, int is_fun_exp, int gen)
 {
 	js_Function *F = js_malloc(J, sizeof *F);
 	memset(F, 0, sizeof *F);
@@ -61,8 +62,11 @@ static js_Function *newfun(js_State *J, int line, js_Ast *name, js_Ast *params, 
 	F->script = script;
 	F->strict = default_strict;
 	F->name = name ? name->string : "";
+	F->generator = gen & 3; /* 3: an async generator */
 
 	cfunbody(J, F, name, params, body, is_fun_exp);
+	if (F->generator)
+		F->lightweight = 0; /* its variables outlive the frame */
 
 	return F;
 }
@@ -224,11 +228,13 @@ static int here(JF)
 	return F->codelen;
 }
 
+/* Browser 9300: a jump's address is two instructions (low, high 16 bits): big functions */
 static int emitjump(JF, int opcode)
 {
 	int inst;
 	emit(J, F, opcode);
 	inst = F->codelen;
+	emitarg(J, F, 0);
 	emitarg(J, F, 0);
 	return inst;
 }
@@ -236,16 +242,14 @@ static int emitjump(JF, int opcode)
 static void emitjumpto(JF, int opcode, int dest)
 {
 	emit(J, F, opcode);
-	if (dest != (js_Instruction)dest)
-		js_syntaxerror(J, "jump address integer overflow");
-	emitarg(J, F, dest);
+	emitarg(J, F, dest & 0xFFFF);
+	emitarg(J, F, (dest >> 16) & 0xFFFF);
 }
 
 static void labelto(JF, int inst, int addr)
 {
-	if (addr != (js_Instruction)addr)
-		js_syntaxerror(J, "jump address integer overflow");
-	F->code[inst] = addr;
+	F->code[inst] = addr & 0xFFFF;
+	F->code[inst + 1] = (addr >> 16) & 0xFFFF;
 }
 
 static void label(JF, int inst)
@@ -282,12 +286,57 @@ static void cbinary(JF, js_Ast *exp, int opcode)
 	emit(J, F, opcode);
 }
 
+/* Browser 9300: [obj] -> %name(obj, exp) -> [obj] (the result dropped) */
+static void chelper2(JF, const char *name, js_Ast *exp)
+{
+	emit(J, F, OP_DUP);
+	emitstring(J, F, OP_GETVAR, name);
+	emit(J, F, OP_ROT2);
+	emit(J, F, OP_UNDEF);
+	emit(J, F, OP_ROT2);
+	cexp(J, F, exp);
+	emit(J, F, OP_CALL);
+	emitarg(J, F, 2);
+	emit(J, F, OP_POP);
+}
+
+/* Browser 9300: a ?. point: v on top (with npop - 1 more of the chain's values under it);
+ * when v is null or undefined, the chain is undefined */
+static void coptcheck(JF, int npop)
+{
+	js_JumpList *jump;
+	int skip, i;
+	emit(J, F, OP_DUP);
+	emit(J, F, OP_NULL);
+	emit(J, F, OP_EQ);
+	skip = emitjump(J, F, OP_JFALSE);
+	for (i = 0; i < npop; ++i)
+		emit(J, F, OP_POP);
+	emit(J, F, OP_UNDEF);
+	jump = js_malloc(J, sizeof *jump);
+	jump->type = 0;
+	jump->inst = emitjump(J, F, OP_JUMP);
+	jump->next = F->optjumps;
+	F->optjumps = jump;
+	label(J, F, skip);
+}
+
+static int hasspread(js_Ast *list)
+{
+	for (; list; list = list->b)
+		if (list->a->type == EXP_SPREAD)
+			return 1;
+	return 0;
+}
+
 static void carray(JF, js_Ast *list)
 {
 	while (list) {
 		emitline(J, F, list->a);
 		if (list->a->type == EXP_ELISION) {
 			emit(J, F, OP_SKIPARRAY);
+		} else if (list->a->type == EXP_SPREAD) {
+			chelper2(J, F, "%pushall", list->a->a);
 		} else {
 			cexp(J, F, list->a);
 			emit(J, F, OP_INITARRAY);
@@ -324,9 +373,17 @@ static void cobject(JF, js_Ast *list)
 {
 	js_Ast *head = list;
 
+	(void)head;
 	while (list) {
 		js_Ast *kv = list->a;
 		js_Ast *prop = kv->a;
+
+		if (kv->type == EXP_SPREAD) { /* {...o} */
+			emitline(J, F, kv);
+			chelper2(J, F, "%assign", kv->a);
+			list = list->b;
+			continue;
+		}
 
 		if (prop->type == AST_IDENTIFIER || prop->type == EXP_STRING) {
 			emitline(J, F, prop);
@@ -334,12 +391,9 @@ static void cobject(JF, js_Ast *list)
 		} else if (prop->type == EXP_NUMBER) {
 			emitline(J, F, prop);
 			emitnumber(J, F, prop->number);
-		} else {
-			jsC_error(J, prop, "invalid property name in object initializer");
+		} else { /* Browser 9300: computed [key] */
+			cexp(J, F, prop);
 		}
-
-		if (F->strict)
-			checkdup(J, F, head, kv);
 
 		switch (kv->type) {
 		default: /* impossible */ break;
@@ -349,12 +403,12 @@ static void cobject(JF, js_Ast *list)
 			emit(J, F, OP_INITPROP);
 			break;
 		case EXP_PROP_GET:
-			emitfunction(J, F, newfun(J, prop->line, NULL, NULL, kv->c, 0, F->strict, 1));
+			emitfunction(J, F, newfun(J, prop->line, NULL, NULL, kv->c, 0, F->strict, 1, 0));
 			emitline(J, F, kv);
 			emit(J, F, OP_INITGETTER);
 			break;
 		case EXP_PROP_SET:
-			emitfunction(J, F, newfun(J, prop->line, NULL, kv->b, kv->c, 0, F->strict, 1));
+			emitfunction(J, F, newfun(J, prop->line, NULL, kv->b, kv->c, 0, F->strict, 1, 0));
 			emitline(J, F, kv);
 			emit(J, F, OP_INITSETTER);
 			break;
@@ -504,6 +558,23 @@ static void cassignop(JF, js_Ast *exp, int opcode)
 static void cdelete(JF, js_Ast *exp)
 {
 	js_Ast *arg = exp->a;
+	if (arg->type == EXP_OPTCHAIN) { /* delete a?.b: true when a is nullish */
+		js_JumpList *save = F->optjumps, *jump;
+		int end;
+		F->optjumps = NULL;
+		cdelete(J, F, arg);
+		end = emitjump(J, F, OP_JUMP);
+		while ((jump = F->optjumps) != NULL) {
+			label(J, F, jump->inst);
+			F->optjumps = jump->next;
+			js_free(J, jump);
+		}
+		emit(J, F, OP_POP);
+		emit(J, F, OP_TRUE);
+		label(J, F, end);
+		F->optjumps = save;
+		return;
+	}
 	switch (arg->type) {
 	case EXP_IDENTIFIER:
 		if (F->strict)
@@ -519,11 +590,14 @@ static void cdelete(JF, js_Ast *exp)
 		break;
 	case EXP_MEMBER:
 		cexp(J, F, arg->a);
+		if (arg->number) coptcheck(J, F, 1);
 		emitline(J, F, exp);
 		emitstring(J, F, OP_DELPROP_S, arg->b->string);
 		break;
-	default:
-		jsC_error(J, exp, "invalid l-value in delete expression");
+	default: /* delete of a value: true */
+		cexp(J, F, arg);
+		emit(J, F, OP_POP);
+		emit(J, F, OP_TRUE);
 	}
 }
 
@@ -539,37 +613,64 @@ static void ceval(JF, js_Ast *fun, js_Ast *args)
 	emit(J, F, OP_EVAL);
 }
 
-static void ccall(JF, js_Ast *fun, js_Ast *args)
+static void ccall(JF, js_Ast *fun, js_Ast *args, int opt)
 {
 	int n;
 	switch (fun->type) {
 	case EXP_INDEX:
 		cexp(J, F, fun->a);
+		if (fun->number) coptcheck(J, F, 1);
 		emit(J, F, OP_DUP);
 		cexp(J, F, fun->b);
 		emit(J, F, OP_GETPROP);
+		if (opt) coptcheck(J, F, 2);
 		emit(J, F, OP_ROT2);
 		break;
 	case EXP_MEMBER:
 		cexp(J, F, fun->a);
+		if (fun->number) coptcheck(J, F, 1);
 		emit(J, F, OP_DUP);
 		emitstring(J, F, OP_GETPROP_S, fun->b->string);
+		if (opt) coptcheck(J, F, 2);
 		emit(J, F, OP_ROT2);
 		break;
 	case EXP_IDENTIFIER:
-		if (!strcmp(fun->string, "eval")) {
+		if (!strcmp(fun->string, "eval") && !opt && !hasspread(args)) {
 			ceval(J, F, fun, args);
 			return;
 		}
 		/* fallthrough */
 	default:
 		cexp(J, F, fun);
+		if (opt) coptcheck(J, F, 1);
 		emit(J, F, OP_UNDEF);
 		break;
+	}
+	if (hasspread(args)) { /* [fun this] -> %apply(fun, this, [args]) */
+		emit(J, F, OP_NEWARRAY);
+		carray(J, F, args);
+		emitstring(J, F, OP_GETVAR, "%apply");
+		emit(J, F, OP_ROT4);
+		emit(J, F, OP_UNDEF);
+		emit(J, F, OP_ROT4);
+		emit(J, F, OP_CALL);
+		emitarg(J, F, 3);
+		return;
 	}
 	n = cargs(J, F, args);
 	emit(J, F, OP_CALL);
 	emitarg(J, F, n);
+#ifdef BW_CALLNAMES
+	if (fun->type == EXP_MEMBER || fun->type == EXP_IDENTIFIER) {
+		if (F->ncall == F->capcall) {
+			F->capcall = F->capcall ? F->capcall * 2 : 16;
+			F->callpc = js_realloc(J, F->callpc, F->capcall * sizeof *F->callpc);
+			F->callname = js_realloc(J, F->callname, F->capcall * sizeof *F->callname);
+		}
+		F->callpc[F->ncall] = F->codelen;
+		F->callname[F->ncall++] = fun->type == EXP_MEMBER ? fun->b->string : fun->string;
+	}
+#endif
 }
 
 static void cexp(JF, js_Ast *exp)
@@ -625,7 +726,7 @@ static void cexp(JF, js_Ast *exp)
 
 	case EXP_FUN:
 		emitline(J, F, exp);
-		emitfunction(J, F, newfun(J, exp->line, exp->a, exp->b, exp->c, 0, F->strict, 1));
+		emitfunction(J, F, newfun(J, exp->line, exp->a, exp->b, exp->c, 0, F->strict, 1, (int)exp->number));
 		break;
 
 	case EXP_IDENTIFIER:
@@ -635,6 +736,7 @@ static void cexp(JF, js_Ast *exp)
 
 	case EXP_INDEX:
 		cexp(J, F, exp->a);
+		if (exp->number) coptcheck(J, F, 1);
 		cexp(J, F, exp->b);
 		emitline(J, F, exp);
 		emit(J, F, OP_GETPROP);
@@ -642,15 +744,114 @@ static void cexp(JF, js_Ast *exp)
 
 	case EXP_MEMBER:
 		cexp(J, F, exp->a);
+		if (exp->number) coptcheck(J, F, 1);
 		emitline(J, F, exp);
 		emitstring(J, F, OP_GETPROP_S, exp->b->string);
 		break;
 
 	case EXP_CALL:
-		ccall(J, F, exp->a, exp->b);
+		ccall(J, F, exp->a, exp->b, (int)exp->number);
+		break;
+
+	case EXP_OPTCHAIN: {
+		js_JumpList *save = F->optjumps, *jump;
+		F->optjumps = NULL;
+		cexp(J, F, exp->a);
+		while ((jump = F->optjumps) != NULL) {
+			label(J, F, jump->inst);
+			F->optjumps = jump->next;
+			js_free(J, jump);
+		}
+		F->optjumps = save;
+		break;
+	}
+
+	case EXP_NULLISH:
+		cexp(J, F, exp->a);
+		emitline(J, F, exp);
+		emit(J, F, OP_DUP);
+		emit(J, F, OP_NULL);
+		emit(J, F, OP_EQ);
+		end = emitjump(J, F, OP_JFALSE);
+		emit(J, F, OP_POP);
+		cexp(J, F, exp->b);
+		label(J, F, end);
+		break;
+
+	case EXP_SPREAD:
+		jsC_error(J, exp, "unexpected '...'");
+
+	case EXP_AWAIT:
+		if (F->generator == 3) { /* told apart from its yields: %abox(v) */
+			emitstring(J, F, OP_GETVAR, "%abox");
+			emit(J, F, OP_UNDEF);
+			cexp(J, F, exp->a);
+			emit(J, F, OP_CALL);
+			emitarg(J, F, 1);
+		} else {
+			cexp(J, F, exp->a);
+		}
+		emitline(J, F, exp);
+		emit(J, F, OP_YIELD);
+		break;
+
+	case EXP_YIELD:
+		if (!F->generator)
+			jsC_error(J, exp, "yield outside a generator");
+		if (exp->number) { /* yield* it: [it sent] until done */
+			int loop, done;
+			cexp(J, F, exp->a);
+			emitline(J, F, exp);
+			emitstring(J, F, OP_GETVAR, "%iter");
+			emit(J, F, OP_ROT2);
+			emit(J, F, OP_UNDEF);
+			emit(J, F, OP_ROT2);
+			emit(J, F, OP_CALL);
+			emitarg(J, F, 1);
+			emit(J, F, OP_UNDEF);
+			loop = here(J, F);
+			emit(J, F, OP_DUP2);
+			emitstring(J, F, OP_GETVAR, "%ystep");
+			emit(J, F, OP_ROT3);
+			emit(J, F, OP_UNDEF);
+			emit(J, F, OP_ROT3);
+			emit(J, F, OP_CALL);
+			emitarg(J, F, 2);
+			emit(J, F, OP_ROT2);
+			emit(J, F, OP_POP);
+			emit(J, F, OP_DUP);
+			emitstring(J, F, OP_GETPROP_S, "done");
+			done = emitjump(J, F, OP_JTRUE);
+			emitstring(J, F, OP_GETPROP_S, "value");
+			emit(J, F, OP_YIELD);
+			emitjumpto(J, F, OP_JUMP, loop);
+			label(J, F, done);
+			emitstring(J, F, OP_GETPROP_S, "value");
+			emit(J, F, OP_ROT2);
+			emit(J, F, OP_POP);
+			break;
+		}
+		if (exp->a)
+			cexp(J, F, exp->a);
+		else
+			emit(J, F, OP_UNDEF);
+		emitline(J, F, exp);
+		emit(J, F, OP_YIELD);
 		break;
 
 	case EXP_NEW:
+		if (hasspread(exp->b)) { /* [C] -> %construct(C, [args]) */
+			cexp(J, F, exp->a);
+			emit(J, F, OP_NEWARRAY);
+			carray(J, F, exp->b);
+			emitstring(J, F, OP_GETVAR, "%construct");
+			emit(J, F, OP_ROT3);
+			emit(J, F, OP_UNDEF);
+			emit(J, F, OP_ROT3);
+			emit(J, F, OP_CALL);
+			emitarg(J, F, 2);
+			break;
+		}
 		cexp(J, F, exp->a);
 		n = cargs(J, F, exp->b);
 		emitline(J, F, exp);
@@ -1362,7 +1563,7 @@ static void cfundecs(JF, js_Ast *list)
 		js_Ast *stm = list->a;
 		if (stm->type == AST_FUNDEC) {
 			emitline(J, F, stm);
-			emitfunction(J, F, newfun(J, stm->line, stm->a, stm->b, stm->c, 0, F->strict, 0));
+			emitfunction(J, F, newfun(J, stm->line, stm->a, stm->b, stm->c, 0, F->strict, 0, (int)stm->number));
 			emitline(J, F, stm);
 			emit(J, F, OP_SETLOCAL);
 			emitarg(J, F, addlocal(J, F, stm->a, 1));
@@ -1420,10 +1621,10 @@ static void cfunbody(JF, js_Ast *name, js_Ast *params, js_Ast *body, int is_fun_
 
 js_Function *jsC_compilefunction(js_State *J, js_Ast *prog)
 {
-	return newfun(J, prog->line, prog->a, prog->b, prog->c, 0, J->default_strict, 1);
+	return newfun(J, prog->line, prog->a, prog->b, prog->c, 0, J->default_strict, 1, 0);
 }
 
 js_Function *jsC_compilescript(js_State *J, js_Ast *prog, int default_strict)
 {
-	return newfun(J, prog ? prog->line : 0, NULL, NULL, prog, 1, default_strict, 0);
+	return newfun(J, prog ? prog->line : 0, NULL, NULL, prog, 1, default_strict, 0, 0);
 }

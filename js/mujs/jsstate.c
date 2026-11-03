@@ -335,6 +335,7 @@ js_State *js_newstate(js_Alloc alloc, void *actx, int flags)
 	J->GE = J->E;
 
 	jsB_init(J);
+	jsB_inites(J);
 
 	js_endtry(J);
 	return J;

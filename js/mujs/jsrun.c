@@ -3,7 +3,9 @@
 
 #include <assert.h>
 
-static void jsR_run(js_State *J, js_Function *F);
+static void jsR_runx(js_State *J, js_Function *F, js_Object *resume, int mode, int startpc);
+static void jsR_pushtrace(js_State *J, const char *name, const char *file, int line);
+#define jsR_run(J, F) jsR_runx(J, F, NULL, 0, 0)
 
 /* Push values on stack */
 
@@ -294,18 +296,24 @@ int js_iserror(js_State *J, int idx)
 	return v->t.type == JS_TOBJECT && v->u.object->type == JS_CERROR;
 }
 
+/* Browser 9300: symbols are strings "@@..." (js/es.js) */
+static const char *js_strtypeof(const char *p)
+{
+	return p[0] == '@' && p[1] == '@' ? "symbol" : "string";
+}
+
 const char *js_typeof(js_State *J, int idx)
 {
 	js_Value *v = stackidx(J, idx);
 	switch (v->t.type) {
 	default:
-	case JS_TSHRSTR: return "string";
+	case JS_TSHRSTR: return js_strtypeof(v->u.shrstr);
 	case JS_TUNDEFINED: return "undefined";
 	case JS_TNULL: return "object";
 	case JS_TBOOLEAN: return "boolean";
 	case JS_TNUMBER: return "number";
-	case JS_TLITSTR: return "string";
-	case JS_TMEMSTR: return "string";
+	case JS_TLITSTR: return js_strtypeof(v->u.litstr);
+	case JS_TMEMSTR: return js_strtypeof(v->u.memstr->p);
 	case JS_TOBJECT:
 		if (v->u.object->type == JS_CFUNCTION || v->u.object->type == JS_CCFUNCTION)
 			return "function";
@@ -660,6 +668,33 @@ static int jsR_hasproperty(js_State *J, js_Object *obj, const char *name)
 	}
 
 	return 0;
+}
+
+/* Browser 9300: 'in': whether the property is there, without reading it (no getter runs) */
+static int jsR_inproperty(js_State *J, js_Object *obj, const char *name)
+{
+	int k;
+	if (obj->type == JS_CARRAY) {
+		if (!strcmp(name, "length"))
+			return 1;
+		if (obj->u.a.simple && js_isarrayindex(J, name, &k))
+			return k >= 0 && k < obj->u.a.flat_length;
+	} else if (obj->type == JS_CSTRING) {
+		if (!strcmp(name, "length"))
+			return 1;
+		if (js_isarrayindex(J, name, &k) && k >= 0 && k < obj->u.s.length)
+			return 1;
+	} else if (obj->type == JS_CREGEXP) {
+		if (!strcmp(name, "source") || !strcmp(name, "global") || !strcmp(name, "ignoreCase") ||
+				!strcmp(name, "multiline") || !strcmp(name, "lastIndex"))
+			return 1;
+	} else if (obj->type == JS_CUSERDATA) {
+		if (obj->u.user.has && obj->u.user.has(J, obj->u.user.data, name)) {
+			js_pop(J, 1);
+			return 1;
+		}
+	}
+	return jsV_getproperty(J, obj, name) != NULL;
 }
 
 static void jsR_getproperty(js_State *J, js_Object *obj, const char *name)
@@ -1255,6 +1290,188 @@ static void jsR_callfunction(js_State *J, int n, js_Function *F, js_Environment 
 	jsR_restorescope(J);
 }
 
+/* Browser 9300: generators and async functions. A call makes the generator object (its
+ * frame's state in hidden properties, so the GC sees it); %co (js/mujs/jses.c) resumes it. */
+static js_Object *jsR_envobj(js_State *J, js_Function *F, js_Environment *E)
+{
+	js_Object *o = jsV_newobject(J, JS_CFUNCTION, J->Function_prototype);
+	o->u.f.function = F;
+	o->u.f.scope = E;
+	return o;
+}
+
+static void jsR_hidnum(js_State *J, js_Object *g, const char *name, double n)
+{
+	js_pushobject(J, g);
+	js_pushnumber(J, n);
+	js_defproperty(J, -2, name, JS_DONTENUM);
+	js_pop(J, 1);
+}
+
+static void jsR_callgenerator(js_State *J, int n, js_Function *F, js_Environment *scope)
+{
+	js_Value v;
+	js_Object *g, *proto;
+	int i;
+
+	scope = jsR_newenvironment(J, jsV_newobject(J, JS_COBJECT, NULL), scope);
+
+	jsR_savescope(J, scope);
+
+	if (F->arguments) {
+		js_newarguments(J);
+		js_pushnumber(J, n);
+		js_defproperty(J, -2, "length", JS_DONTENUM);
+		for (i = 0; i < n; ++i) {
+			js_copy(J, i + 1);
+			js_setindex(J, -2, i);
+		}
+		js_initvar(J, "arguments", -1);
+		js_pop(J, 1);
+	}
+
+	for (i = 0; i < n && i < F->numparams; ++i)
+		js_initvar(J, F->vartab[i], i + 1);
+	js_pop(J, n);
+
+	for (; i < F->varlen; ++i) {
+		js_pushundefined(J);
+		js_initvar(J, F->vartab[i], -1);
+		js_pop(J, 1);
+	}
+
+	js_getglobal(J, "%genproto");
+	proto = js_isobject(J, -1) ? js_toobject(J, -1) : J->Object_prototype;
+	g = jsV_newobject(J, JS_COBJECT, proto);
+	js_pop(J, 1);
+	js_pushobject(J, g);
+	js_pushobject(J, jsR_envobj(J, F, scope));
+	js_defproperty(J, -2, "%f", JS_DONTENUM);
+	js_pushobject(J, jsR_envobj(J, F, scope));
+	js_defproperty(J, -2, "%e", JS_DONTENUM);
+	js_copy(J, 0);
+	js_defproperty(J, -2, "%t", JS_DONTENUM);
+	js_pop(J, 1);
+	jsR_hidnum(J, g, "%pc", 0);
+	jsR_hidnum(J, g, "%st", 0);
+	js_pushobject(J, g);
+	if (F->generator & 2) { /* an async function: the promise %async(g) gives; an async generator: %asyncgen(g) */
+		js_getglobal(J, F->generator == 3 ? "%asyncgen" : "%async");
+		js_pushundefined(J);
+		js_copy(J, -3);
+		js_call(J, 1);
+	}
+
+	v = *stackidx(J, -1);
+	TOP = --BOT; /* clear stack */
+	js_pushvalue(J, v);
+
+	jsR_restorescope(J);
+}
+
+/* Resumes g (a value on the stack: what yield gives; mode 1: thrown at the yield) and leaves
+ * what it yielded or returned there; 1 when it yielded */
+int jsR_resumegen(js_State *J, js_Object *g, int mode)
+{
+	js_Object *fo, *saved, *savegen = J->curgen;
+	js_Function *F;
+	js_Environment *E;
+	js_Value v;
+	int savebot = BOT, start, pcoff, n, i, yielded;
+
+	v = *stackidx(J, -1);
+	js_pop(J, 1);
+	js_pushobject(J, g);
+	js_getproperty(J, -1, "%f"); fo = js_toobject(J, -1); js_pop(J, 1);
+	js_getproperty(J, -1, "%st"); start = js_tointeger(J, -1) == 0; js_pop(J, 1);
+	js_getproperty(J, -1, "%pc"); pcoff = js_tointeger(J, -1); js_pop(J, 1);
+	js_getproperty(J, -1, "%e"); E = js_toobject(J, -1)->u.f.scope; js_pop(J, 1);
+	js_getproperty(J, -1, "%s"); saved = js_isobject(J, -1) ? js_toobject(J, -1) : NULL; js_pop(J, 1);
+	js_pop(J, 1);
+	F = fo->u.f.function;
+
+	if (js_try(J)) { /* thrown out of it: it is done */
+		J->curgen = savegen;
+		J->genyield = 0;
+		BOT = savebot;
+		jsR_hidnum(J, g, "%st", 3);
+		js_throw(J);
+	}
+
+	js_pushobject(J, fo);
+	js_pushobject(J, g);
+	js_getproperty(J, -1, "%t");
+	js_rot2(J);
+	js_pop(J, 1);
+	BOT = TOP - 1;
+	if (!start) {
+		n = 0;
+		if (saved) {
+			js_pushobject(J, saved);
+			n = js_getlength(J, -1);
+			js_pop(J, 1);
+		}
+		for (i = 0; i < n; ++i) {
+			js_pushobject(J, saved);
+			js_getindex(J, -1, i);
+			js_rot2(J);
+			js_pop(J, 1);
+		}
+		js_pushvalue(J, v);
+	}
+	jsR_hidnum(J, g, "%st", 2);
+	jsR_pushtrace(J, F->name, F->filename, F->line);
+	jsR_savescope(J, E);
+	J->curgen = g;
+	J->genyield = 0;
+	jsR_runx(J, F, start ? NULL : g, mode, start ? 0 : pcoff);
+	yielded = J->genyield;
+	J->genyield = 0;
+	J->curgen = savegen;
+	v = *stackidx(J, -1);
+	TOP = --BOT; /* clear stack */
+	js_pushvalue(J, v);
+	jsR_restorescope(J);
+	--J->tracetop;
+	BOT = savebot;
+	js_endtry(J);
+	jsR_hidnum(J, g, "%st", yielded ? 1 : 3);
+	return yielded;
+}
+
+/* at a yield: the frame's state into the generator */
+static void jsR_yield(js_State *J, js_Function *F, int pcoff, int basetry)
+{
+	js_Object *g = J->curgen;
+	int n = TOP - BOT - 2, i, k;
+	if (!g)
+		js_error(J, "yield outside a generator");
+	js_pushobject(J, g);
+	js_newarray(J);
+	for (i = 0; i < n; ++i) {
+		js_copy(J, i + 1);
+		js_setindex(J, -2, i);
+	}
+	js_defproperty(J, -2, "%s", JS_DONTENUM);
+	js_pushnumber(J, pcoff);
+	js_defproperty(J, -2, "%pc", JS_DONTENUM);
+	js_pushobject(J, jsR_envobj(J, F, J->E));
+	js_defproperty(J, -2, "%e", JS_DONTENUM);
+	js_newarray(J);
+	for (k = 0, i = basetry; i < J->trytop; ++i) {
+		js_pushnumber(J, J->trybuf[i].pc - F->code);
+		js_setindex(J, -2, k++);
+		js_pushnumber(J, J->trybuf[i].top - BOT);
+		js_setindex(J, -2, k++);
+		js_pushobject(J, jsR_envobj(J, F, J->trybuf[i].E));
+		js_setindex(J, -2, k++);
+	}
+	js_defproperty(J, -2, "%y", JS_DONTENUM);
+	js_pop(J, 1);
+	J->trytop = basetry;
+	J->genyield = 1;
+}
+
 static void jsR_callscript(js_State *J, int n, js_Function *F, js_Environment *scope)
 {
 	js_Value v;
@@ -1334,7 +1551,9 @@ void js_call(js_State *J, int n)
 
 	if (obj->type == JS_CFUNCTION) {
 		jsR_pushtrace(J, obj->u.f.function->name, obj->u.f.function->filename, obj->u.f.function->line);
-		if (obj->u.f.function->lightweight)
+		if (obj->u.f.function->generator)
+			jsR_callgenerator(J, n, obj->u.f.function, obj->u.f.scope);
+		else if (obj->u.f.function->lightweight)
 			jsR_calllwfunction(J, n, obj->u.f.function, obj->u.f.scope);
 		else
 			jsR_callfunction(J, n, obj->u.f.function, obj->u.f.scope);
@@ -1588,6 +1807,13 @@ void js_trap(js_State *J, int pc)
 	js_stacktrace(J);
 }
 
+/* Browser 9300: reading or setting a property of undefined or null: the error names it */
+static void jsR_nullprop(js_State *J, int idx, const char *name, int set)
+{
+	js_typeerror(J, "Cannot %s properties of %s (%s '%.60s')", set ? "set" : "read",
+		js_isnull(J, idx) ? "null" : "undefined", set ? "setting" : "reading", name);
+}
+
 static int jsR_isindex(js_State *J, int idx, int *k)
 {
 	js_Value *v = stackidx(J, idx);
@@ -1600,13 +1826,14 @@ static int jsR_isindex(js_State *J, int idx, int *k)
 	return 0;
 }
 
-static void jsR_run(js_State *J, js_Function *F)
+static void jsR_runx(js_State *J, js_Function *F, js_Object *resume, int mode, int startpc)
 {
 	js_Function **FT = F->funtab;
 	const char **VT = F->vartab ? F->vartab - 1 : NULL;
 	int lightweight = F->lightweight;
 	js_Instruction *pcstart = F->code;
-	js_Instruction *pc = F->code;
+	js_Instruction *pc = F->code + startpc;
+	int basetry = J->trytop;
 	enum js_OpCode opcode;
 	int offset;
 	int savestrict;
@@ -1622,9 +1849,36 @@ static void jsR_run(js_State *J, js_Function *F)
 	savestrict = J->strict;
 	J->strict = F->strict;
 
+#define READJUMP() (pc += 2, (int)pc[-2] | ((int)pc[-1] << 16))
+
 #define READSTRING() \
 	memcpy(&str, pc, sizeof(str)); \
 	pc += sizeof(str) / sizeof(*pc)
+
+	/* Browser 9300: resuming a generator: its try blocks again, then on at the yield */
+	if (resume) {
+		int nt, i, rel;
+		js_Instruction *hpc;
+		js_Environment *TE;
+		js_pushobject(J, resume);
+		js_getproperty(J, -1, "%y");
+		nt = js_isobject(J, -1) ? js_getlength(J, -1) : 0;
+		for (i = 0; i + 2 < nt; i += 3) {
+			js_getindex(J, -1, i); hpc = pcstart + js_tointeger(J, -1); js_pop(J, 1);
+			js_getindex(J, -1, i + 1); rel = js_tointeger(J, -1); js_pop(J, 1);
+			js_getindex(J, -1, i + 2); TE = js_toobject(J, -1)->u.f.scope; js_pop(J, 1);
+			if (js_trypc(J, hpc)) {
+				pc = J->trybuf[J->trytop].pc;
+				goto run;
+			}
+			J->trybuf[J->trytop - 1].top = BOT + rel;
+			J->trybuf[J->trytop - 1].E = TE;
+		}
+		js_pop(J, 2);
+		if (mode == 1)
+			js_throw(J);
+	}
+run:
 
 	while (1) {
 		if (J->runlimit > 0) {
@@ -1747,8 +2001,8 @@ static void jsR_run(js_State *J, js_Function *F)
 			str = js_tostring(J, -2);
 			if (!js_isobject(J, -1))
 				js_typeerror(J, "operand to 'in' is not an object");
-			b = js_hasproperty(J, -1, str);
-			js_pop(J, 2 + b);
+			b = jsR_inproperty(J, js_toobject(J, -1), str);
+			js_pop(J, 2);
 			js_pushboolean(J, b);
 			break;
 
@@ -1781,6 +2035,8 @@ static void jsR_run(js_State *J, js_Function *F)
 			break;
 
 		case OP_GETPROP:
+			if (js_isundefined(J, -2) || js_isnull(J, -2))
+				jsR_nullprop(J, -2, js_tostring(J, -1), 0);
 			if (jsR_isindex(J, -1, &ix)) {
 				obj = js_toobject(J, -2);
 				jsR_getindex(J, obj, ix);
@@ -1794,12 +2050,16 @@ static void jsR_run(js_State *J, js_Function *F)
 
 		case OP_GETPROP_S:
 			READSTRING();
+			if (js_isundefined(J, -1) || js_isnull(J, -1))
+				jsR_nullprop(J, -1, str, 0);
 			obj = js_toobject(J, -1);
 			jsR_getproperty(J, obj, str);
 			js_rot2pop1(J);
 			break;
 
 		case OP_SETPROP:
+			if (js_isundefined(J, -3) || js_isnull(J, -3))
+				jsR_nullprop(J, -3, js_tostring(J, -2), 1);
 			if (jsR_isindex(J, -2, &ix)) {
 				obj = js_toobject(J, -3);
 				transient = !js_isobject(J, -3);
@@ -1815,6 +2075,8 @@ static void jsR_run(js_State *J, js_Function *F)
 
 		case OP_SETPROP_S:
 			READSTRING();
+			if (js_isundefined(J, -2) || js_isnull(J, -2))
+				jsR_nullprop(J, -2, str, 1);
 			obj = js_toobject(J, -2);
 			transient = !js_isobject(J, -2);
 			jsR_setproperty(J, obj, str, transient);
@@ -1869,6 +2131,14 @@ static void jsR_run(js_State *J, js_Function *F)
 			break;
 
 		case OP_CALL:
+#ifdef BW_CALLNAMES
+			if (!js_iscallable(J, -(int)*pc - 2)) {
+				int k;
+				for (k = 0; k < F->ncall; ++k)
+					if (F->callpc[k] == pc + 1 - pcstart)
+						js_typeerror(J, "%s is not a function (%s)", F->callname[k], js_typeof(J, -(int)*pc - 2));
+			}
+#endif
 			js_call(J, *pc++);
 			break;
 
@@ -2014,7 +2284,7 @@ static void jsR_run(js_State *J, js_Function *F)
 		case OP_STRICTNE: b = js_strictequal(J); js_pop(J, 2); js_pushboolean(J, !b); break;
 
 		case OP_JCASE:
-			offset = *pc++;
+			offset = READJUMP();
 			b = js_strictequal(J);
 			if (b) {
 				js_pop(J, 2);
@@ -2053,7 +2323,7 @@ static void jsR_run(js_State *J, js_Function *F)
 			js_throw(J);
 
 		case OP_TRY:
-			offset = *pc++;
+			offset = READJUMP();
 			if (js_trypc(J, pc)) {
 				pc = J->trybuf[J->trytop].pc;
 			} else {
@@ -2098,11 +2368,11 @@ static void jsR_run(js_State *J, js_Function *F)
 			break;
 
 		case OP_JUMP:
-			pc = pcstart + *pc;
+			pc = pcstart + ((int)pc[0] | ((int)pc[1] << 16));
 			break;
 
 		case OP_JTRUE:
-			offset = *pc++;
+			offset = READJUMP();
 			b = js_toboolean(J, -1);
 			js_pop(J, 1);
 			if (b)
@@ -2110,7 +2380,7 @@ static void jsR_run(js_State *J, js_Function *F)
 			break;
 
 		case OP_JFALSE:
-			offset = *pc++;
+			offset = READJUMP();
 			b = js_toboolean(J, -1);
 			js_pop(J, 1);
 			if (!b)
@@ -2118,6 +2388,11 @@ static void jsR_run(js_State *J, js_Function *F)
 			break;
 
 		case OP_RETURN:
+			J->strict = savestrict;
+			return;
+
+		case OP_YIELD:
+			jsR_yield(J, F, (int)(pc - pcstart), basetry);
 			J->strict = savestrict;
 			return;
 		}

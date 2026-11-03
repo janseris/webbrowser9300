@@ -57,6 +57,7 @@ struct cstate {
 	const char *source;
 	int ncclass;
 	int nsub;
+	int nloop;
 	Renode *sub[REG_MAXSUB];
 
 	int lookahead;
@@ -504,8 +505,12 @@ static int empty(Renode *node)
 static Renode *newrep(struct cstate *g, Renode *atom, int ng, int min, int max)
 {
 	Renode *rep = newnode(g, P_REP);
-	if (max == REPINF && empty(atom))
-		die(g, "infinite loop matching the empty string");
+	rep->c = 0;
+	if (max == REPINF && empty(atom)) { /* an iteration that matches nothing ends the loop */
+		if (g->nloop >= REG_MAXLOOP)
+			die(g, "too many loops matching the empty string");
+		rep->c = ++g->nloop;
+	}
 	rep->ng = ng;
 	rep->m = min;
 	rep->n = max;
@@ -657,7 +662,8 @@ enum {
 	I_END, I_JUMP, I_SPLIT, I_PLA, I_NLA,
 	I_ANYNL, I_ANY, I_CHAR, I_CCLASS, I_NCCLASS, I_REF,
 	I_BOL, I_EOL, I_WORD, I_NWORD,
-	I_LPAR, I_RPAR
+	I_LPAR, I_RPAR,
+	I_LMARK, I_LCHK
 };
 
 struct Reinst {
@@ -683,7 +689,7 @@ static size_t count(struct cstate *g, Renode *node, int depth)
 		max = node->n;
 		if (min == max) n = count(g, node->x, depth) * min;
 		else if (max < REPINF) n = count(g, node->x, depth) * max + (max - min);
-		else n = count(g, node->x, depth) * (min + 1) + 2;
+		else n = count(g, node->x, depth) * (min + 1) + 2 + (node->c ? 2 : 0);
 		if (n > REG_MAXPROG) die(g, "program too large");
 		return n;
 	case P_PAR: return count(g, node->x, depth) + 2;
@@ -732,6 +738,8 @@ loop:
 		inst = NULL; /* silence compiler warning. assert(node->m > 0). */
 		for (i = 0; i < node->m; ++i) {
 			inst = prog->end;
+			if (i == node->m - 1 && node->c && node->n == REPINF)
+				emit(prog, I_LMARK)->n = node->c - 1;
 			compile(prog, node->x);
 		}
 		if (node->m == node->n)
@@ -750,7 +758,11 @@ loop:
 			}
 		} else if (node->m == 0) {
 			split = emit(prog, I_SPLIT);
+			if (node->c)
+				emit(prog, I_LMARK)->n = node->c - 1;
 			compile(prog, node->x);
+			if (node->c)
+				emit(prog, I_LCHK)->n = node->c - 1;
 			jump = emit(prog, I_JUMP);
 			if (node->ng) {
 				split->y = split + 1;
@@ -761,6 +773,8 @@ loop:
 			}
 			jump->x = split;
 		} else {
+			if (node->c)
+				emit(prog, I_LCHK)->n = node->c - 1;
 			split = emit(prog, I_SPLIT);
 			if (node->ng) {
 				split->y = inst;
@@ -944,6 +958,7 @@ Reprog *regcompx(void *(*alloc)(void *ctx, void *p, int n), void *ctx,
 
 	g.source = pattern;
 	g.ncclass = 0;
+	g.nloop = 0;
 	g.nsub = 1;
 	for (i = 0; i < REG_MAXSUB; ++i)
 		g.sub[i] = 0;
@@ -1235,6 +1250,15 @@ static int match(Reinst *pc, const char *sp, const char *bol, int flags, Resub *
 			break;
 		case I_RPAR:
 			out->sub[pc->n].ep = sp;
+			pc = pc + 1;
+			break;
+		case I_LMARK:
+			out->mark[pc->n] = sp;
+			pc = pc + 1;
+			break;
+		case I_LCHK:
+			if (out->mark[pc->n] == sp)
+				return 1;
 			pc = pc + 1;
 			break;
 		default:

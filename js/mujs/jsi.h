@@ -240,6 +240,20 @@ struct js_State
 	const char *text;
 	double number;
 	js_Ast *gcast; /* list of allocated nodes to free after parsing */
+	/* Browser 9300: ES2015+ lowering (jsparse.c) */
+	const char *es_raw;	/* a template piece's raw text */
+	const char *es_linestart; /* where the lexer's line starts (columns in errors) */
+	int es_arrow;		/* inside an arrow function of the current function */
+	int es_this, es_args;	/* the current function's arrows use this / arguments */
+	int es_tmpn;		/* hidden names made */
+	js_Ast *es_tmps;	/* the current function's hidden temps (a list) */
+	js_Ast *es_pro;		/* the current function's prologue statements (a list, reversed) */
+	js_Ast *es_names;	/* the declared names in scope (renaming of block lets) */
+	int es_level, es_block, es_renamed;
+	js_Ast *es_class;	/* the class being parsed (super, fields) */
+	js_Object *curgen;	/* the generator running (jsrun.c) */
+	int genyield;		/* its frame stopped at a yield */
+	int es_gen, es_async;	/* inside a generator / async function */
 
 	/* runtime environment */
 	js_Object *Object_prototype;
@@ -384,6 +398,7 @@ struct js_Object
 	enum js_Class type;
 	int extensible;
 	js_Property *properties;
+	js_Property *ohead, *otail; /* Browser 9300: insertion order */
 	int count; /* number of properties, for array sparseness check */
 	js_Object *prototype;
 	union {
@@ -436,6 +451,7 @@ struct js_Object
 struct js_Property
 {
 	js_Property *left, *right;
+	js_Property *onext, *oprev; /* Browser 9300: the object's properties in insertion order */
 	int level;
 	int atts;
 	js_Value value;
@@ -490,6 +506,7 @@ double jsV_stringtonumber(js_State *J, const char *string);
 /* jsproperty.c */
 js_Object *jsV_newobject(js_State *J, enum js_Class type, js_Object *prototype);
 js_Property *jsV_getownproperty(js_State *J, js_Object *obj, const char *name);
+js_Property **jsV_ownprops(js_State *J, js_Object *obj, int *n);
 js_Property *jsV_getpropertyx(js_State *J, js_Object *obj, const char *name, int *own);
 js_Property *jsV_getproperty(js_State *J, js_Object *obj, const char *name);
 js_Property *jsV_setproperty(js_State *J, js_Object *obj, const char *name);
@@ -538,6 +555,17 @@ enum
 	TK_XOR_ASS,
 	TK_INC,
 	TK_DEC,
+	/* Browser 9300: ES2015+ */
+	TK_ARROW,
+	TK_ELLIPSIS,
+	TK_QDOT,
+	TK_NULLISH,
+	TK_POW,
+	TK_POW_ASS,
+	TK_NULLISH_ASS,
+	TK_LAND_ASS,
+	TK_LOR_ASS,
+	TK_TEMPLATE, /* text: cooked, es_raw: raw, number: 1 when "${" follows */
 
 	/* keywords */
 	TK_BREAK,
@@ -581,6 +609,8 @@ int jsY_findword(const char *s, const char **list, int num);
 
 void jsY_initlex(js_State *J, const char *filename, const char *source);
 int jsY_lex(js_State *J);
+int jsY_lextemplate(js_State *J);
+int jsY_lextemplatenext(js_State *J);
 int jsY_lexjson(js_State *J);
 
 /* Parser */
@@ -672,6 +702,13 @@ enum js_AstType
 	EXP_COMMA,
 
 	EXP_VAR, /* var initializer */
+
+	/* Browser 9300: ES2015+ */
+	EXP_SPREAD,	/* ...a (in arrays, calls, object literals, patterns) */
+	EXP_OPTCHAIN,	/* a chain with ?. in it; its MEMBER/INDEX/CALL nodes with number 1 are the ?. points */
+	EXP_NULLISH,	/* a ?? b */
+	EXP_YIELD,	/* yield a (number 1: yield*) */
+	EXP_AWAIT,	/* await a */
 
 	/* statements */
 	STM_BLOCK,
@@ -831,10 +868,17 @@ enum js_OpCode
 	OP_JTRUE,
 	OP_JFALSE,
 	OP_RETURN,
+	OP_YIELD,	/* Browser 9300: <value> -- <sent value> (suspends the generator) */
 };
 
 struct js_Function
 {
+	js_JumpList *optjumps; /* Browser 9300: compiling a ?. chain: its jumps to the end */
+	int generator; /* Browser 9300: 1 a generator, 2 an async function */
+#ifdef BW_CALLNAMES
+	/* (PC test builds) each call's callee, for "x.y is not a function" */
+	int *callpc; const char **callname; int ncall, capcall;
+#endif
 	const char *name;
 	int script;
 	int lightweight;
@@ -864,6 +908,8 @@ js_Function *jsC_compilescript(js_State *J, js_Ast *prog, int default_strict);
 /* Builtins */
 
 void jsB_init(js_State *J);
+void jsB_inites(js_State *J);
+int jsR_resumegen(js_State *J, js_Object *g, int mode);
 void jsB_initobject(js_State *J);
 void jsB_initarray(js_State *J);
 void jsB_initfunction(js_State *J);

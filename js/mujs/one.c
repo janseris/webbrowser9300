@@ -5,6 +5,7 @@
 #include "jsdate.c"
 #include "jsdtoa.c"
 #include "jserror.c"
+#include "jses.c"
 #include "jsfunction.c"
 #include "jsgc.c"
 #include "jsintern.c"

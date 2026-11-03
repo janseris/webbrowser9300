@@ -56,9 +56,70 @@ static js_Property *newproperty(js_State *J, js_Object *obj, const char *name)
 	node->getter = NULL;
 	node->setter = NULL;
 	memcpy(node->name, name, n);
+	node->onext = NULL;
+	node->oprev = obj->otail;
+	if (obj->otail)
+		obj->otail->onext = node;
+	else
+		obj->ohead = node;
+	obj->otail = node;
 	++obj->count;
 	++J->gccounter;
 	return node;
+}
+
+/* Browser 9300: an array index ("0".."4294967294", canonical) */
+static int isindexname(const char *s, double *v)
+{
+	double n = 0;
+	if (*s == '0')
+		return s[1] == 0 ? (*v = 0, 1) : 0;
+	if (!*s)
+		return 0;
+	for (; *s; ++s) {
+		if (*s < '0' || *s > '9')
+			return 0;
+		n = n * 10 + (*s - '0');
+		if (n > 4294967294.0)
+			return 0;
+	}
+	*v = n;
+	return 1;
+}
+
+/* Browser 9300: the own properties in the order ES2015 enumerates them (integer keys
+ * ascending, then the others as they were added); malloc'ed, NULL when none */
+js_Property **jsV_ownprops(js_State *J, js_Object *obj, int *np)
+{
+	js_Property **out, *p, *t;
+	double *key, v, kt;
+	int n = 0, ni = 0, i, j, gap;
+	*np = 0;
+	for (p = obj->ohead; p; p = p->onext)
+		++n;
+	if (!n)
+		return NULL;
+	out = js_malloc(J, n * sizeof *out);
+	key = js_malloc(J, n * sizeof *key);
+	for (p = obj->ohead; p; p = p->onext)
+		if (isindexname(p->name, &v)) {
+			key[ni] = v;
+			out[ni++] = p;
+		}
+	/* shell sort of the integer keys */
+	for (gap = ni / 2; gap > 0; gap /= 2)
+		for (i = gap; i < ni; ++i)
+			for (j = i; j >= gap && key[j-gap] > key[j]; j -= gap) {
+				kt = key[j]; key[j] = key[j-gap]; key[j-gap] = kt;
+				t = out[j]; out[j] = out[j-gap]; out[j-gap] = t;
+			}
+	j = ni;
+	for (p = obj->ohead; p; p = p->onext)
+		if (!isindexname(p->name, &v))
+			out[j++] = p;
+	js_free(J, key);
+	*np = n;
+	return out;
 }
 
 static js_Property *lookup(js_State *J, js_Property *node, const char *name)
@@ -117,6 +178,14 @@ static js_Property *insert(js_State *J, js_Object *obj, js_Property *node, const
 
 static void freeproperty(js_State *J, js_Object *obj, js_Property *node)
 {
+	if (node->oprev)
+		node->oprev->onext = node->onext;
+	else
+		obj->ohead = node->onext;
+	if (node->onext)
+		node->onext->oprev = node->oprev;
+	else
+		obj->otail = node->oprev;
 	js_free(J, node);
 	--obj->count;
 }
@@ -281,13 +350,27 @@ static js_Iterator *itwalk(js_State *J, js_Iterator *iter, js_Property *prop, js
 	return iter;
 }
 
+/* Browser 9300: in ES2015 order (the list is built back to front) */
+static js_Iterator *itown(js_State *J, js_Iterator *iter, js_Object *obj, js_Object *seen)
+{
+	int n, i;
+	js_Property **v = jsV_ownprops(J, obj, &n);
+	for (i = n - 1; i >= 0; --i)
+		if (!(v[i]->atts & JS_DONTENUM))
+			if (!seen || !jsV_getenumproperty(J, seen, v[i]->name))
+				iter = itnewnode(J, v[i]->name, iter);
+	if (v)
+		js_free(J, v);
+	return iter;
+}
+
 static js_Iterator *itflatten(js_State *J, js_Object *obj)
 {
 	js_Iterator *iter = NULL;
 	if (obj->prototype)
 		iter = itflatten(J, obj->prototype);
 	if (obj->properties != &sentinel)
-		iter = itwalk(J, iter, obj->properties, obj->prototype);
+		iter = itown(J, iter, obj, obj->prototype);
 	return iter;
 }
 
@@ -300,7 +383,7 @@ js_Object *jsV_newiterator(js_State *J, js_Object *obj, int own)
 	if (own) {
 		io->u.iter.head = NULL;
 		if (obj->properties != &sentinel)
-			io->u.iter.head = itwalk(J, io->u.iter.head, obj->properties, NULL);
+			io->u.iter.head = itown(J, io->u.iter.head, obj, NULL);
 	} else {
 		io->u.iter.head = itflatten(J, obj);
 	}

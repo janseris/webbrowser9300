@@ -83,3 +83,4 @@
 "jtrue",
 "jfalse",
 "return",
+"yield",

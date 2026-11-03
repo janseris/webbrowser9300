@@ -154,14 +154,16 @@ static void O_getOwnPropertyDescriptor(js_State *J)
 	}
 }
 
-static int O_getOwnPropertyNames_walk(js_State *J, js_Property *ref, int i)
+/* Browser 9300: the walks go in ES2015 order (jsV_ownprops) */
+static int O_getOwnPropertyNames_walk(js_State *J, js_Object *obj, int i)
 {
-	if (ref->left->level)
-		i = O_getOwnPropertyNames_walk(J, ref->left, i);
-	js_pushstring(J, ref->name);
-	js_setindex(J, -2, i++);
-	if (ref->right->level)
-		i = O_getOwnPropertyNames_walk(J, ref->right, i);
+	int n, k;
+	js_Property **v = jsV_ownprops(J, obj, &n);
+	for (k = 0; k < n; ++k) {
+		js_pushstring(J, v[k]->name);
+		js_setindex(J, -2, i++);
+	}
+	if (v) js_free(J, v);
 	return i;
 }
 
@@ -179,7 +181,7 @@ static void O_getOwnPropertyNames(js_State *J)
 	js_newarray(J);
 
 	if (obj->properties->level)
-		i = O_getOwnPropertyNames_walk(J, obj->properties, 0);
+		i = O_getOwnPropertyNames_walk(J, obj, 0);
 	else
 		i = 0;
 
@@ -280,18 +282,21 @@ static void O_defineProperty(js_State *J)
 	js_copy(J, 1);
 }
 
-static int O_defineProperties_walk(js_State *J, js_Property *ref, int i)
+static int O_defineProperties_walk(js_State *J, js_Object *obj, int i)
 {
-	if (ref->left->level)
-		i = O_defineProperties_walk(J, ref->left, i);
-	if (!(ref->atts & JS_DONTENUM)) {
-		if (ref->value.t.type != JS_TOBJECT)
-			js_typeerror(J, "not an object");
-		js_pushstring(J, ref->name);
-		js_setindex(J, -2, i++);
+	int n, k;
+	js_Property **v = jsV_ownprops(J, obj, &n);
+	for (k = 0; k < n; ++k) {
+		if (!(v[k]->atts & JS_DONTENUM)) {
+			if (v[k]->value.t.type != JS_TOBJECT) {
+				js_free(J, v);
+				js_typeerror(J, "not an object");
+			}
+			js_pushstring(J, v[k]->name);
+			js_setindex(J, -2, i++);
+		}
 	}
-	if (ref->right->level)
-		i = O_defineProperties_walk(J, ref->right, i);
+	if (v) js_free(J, v);
 	return i;
 }
 
@@ -306,7 +311,7 @@ static void O_defineProperties_imp(js_State *J, js_Object *obj)
 	props = js_toobject(J, 2);
 	if (props->properties->level) {
 		js_newarray(J);
-		n = O_defineProperties_walk(J, props->properties, 0);
+		n = O_defineProperties_walk(J, props, 0);
 		for (i = 0; i < n; ++i) {
 			js_getindex(J, -1, i);
 			name = js_tostring(J, -1);
@@ -349,16 +354,17 @@ static void O_create(js_State *J)
 	}
 }
 
-static int O_keys_walk(js_State *J, js_Property *ref, int i)
+static int O_keys_walk(js_State *J, js_Object *obj, int i)
 {
-	if (ref->left->level)
-		i = O_keys_walk(J, ref->left, i);
-	if (!(ref->atts & JS_DONTENUM)) {
-		js_pushstring(J, ref->name);
-		js_setindex(J, -2, i++);
+	int n, k;
+	js_Property **v = jsV_ownprops(J, obj, &n);
+	for (k = 0; k < n; ++k) {
+		if (!(v[k]->atts & JS_DONTENUM)) {
+			js_pushstring(J, v[k]->name);
+			js_setindex(J, -2, i++);
+		}
 	}
-	if (ref->right->level)
-		i = O_keys_walk(J, ref->right, i);
+	if (v) js_free(J, v);
 	return i;
 }
 
@@ -375,7 +381,7 @@ static void O_keys(js_State *J)
 	js_newarray(J);
 
 	if (obj->properties->level)
-		i = O_keys_walk(J, obj->properties, 0);
+		i = O_keys_walk(J, obj, 0);
 	else
 		i = 0;
 

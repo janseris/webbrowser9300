@@ -1,7 +1,8 @@
 # JavaScript in Browser 9300
 
 MuJS (ES5, ISC licence, `mujs/COPYING`) from https://codeberg.org/ccxvii/mujs at 01a75ff, changed for
-the phone; every change is in `mujs-browser9300.patch` and marked "Browser 9300" in the source.
+the phone and taught ES2015+; every change is in `mujs-browser9300.patch` and marked "Browser 9300"
+in the source.
 
 | | |
 |---|---|
@@ -10,6 +11,7 @@ the phone; every change is in `mujs-browser9300.patch` and marked "Browser 9300"
 | `bwdom.c`, `bwdom.h` | the page as a tree: HTML parser, writer, selectors |
 | `bwdomjs.c`, `bwjs.h` | the DOM for scripts: the tree's nodes as JavaScript objects |
 | `bwhost.c`, `bwhost.h` | a page's run: scripts in order, document.write, events, timers, external scripts |
+| `es.js` | the engine's ES2015+ runtime: the helpers the parser's lowerings call, Symbol, Map, Set, Promise, generators' objects, the newer methods (`genes.py` -> `mujs/jses.h`, every `js_State` runs it) |
 | `prelude.js` | the window and the DOM built on the C part, and the newer methods MuJS lacks (`genprelude.py` -> `prelude.h`) |
 | `bwlibc.c` | the C half of that library (strings, setjmp, IEEE helpers, exact printf / strtod / shortest digits, GCC helpers EUSER lacks) |
 | `../src/jsplat.cpp` | the platform half (heap, Math::, clock, time zone), the 256 KB-stack thread, about:js |
@@ -27,10 +29,28 @@ the phone; every change is in `mujs-browser9300.patch` and marked "Browser 9300"
 - `js_setlimithook`: the host is asked for more instructions when the limit runs out (a clock
   check); a stopped script skips its own catch / finally (`killed`).
 - Stack traces: the 24 innermost calls. `Date.now` and the time zone from the phone.
+- ES2015+ syntax (`jsparse.c`): mostly lowered to ES5 trees at parse time. Hidden names start
+  with `%` (scripts cannot name them): `%this` / `%args` (what arrow functions see, set at the top
+  of the function around), `%tN` temporaries, `%arr`, `%slice`, `%assign`, `%superCall` ... (in
+  `es.js`). `let` / `const` are `var`, renamed (`x%7`) in a block where they would clash with a
+  name already in scope. A `(` is looked ahead (to its `)`) for `=>`, giving up quickly.
+- In the compiler (`jscompile.c`): `?.` chains (a jump to the chain's end), `??`, spread (into an
+  array, then `%apply` / `%construct`), computed keys, `yield`, `await`; jumps are two
+  instructions (functions over 64 K instructions).
+- Generators / async functions (`jsrun.c`, `jses.c`): calling one makes a generator object; `%co`
+  resumes its frame: the stack slice, pc, scope and open try blocks are kept in hidden properties
+  at a yield (`OP_YIELD`) and put back (the try blocks set again in the new `jsR_run` frame).
+  Async functions are generators driven by `%async` (Promise), async generators by `%asyncgen`.
+- Properties are kept in insertion order too (`jsproperty.c`): for-in, Object.keys and JSON in
+  ES2015 order. `in` does not run getters. Regexps: a loop whose body can match nothing stops
+  when an iteration matched nothing (`(a*)*`).
+- Errors: "Cannot read properties of undefined (reading 'x')"; syntax errors with the column; PC
+  test builds (`-DBW_CALLNAMES`) also name what was not a function.
 
 ## Checks (on a PC)
 
-    test/build_pc.sh /tmp/bwjs                                         # pagetest, treetest (ASan, UBSan)
+    test/build_pc.sh /tmp/bwjs                                         # pagetest, treetest, esrun (ASan, UBSan)
+    /tmp/bwjs/esrun tests/*.js                                         # each script's result: = tests/expected.txt
     /tmp/bwjs/treetest page.html ...                                   # the tree's round trip: the same document for the browser
     /tmp/bwjs/pagetest page.html url [scripts-dir]                     # a page after its scripts; getscripts.py fetches its external ones
     python3 test/emu/run_page.py page.html url [script-url=file ...]   # the same in the ARM emulator (test/emu/build.sh first)

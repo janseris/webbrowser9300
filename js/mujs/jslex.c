@@ -13,7 +13,10 @@ static void jsY_error(js_State *J, const char *fmt, ...)
 	vsnprintf(msgbuf, 256, fmt, ap);
 	va_end(ap);
 
-	snprintf(buf, 256, "%s:%d: ", J->filename, J->lexline);
+	if (J->es_linestart && J->source >= J->es_linestart && J->lexline == J->line)
+		snprintf(buf, 256, "%s:%d:%d: ", J->filename, J->lexline, (int)(J->source - J->es_linestart));
+	else
+		snprintf(buf, 256, "%s:%d: ", J->filename, J->lexline);
 	strcat(buf, msgbuf);
 
 	js_newsyntaxerror(J, buf);
@@ -55,6 +58,7 @@ static const char *const tokenstring[] = {
 	"'+='", "'-='", "'*='", "'/='", "'%='",
 	"'<<='", "'>>='", "'>>>='", "'&='", "'|='", "'^='",
 	"'++'", "'--'",
+	"'=>'", "'...'", "'?.'", "'?\?'", "'**'", "'**='", "'?\?='", "'&&='", "'||='", "(template)",
 
 	"'break'", "'case'", "'catch'", "'continue'", "'debugger'",
 	"'default'", "'delete'", "'do'", "'else'", "'false'", "'finally'", "'for'",
@@ -167,6 +171,7 @@ static void jsY_next(js_State *J)
 		++J->source;
 	if (jsY_isnewline(c)) {
 		J->line++;
+		J->es_linestart = J->source;
 		c = '\n';
 	}
 	J->lexchar = c;
@@ -181,6 +186,12 @@ static void jsY_unescape(js_State *J)
 	if (jsY_accept(J, '\\')) {
 		if (jsY_accept(J, 'u')) {
 			int x = 0;
+			if (jsY_accept(J, '{')) { /* ES2015 \u{X...} */
+				while (jsY_ishex(J->lexchar)) { x = x * 16 + jsY_tohex(J->lexchar); jsY_next(J); if (x > 0x10FFFF) goto error; }
+				if (J->lexchar != '}') goto error;
+				J->lexchar = x;
+				return;
+			}
 			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 12; jsY_next(J);
 			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 8; jsY_next(J);
 			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 4; jsY_next(J);
@@ -338,15 +349,54 @@ static int lexnumber(js_State *J)
 
 #else
 
+static double lexradix(js_State *J, int radix)
+{
+	double n = 0;
+	int d, any = 0;
+	for (;;) {
+		if (J->lexchar == '_') { jsY_next(J); continue; }
+		d = jsY_ishex(J->lexchar) ? jsY_tohex(J->lexchar) : 99;
+		if (d >= radix) break;
+		n = n * radix + d;
+		any = 1;
+		jsY_next(J);
+	}
+	if (!any)
+		jsY_error(J, "malformed number");
+	return n;
+}
+
+/* Browser 9300: numbers with ES2015+ syntax (0b, 0o, 1_000, 10n) are copied without the
+ * separators for js_strtod */
+static int lexnumber2(js_State *J);
+
 static int lexnumber(js_State *J)
 {
 	const char *s = J->source - 1;
+	const char *p;
+
+	if (*s >= '0' && *s <= '9')
+		for (p = s; (*p >= '0' && *p <= '9') || *p == '.' || *p == '_'; ++p)
+			if (*p == '_' && p[1] >= '0' && p[1] <= '9')
+				return lexnumber2(J);
 
 	if (jsY_accept(J, '0')) {
 		if (jsY_accept(J, 'x') || jsY_accept(J, 'X')) {
-			J->number = lexhex(J);
+			J->number = lexradix(J, 16);
+			if (J->lexchar == 'n') jsY_next(J);
 			return TK_NUMBER;
 		}
+		if (jsY_accept(J, 'b') || jsY_accept(J, 'B')) {
+			J->number = lexradix(J, 2);
+			if (J->lexchar == 'n') jsY_next(J);
+			return TK_NUMBER;
+		}
+		if (jsY_accept(J, 'o') || jsY_accept(J, 'O')) {
+			J->number = lexradix(J, 8);
+			if (J->lexchar == 'n') jsY_next(J);
+			return TK_NUMBER;
+		}
+		if (J->lexchar == 'n') { jsY_next(J); J->number = 0; return TK_NUMBER; }
 		if (jsY_isdec(J->lexchar))
 			jsY_error(J, "number with leading zero");
 		if (jsY_accept(J, '.')) {
@@ -377,10 +427,38 @@ static int lexnumber(js_State *J)
 			jsY_error(J, "missing exponent");
 	}
 
+	if (J->lexchar == 'n') { /* BigInt: approximated by a number */
+		jsY_next(J);
+		J->number = js_strtod(s, NULL);
+		return TK_NUMBER;
+	}
+
 	if (jsY_isidentifierstart(J->lexchar))
 		jsY_error(J, "number with letter suffix");
 
 	J->number = js_strtod(s, NULL);
+	return TK_NUMBER;
+}
+
+static int lexnumber2(js_State *J)
+{
+	char buf[64];
+	int n = 0;
+	while ((J->lexchar >= '0' && J->lexchar <= '9') || J->lexchar == '_' || J->lexchar == '.' ||
+			J->lexchar == 'e' || J->lexchar == 'E' ||
+			((J->lexchar == '-' || J->lexchar == '+') && n > 0 && (buf[n-1] == 'e' || buf[n-1] == 'E'))) {
+		if (J->lexchar != '_') {
+			if (n >= 62) jsY_error(J, "number too long");
+			buf[n++] = J->lexchar;
+		}
+		jsY_next(J);
+	}
+	buf[n] = 0;
+	if (J->lexchar == 'n')
+		jsY_next(J);
+	if (jsY_isidentifierstart(J->lexchar))
+		jsY_error(J, "number with letter suffix");
+	J->number = js_strtod(buf, NULL);
 	return TK_NUMBER;
 }
 
@@ -399,6 +477,12 @@ static int lexescape(js_State *J)
 	case EOF: jsY_error(J, "unterminated escape sequence");
 	case 'u':
 		jsY_next(J);
+		if (jsY_accept(J, '{')) { /* ES2015 \u{X...} */
+			while (jsY_ishex(J->lexchar)) { x = x * 16 + jsY_tohex(J->lexchar); jsY_next(J); if (x > 0x10FFFF) return 1; }
+			if (!jsY_accept(J, '}')) return 1;
+			textpush(J, x);
+			break;
+		}
 		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 12; jsY_next(J); }
 		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 8; jsY_next(J); }
 		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 4; jsY_next(J); }
@@ -454,6 +538,52 @@ static int lexstring(js_State *J)
 	return TK_STRING;
 }
 
+/* Browser 9300: a template literal's piece, from just after '`' or the '}' of a "${...}" up to
+ * and including the next '`' or "${" */
+int jsY_lextemplate(js_State *J)
+{
+	const char *start, *end;
+	char *raw;
+	int more = 0, i, n;
+
+	start = J->lexchar == EOF ? J->source : J->source - runelen(J->lexchar);
+	textinit(J);
+	for (;;) {
+		if (J->lexchar == EOF)
+			jsY_error(J, "template literal not terminated");
+		if (J->lexchar == '`') {
+			end = J->source - 1;
+			jsY_next(J);
+			break;
+		}
+		if (J->lexchar == '$' && *J->source == '{') {
+			end = J->source - 1;
+			jsY_next(J);
+			jsY_next(J);
+			more = 1;
+			break;
+		}
+		if (jsY_accept(J, '\\')) {
+			if (lexescape(J))
+				textpush(J, '?'); /* malformed: only an error when not tagged */
+		} else {
+			textpush(J, J->lexchar);
+			jsY_next(J);
+		}
+	}
+	J->text = js_intern(J, textend(J));
+	n = (int)(end - start);
+	raw = js_malloc(J, n + 1);
+	for (i = 0; start < end; ++start)
+		if (*start != '\r')
+			raw[i++] = *start;
+	raw[i] = 0;
+	J->es_raw = js_intern(J, raw);
+	js_free(J, raw);
+	J->number = more;
+	return TK_TEMPLATE;
+}
+
 /* the ugliest language wart ever... */
 static int isregexpcontext(int last)
 {
@@ -468,6 +598,7 @@ static int isregexpcontext(int last)
 	case TK_NULL:
 	case TK_THIS:
 	case TK_TRUE:
+	case TK_TEMPLATE:
 		return 0;
 	default:
 		return 1;
@@ -518,6 +649,7 @@ static int lexregexp(js_State *J)
 		if (jsY_accept(J, 'g')) ++g;
 		else if (jsY_accept(J, 'i')) ++i;
 		else if (jsY_accept(J, 'm')) ++m;
+		else if (jsY_accept(J, 'u') || jsY_accept(J, 'y') || jsY_accept(J, 's') || jsY_accept(J, 'd')) ; /* Browser 9300: accepted, not honoured */
 		else jsY_error(J, "illegal flag in regular expression: %c", J->lexchar);
 	}
 
@@ -592,7 +724,38 @@ static int jsY_lexx(js_State *J)
 		case ',': jsY_next(J); return ',';
 		case ':': jsY_next(J); return ':';
 		case ';': jsY_next(J); return ';';
-		case '?': jsY_next(J); return '?';
+		case '?':
+			jsY_next(J);
+			if (J->lexchar == '?') {
+				jsY_next(J);
+				if (jsY_accept(J, '='))
+					return TK_NULLISH_ASS;
+				return TK_NULLISH;
+			}
+			if (J->lexchar == '.' && !(*J->source >= '0' && *J->source <= '9')) {
+				jsY_next(J);
+				return TK_QDOT;
+			}
+			return '?';
+		case '`':
+			jsY_next(J);
+			return jsY_lextemplate(J);
+		case '#':
+			if (J->line == 1 && J->lasttoken == 0 && *J->source == '!') { /* #! line */
+				lexlinecomment(J);
+				continue;
+			}
+			jsY_next(J);
+			if (!jsY_isidentifierstart(J->lexchar))
+				jsY_error(J, "unexpected character: '#'");
+			textinit(J);
+			textpush(J, '#');
+			while (jsY_isidentifierpart(J->lexchar)) {
+				textpush(J, J->lexchar);
+				jsY_next(J);
+			}
+			J->text = textend(J);
+			return TK_IDENTIFIER;
 		case '[': jsY_next(J); return '[';
 		case ']': jsY_next(J); return ']';
 		case '{': jsY_next(J); return '{';
@@ -604,6 +767,10 @@ static int jsY_lexx(js_State *J)
 			return lexstring(J);
 
 		case '.':
+			if (J->source[0] == '.' && J->source[1] == '.') {
+				jsY_next(J); jsY_next(J); jsY_next(J);
+				return TK_ELLIPSIS;
+			}
 			return lexnumber(J);
 
 		case '<':
@@ -640,6 +807,8 @@ static int jsY_lexx(js_State *J)
 					return TK_STRICTEQ;
 				return TK_EQ;
 			}
+			if (jsY_accept(J, '>'))
+				return TK_ARROW;
 			return '=';
 
 		case '!':
@@ -669,6 +838,11 @@ static int jsY_lexx(js_State *J)
 
 		case '*':
 			jsY_next(J);
+			if (jsY_accept(J, '*')) {
+				if (jsY_accept(J, '='))
+					return TK_POW_ASS;
+				return TK_POW;
+			}
 			if (jsY_accept(J, '='))
 				return TK_MUL_ASS;
 			return '*';
@@ -681,16 +855,22 @@ static int jsY_lexx(js_State *J)
 
 		case '&':
 			jsY_next(J);
-			if (jsY_accept(J, '&'))
+			if (jsY_accept(J, '&')) {
+				if (jsY_accept(J, '='))
+					return TK_LAND_ASS;
 				return TK_AND;
+			}
 			if (jsY_accept(J, '='))
 				return TK_AND_ASS;
 			return '&';
 
 		case '|':
 			jsY_next(J);
-			if (jsY_accept(J, '|'))
+			if (jsY_accept(J, '|')) {
+				if (jsY_accept(J, '='))
+					return TK_LOR_ASS;
 				return TK_OR;
+			}
 			if (jsY_accept(J, '='))
 				return TK_OR_ASS;
 			return '|';
@@ -734,6 +914,7 @@ void jsY_initlex(js_State *J, const char *filename, const char *source)
 {
 	J->filename = filename;
 	J->source = source;
+	J->es_linestart = source;
 	J->line = 1;
 	J->lasttoken = 0;
 	jsY_next(J); /* load first lookahead character */
@@ -741,7 +922,18 @@ void jsY_initlex(js_State *J, const char *filename, const char *source)
 
 int jsY_lex(js_State *J)
 {
-	return J->lasttoken = jsY_lexx(J);
+	int t = jsY_lexx(J);
+	/* after "${" an expression starts (a regexp may follow) */
+	J->lasttoken = (t == TK_TEMPLATE && J->number) ? '{' : t;
+	return t;
+}
+
+/* Browser 9300: the parser continues a template after the '}' of its "${...}" */
+int jsY_lextemplatenext(js_State *J)
+{
+	int t = jsY_lextemplate(J);
+	J->lasttoken = J->number ? '{' : t;
+	return t;
 }
 
 static int lexjsonnumber(js_State *J)

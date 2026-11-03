@@ -11,6 +11,10 @@ static void jsG_freefunction(js_State *J, js_Function *fun)
 	js_free(J, fun->funtab);
 	js_free(J, fun->vartab);
 	js_free(J, fun->code);
+#ifdef BW_CALLNAMES
+	js_free(J, fun->callpc);
+	js_free(J, fun->callname);
+#endif
 	js_free(J, fun);
 }
 

@@ -24,6 +24,46 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.43** (not yet run on the phone): **JavaScript of today's sites: ES2015+ syntax, Promise,
+  generators, async / await, and the newer web APIs.** Checked on the PC against Node, and in the
+  ARM emulator as the phone builds it.
+  - Syntax (`js/mujs/jsparse.c`, lowered to ES5 trees where it can be): `let` / `const` (as var,
+    renamed in a block where they would clash), arrow functions (`this` and `arguments` of the
+    function around), template literals and tagged templates, destructuring (declarations,
+    parameters, assignments, for-of, catch), default and rest parameters, spread in calls, `new`,
+    arrays and object literals, shorthand properties, methods, computed keys, getters / setters,
+    classes (extends, super, static, fields, `#private`, static blocks, extending Error),
+    `for-of`, `?.`, `??`, `**`, `??=` `||=` `&&=`, `0b` `0o` `1_000` numbers, `\u{...}`, the regexp
+    flags u y s (accepted), optional catch binding, trailing commas.
+  - Generators, async functions and async generators run as coroutines in the interpreter
+    (`js/mujs/jsrun.c`): a yield keeps its frame (stack, scope, try blocks) in the generator object,
+    so `yield` inside try / catch / finally works, and `throw()` into one. `for await`. Promise jobs
+    run after each script, event and timer, in the order browsers run them.
+  - Built-ins (`js/es.js`, every engine runs it): Symbol (as strings: `typeof` says symbol),
+    iterators, Map, Set, WeakMap, WeakSet, Promise (all / allSettled / race / any / finally),
+    queueMicrotask, Object.assign / entries / fromEntries / groupBy, Array.from (iterables) / flat
+    / flatMap / at / findLast / toSorted, String padStart / replaceAll / at / codePointAt / raw,
+    Math and Number additions, Reflect, Annex B (toGMTString, getYear, __defineGetter__ ...).
+    Objects keep their properties in insertion order (as ES2015: integer keys first): for-in,
+    Object.keys and JSON.stringify give what browsers give.
+  - Web APIs (`js/prelude.js`): fetch and XMLHttpRequest (a GET is answered with what the browser
+    fetched for the page, in the same rounds as external scripts: 12 a page; other methods are not
+    sent), Headers / Response / Request, URL, URLSearchParams, AbortController, TextEncoder /
+    TextDecoder, atob / btoa, typed arrays and DataView (as arrays), Blob / File / FormData,
+    crypto.getRandomValues / randomUUID, structuredClone, customElements (upgrades the page's
+    elements), MessageChannel, NodeList, CSSStyleSheet. Selectors: `:nth-child()`
+    `:nth-last-child()` `:nth-of-type()` `:first-of-type` ..., `:is()` `:where()` `:has()`, `:not()`
+    with lists; `:hover` and the like match nothing.
+  - MuJS fixes on the way: `in` no longer runs getters (core-js polyfills failed on it), regexps
+    with a loop that can match nothing (`(a*)*`) run as in browsers, jumps in functions over 64 K
+    instructions (Google Tag Manager), `do ... while (x) return`, a property read on undefined
+    names the property ("Cannot read properties of undefined (reading 'x')"), syntax errors give
+    the column, script errors their stack.
+  - Real sites on the PC with their scripts: ct24.ceskatelevize.cz (Next.js, 25 scripts),
+    react.dev, theguardian.com run with no script error (they failed on syntax in 0.42); bbc.com,
+    idnes.cz down to the sites' own errors.
+  - Creating an engine now costs about 0.08 s on the phone (it runs the ES runtime); dom.html
+    takes 41 M instructions (22.6 M in 0.42), jQuery 3 116 M.
 - **0.42** (not yet run on the phone): **scripts get a real page to work on (a DOM), and external
   scripts load.** Run in the ARM emulator as the phone builds it: the same pages out as on a PC.
   - The page is a tree (`js/bwdom.c`): a tolerant HTML parser (implied end tags, html / head /

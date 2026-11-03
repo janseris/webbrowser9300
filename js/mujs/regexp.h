@@ -36,12 +36,18 @@ enum {
 #define REG_MAXSUB 16
 #endif
 
+/* Browser 9300: loops whose body can match nothing (as (a*)*): where each iteration began */
+#ifndef REG_MAXLOOP
+#define REG_MAXLOOP 4
+#endif
+
 struct Resub {
 	int nsub;
 	struct {
 		const char *sp;
 		const char *ep;
 	} sub[REG_MAXSUB];
+	const char *mark[REG_MAXLOOP];
 };
 
 #endif

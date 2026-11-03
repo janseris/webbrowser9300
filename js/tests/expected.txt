@@ -14,3 +14,8 @@ c_objects.js	a,c 3 true false 11025 1,2,5,10 1 true object function 1,2,3 13 6 1
 c_regexp.js	02.11.2026|true|3|bar,baz|120|a<1>b<2>c<3>|true|4
 c_runaway.js	error: script ran too long
 c_strings.js	HELLO, WORLD|c+b+a|cd|ef|x|120|č|a%20b%26%C4%8D|š |2|4|aa|abcd1|y|9
+d_async.js	start 1;sync;got 2;micro;TypeError;start 3;arrow object;all 1,2,3;settled [{"status":"rejected","reason":1},{"status":"fulfilled","value":2}];race r;any;fin;got 6;seq 1,2,3;err bad;cx;class 3,6;then done
+d_asyncgen.js	t0;t10;t20;p1;p2;{"value":1,"done":false};{"value":2,"done":false};{"value":3,"done":false};{"done":true};{"value":"r","done":true};{"done":true};done
+d_builtins.js	{"a":1,"b":2};[["x",1],["y",[2]]];[1,2,[3,[4]]];[1,2,3,4];[1,10,2,20];7;b;a+b+c;x.y;[1,2,3];[0,1,4];helo;true;false;true;-4;-1;2;128512;a\nb1;3;**abc;  x|;["nan","zero","str",3];[false,2,4];[2,3];5;symbol;true;{"value":["a",1],"done":false};true;2;{"odd":[1,3],"even":[2,4]};1;{"1":3,"b":1,"a":2};["y","z"]
+d_es6syntax.js	12;1;0;5;1;[7,14];42;4;2;{"k":1};n=5 next=6 in5;a|b\n|c:1,2;10;[1,9,[4,5]];[1,"d",{"t":2,"u":3}];[2,1];3;7;5;[0,1,2,3];9;1;{"sh":4,"dyn1":2,"gg":5,"z1":1,"q-q":3};4;5;undefined;undefined;F;undefined;F;def;0;1024;-8;[5,6,7];["0a1","1b2"];["0a1","1b2","a","b"];6;[5,15,1000000,255];Rex makes a sound woof;4;hid;1;true;Dog Rex;["kind","legs","name","sound"];Cat makes a sound;true;boom;caught;3;anon;ok
+d_generators.js	{"value":0,"done":false};got x;{"value":1,"done":false};{"value":2,"done":false};{"value":"end","done":true};{"done":true};[0,1,2,3];["a","b","ri",1,2];{"value":1,"done":false};caught E;{"value":"after","done":false};fin;{"done":true};10;20;[1,2,3,4];[0,1,1,2,3,5,8,13,21,34];[["b",2],["c",3]];2;["b","c"];[1,2,3];true;5;0

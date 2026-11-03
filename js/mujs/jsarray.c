@@ -188,6 +188,8 @@ static void Ap_push(js_State *J)
 	int n;
 
 	n = js_getlength(J, 0);
+	if (n > INT_MAX - top) /* Browser 9300: (was an int overflow) */
+		js_typeerror(J, "array length overflow");
 
 	for (i = 1; i < top; ++i, ++n) {
 		js_copy(J, i);

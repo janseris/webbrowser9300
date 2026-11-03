@@ -1,6 +1,33 @@
-diff -ru a/mujs/jsbuiltin.c b/mujs/jsbuiltin.c
---- a/mujs/jsbuiltin.c	2026-11-02 20:34:58.058535567 +0100
-+++ b/mujs/jsbuiltin.c	2026-11-02 19:50:39.348081621 +0100
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/astnames.h b/mujs/astnames.h
+--- a/mujs/astnames.h	2026-11-03 12:07:56.312213049 +0100
++++ b/mujs/astnames.h	2026-11-03 12:07:56.319057134 +0100
+@@ -69,6 +69,11 @@
+ "exp_ass_bitor",
+ "exp_comma",
+ "exp_var",
++"exp_spread",
++"exp_optchain",
++"exp_nullish",
++"exp_yield",
++"exp_await",
+ "stm_block",
+ "stm_empty",
+ "stm_var",
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsarray.c b/mujs/jsarray.c
+--- a/mujs/jsarray.c	2026-11-03 12:07:56.313220989 +0100
++++ b/mujs/jsarray.c	2026-11-03 12:07:56.318649922 +0100
+@@ -188,6 +188,8 @@
+ 	int n;
+ 
+ 	n = js_getlength(J, 0);
++	if (n > INT_MAX - top) /* Browser 9300: (was an int overflow) */
++		js_typeerror(J, "array length overflow");
+ 
+ 	for (i = 1; i < top; ++i, ++n) {
+ 		js_copy(J, i);
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsbuiltin.c b/mujs/jsbuiltin.c
+--- a/mujs/jsbuiltin.c	2026-11-03 12:07:56.313348497 +0100
++++ b/mujs/jsbuiltin.c	2026-11-03 12:07:56.318688168 +0100
 @@ -100,7 +100,7 @@
  	const char * volatile str = str_;
  	js_Buffer *sb = NULL;
@@ -10,10 +37,18 @@ diff -ru a/mujs/jsbuiltin.c b/mujs/jsbuiltin.c
  
  	if (js_try(J)) {
  		js_free(J, sb);
-diff -ru a/mujs/jscompile.c b/mujs/jscompile.c
---- a/mujs/jscompile.c	2026-11-02 20:34:58.058561338 +0100
-+++ b/mujs/jscompile.c	2026-11-02 19:50:39.352016020 +0100
-@@ -28,11 +28,11 @@
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jscompile.c b/mujs/jscompile.c
+--- a/mujs/jscompile.c	2026-11-03 12:07:56.313434232 +0100
++++ b/mujs/jscompile.c	2026-11-03 12:07:56.318707180 +0100
+@@ -7,6 +7,7 @@
+ JS_NORETURN void jsC_error(js_State *J, js_Ast *node, const char *fmt, ...) JS_PRINTFLIKE(3,4);
+ 
+ static void cfunbody(JF, js_Ast *name, js_Ast *params, js_Ast *body, int is_fun_exp);
++static js_Function *newfun(js_State *J, int line, js_Ast *name, js_Ast *params, js_Ast *body, int script, int default_strict, int is_fun_exp, int gen);
+ static void cexp(JF, js_Ast *exp);
+ static void cstmlist(JF, js_Ast *list);
+ static void cstm(JF, js_Ast *stm);
+@@ -28,11 +29,11 @@
  	js_throw(J);
  }
  
@@ -27,9 +62,446 @@ diff -ru a/mujs/jscompile.c b/mujs/jscompile.c
  	"implements", "interface", "let", "package", "private", "protected",
  	"public", "static", "yield",
  };
-diff -ru a/mujs/jsdate.c b/mujs/jsdate.c
---- a/mujs/jsdate.c	2026-11-02 20:34:58.058810034 +0100
-+++ b/mujs/jsdate.c	2026-11-02 20:22:56.861004060 +0100
+@@ -47,7 +48,7 @@
+ 	}
+ }
+ 
+-static js_Function *newfun(js_State *J, int line, js_Ast *name, js_Ast *params, js_Ast *body, int script, int default_strict, int is_fun_exp)
++static js_Function *newfun(js_State *J, int line, js_Ast *name, js_Ast *params, js_Ast *body, int script, int default_strict, int is_fun_exp, int gen)
+ {
+ 	js_Function *F = js_malloc(J, sizeof *F);
+ 	memset(F, 0, sizeof *F);
+@@ -61,8 +62,11 @@
+ 	F->script = script;
+ 	F->strict = default_strict;
+ 	F->name = name ? name->string : "";
++	F->generator = gen & 3; /* 3: an async generator */
+ 
+ 	cfunbody(J, F, name, params, body, is_fun_exp);
++	if (F->generator)
++		F->lightweight = 0; /* its variables outlive the frame */
+ 
+ 	return F;
+ }
+@@ -205,7 +209,9 @@
+ 		if (is_eval)
+ 			jsC_error(J, ident, "'eval' is read-only in strict mode");
+ 	}
+-	if (is_eval)
++	/* Browser 9300: reading eval as a value ((1,eval)(code), window.eval) gets the global eval
++	 * function (indirect eval, in the global scope); only assigning to it is an error */
++	if (is_eval && oploc != OP_GETLOCAL)
+ 		js_evalerror(J, "%s:%d: invalid use of 'eval'", J->filename, ident->line);
+ 
+ 	i = findlocal(J, F, ident->string);
+@@ -222,28 +228,28 @@
+ 	return F->codelen;
+ }
+ 
++/* Browser 9300: a jump's address is two instructions (low, high 16 bits): big functions */
+ static int emitjump(JF, int opcode)
+ {
+ 	int inst;
+ 	emit(J, F, opcode);
+ 	inst = F->codelen;
+ 	emitarg(J, F, 0);
++	emitarg(J, F, 0);
+ 	return inst;
+ }
+ 
+ static void emitjumpto(JF, int opcode, int dest)
+ {
+ 	emit(J, F, opcode);
+-	if (dest != (js_Instruction)dest)
+-		js_syntaxerror(J, "jump address integer overflow");
+-	emitarg(J, F, dest);
++	emitarg(J, F, dest & 0xFFFF);
++	emitarg(J, F, (dest >> 16) & 0xFFFF);
+ }
+ 
+ static void labelto(JF, int inst, int addr)
+ {
+-	if (addr != (js_Instruction)addr)
+-		js_syntaxerror(J, "jump address integer overflow");
+-	F->code[inst] = addr;
++	F->code[inst] = addr & 0xFFFF;
++	F->code[inst + 1] = (addr >> 16) & 0xFFFF;
+ }
+ 
+ static void label(JF, int inst)
+@@ -280,12 +286,57 @@
+ 	emit(J, F, opcode);
+ }
+ 
++/* Browser 9300: [obj] -> %name(obj, exp) -> [obj] (the result dropped) */
++static void chelper2(JF, const char *name, js_Ast *exp)
++{
++	emit(J, F, OP_DUP);
++	emitstring(J, F, OP_GETVAR, name);
++	emit(J, F, OP_ROT2);
++	emit(J, F, OP_UNDEF);
++	emit(J, F, OP_ROT2);
++	cexp(J, F, exp);
++	emit(J, F, OP_CALL);
++	emitarg(J, F, 2);
++	emit(J, F, OP_POP);
++}
++
++/* Browser 9300: a ?. point: v on top (with npop - 1 more of the chain's values under it);
++ * when v is null or undefined, the chain is undefined */
++static void coptcheck(JF, int npop)
++{
++	js_JumpList *jump;
++	int skip, i;
++	emit(J, F, OP_DUP);
++	emit(J, F, OP_NULL);
++	emit(J, F, OP_EQ);
++	skip = emitjump(J, F, OP_JFALSE);
++	for (i = 0; i < npop; ++i)
++		emit(J, F, OP_POP);
++	emit(J, F, OP_UNDEF);
++	jump = js_malloc(J, sizeof *jump);
++	jump->type = 0;
++	jump->inst = emitjump(J, F, OP_JUMP);
++	jump->next = F->optjumps;
++	F->optjumps = jump;
++	label(J, F, skip);
++}
++
++static int hasspread(js_Ast *list)
++{
++	for (; list; list = list->b)
++		if (list->a->type == EXP_SPREAD)
++			return 1;
++	return 0;
++}
++
+ static void carray(JF, js_Ast *list)
+ {
+ 	while (list) {
+ 		emitline(J, F, list->a);
+ 		if (list->a->type == EXP_ELISION) {
+ 			emit(J, F, OP_SKIPARRAY);
++		} else if (list->a->type == EXP_SPREAD) {
++			chelper2(J, F, "%pushall", list->a->a);
+ 		} else {
+ 			cexp(J, F, list->a);
+ 			emit(J, F, OP_INITARRAY);
+@@ -322,23 +373,28 @@
+ {
+ 	js_Ast *head = list;
+ 
++	(void)head;
+ 	while (list) {
+ 		js_Ast *kv = list->a;
+ 		js_Ast *prop = kv->a;
+ 
++		if (kv->type == EXP_SPREAD) { /* {...o} */
++			emitline(J, F, kv);
++			chelper2(J, F, "%assign", kv->a);
++			list = list->b;
++			continue;
++		}
++
+ 		if (prop->type == AST_IDENTIFIER || prop->type == EXP_STRING) {
+ 			emitline(J, F, prop);
+ 			emitstring(J, F, OP_STRING, prop->string);
+ 		} else if (prop->type == EXP_NUMBER) {
+ 			emitline(J, F, prop);
+ 			emitnumber(J, F, prop->number);
+-		} else {
+-			jsC_error(J, prop, "invalid property name in object initializer");
++		} else { /* Browser 9300: computed [key] */
++			cexp(J, F, prop);
+ 		}
+ 
+-		if (F->strict)
+-			checkdup(J, F, head, kv);
+-
+ 		switch (kv->type) {
+ 		default: /* impossible */ break;
+ 		case EXP_PROP_VAL:
+@@ -347,12 +403,12 @@
+ 			emit(J, F, OP_INITPROP);
+ 			break;
+ 		case EXP_PROP_GET:
+-			emitfunction(J, F, newfun(J, prop->line, NULL, NULL, kv->c, 0, F->strict, 1));
++			emitfunction(J, F, newfun(J, prop->line, NULL, NULL, kv->c, 0, F->strict, 1, 0));
+ 			emitline(J, F, kv);
+ 			emit(J, F, OP_INITGETTER);
+ 			break;
+ 		case EXP_PROP_SET:
+-			emitfunction(J, F, newfun(J, prop->line, NULL, kv->b, kv->c, 0, F->strict, 1));
++			emitfunction(J, F, newfun(J, prop->line, NULL, kv->b, kv->c, 0, F->strict, 1, 0));
+ 			emitline(J, F, kv);
+ 			emit(J, F, OP_INITSETTER);
+ 			break;
+@@ -502,6 +558,23 @@
+ static void cdelete(JF, js_Ast *exp)
+ {
+ 	js_Ast *arg = exp->a;
++	if (arg->type == EXP_OPTCHAIN) { /* delete a?.b: true when a is nullish */
++		js_JumpList *save = F->optjumps, *jump;
++		int end;
++		F->optjumps = NULL;
++		cdelete(J, F, arg);
++		end = emitjump(J, F, OP_JUMP);
++		while ((jump = F->optjumps) != NULL) {
++			label(J, F, jump->inst);
++			F->optjumps = jump->next;
++			js_free(J, jump);
++		}
++		emit(J, F, OP_POP);
++		emit(J, F, OP_TRUE);
++		label(J, F, end);
++		F->optjumps = save;
++		return;
++	}
+ 	switch (arg->type) {
+ 	case EXP_IDENTIFIER:
+ 		if (F->strict)
+@@ -517,11 +590,14 @@
+ 		break;
+ 	case EXP_MEMBER:
+ 		cexp(J, F, arg->a);
++		if (arg->number) coptcheck(J, F, 1);
+ 		emitline(J, F, exp);
+ 		emitstring(J, F, OP_DELPROP_S, arg->b->string);
+ 		break;
+-	default:
+-		jsC_error(J, exp, "invalid l-value in delete expression");
++	default: /* delete of a value: true */
++		cexp(J, F, arg);
++		emit(J, F, OP_POP);
++		emit(J, F, OP_TRUE);
+ 	}
+ }
+ 
+@@ -537,37 +613,64 @@
+ 	emit(J, F, OP_EVAL);
+ }
+ 
+-static void ccall(JF, js_Ast *fun, js_Ast *args)
++static void ccall(JF, js_Ast *fun, js_Ast *args, int opt)
+ {
+ 	int n;
+ 	switch (fun->type) {
+ 	case EXP_INDEX:
+ 		cexp(J, F, fun->a);
++		if (fun->number) coptcheck(J, F, 1);
+ 		emit(J, F, OP_DUP);
+ 		cexp(J, F, fun->b);
+ 		emit(J, F, OP_GETPROP);
++		if (opt) coptcheck(J, F, 2);
+ 		emit(J, F, OP_ROT2);
+ 		break;
+ 	case EXP_MEMBER:
+ 		cexp(J, F, fun->a);
++		if (fun->number) coptcheck(J, F, 1);
+ 		emit(J, F, OP_DUP);
+ 		emitstring(J, F, OP_GETPROP_S, fun->b->string);
++		if (opt) coptcheck(J, F, 2);
+ 		emit(J, F, OP_ROT2);
+ 		break;
+ 	case EXP_IDENTIFIER:
+-		if (!strcmp(fun->string, "eval")) {
++		if (!strcmp(fun->string, "eval") && !opt && !hasspread(args)) {
+ 			ceval(J, F, fun, args);
+ 			return;
+ 		}
+ 		/* fallthrough */
+ 	default:
+ 		cexp(J, F, fun);
++		if (opt) coptcheck(J, F, 1);
+ 		emit(J, F, OP_UNDEF);
+ 		break;
+ 	}
++	if (hasspread(args)) { /* [fun this] -> %apply(fun, this, [args]) */
++		emit(J, F, OP_NEWARRAY);
++		carray(J, F, args);
++		emitstring(J, F, OP_GETVAR, "%apply");
++		emit(J, F, OP_ROT4);
++		emit(J, F, OP_UNDEF);
++		emit(J, F, OP_ROT4);
++		emit(J, F, OP_CALL);
++		emitarg(J, F, 3);
++		return;
++	}
+ 	n = cargs(J, F, args);
+ 	emit(J, F, OP_CALL);
+ 	emitarg(J, F, n);
++#ifdef BW_CALLNAMES
++	if (fun->type == EXP_MEMBER || fun->type == EXP_IDENTIFIER) {
++		if (F->ncall == F->capcall) {
++			F->capcall = F->capcall ? F->capcall * 2 : 16;
++			F->callpc = js_realloc(J, F->callpc, F->capcall * sizeof *F->callpc);
++			F->callname = js_realloc(J, F->callname, F->capcall * sizeof *F->callname);
++		}
++		F->callpc[F->ncall] = F->codelen;
++		F->callname[F->ncall++] = fun->type == EXP_MEMBER ? fun->b->string : fun->string;
++	}
++#endif
+ }
+ 
+ static void cexp(JF, js_Ast *exp)
+@@ -623,7 +726,7 @@
+ 
+ 	case EXP_FUN:
+ 		emitline(J, F, exp);
+-		emitfunction(J, F, newfun(J, exp->line, exp->a, exp->b, exp->c, 0, F->strict, 1));
++		emitfunction(J, F, newfun(J, exp->line, exp->a, exp->b, exp->c, 0, F->strict, 1, (int)exp->number));
+ 		break;
+ 
+ 	case EXP_IDENTIFIER:
+@@ -633,6 +736,7 @@
+ 
+ 	case EXP_INDEX:
+ 		cexp(J, F, exp->a);
++		if (exp->number) coptcheck(J, F, 1);
+ 		cexp(J, F, exp->b);
+ 		emitline(J, F, exp);
+ 		emit(J, F, OP_GETPROP);
+@@ -640,15 +744,114 @@
+ 
+ 	case EXP_MEMBER:
+ 		cexp(J, F, exp->a);
++		if (exp->number) coptcheck(J, F, 1);
+ 		emitline(J, F, exp);
+ 		emitstring(J, F, OP_GETPROP_S, exp->b->string);
+ 		break;
+ 
+ 	case EXP_CALL:
+-		ccall(J, F, exp->a, exp->b);
++		ccall(J, F, exp->a, exp->b, (int)exp->number);
++		break;
++
++	case EXP_OPTCHAIN: {
++		js_JumpList *save = F->optjumps, *jump;
++		F->optjumps = NULL;
++		cexp(J, F, exp->a);
++		while ((jump = F->optjumps) != NULL) {
++			label(J, F, jump->inst);
++			F->optjumps = jump->next;
++			js_free(J, jump);
++		}
++		F->optjumps = save;
++		break;
++	}
++
++	case EXP_NULLISH:
++		cexp(J, F, exp->a);
++		emitline(J, F, exp);
++		emit(J, F, OP_DUP);
++		emit(J, F, OP_NULL);
++		emit(J, F, OP_EQ);
++		end = emitjump(J, F, OP_JFALSE);
++		emit(J, F, OP_POP);
++		cexp(J, F, exp->b);
++		label(J, F, end);
++		break;
++
++	case EXP_SPREAD:
++		jsC_error(J, exp, "unexpected '...'");
++
++	case EXP_AWAIT:
++		if (F->generator == 3) { /* told apart from its yields: %abox(v) */
++			emitstring(J, F, OP_GETVAR, "%abox");
++			emit(J, F, OP_UNDEF);
++			cexp(J, F, exp->a);
++			emit(J, F, OP_CALL);
++			emitarg(J, F, 1);
++		} else {
++			cexp(J, F, exp->a);
++		}
++		emitline(J, F, exp);
++		emit(J, F, OP_YIELD);
++		break;
++
++	case EXP_YIELD:
++		if (!F->generator)
++			jsC_error(J, exp, "yield outside a generator");
++		if (exp->number) { /* yield* it: [it sent] until done */
++			int loop, done;
++			cexp(J, F, exp->a);
++			emitline(J, F, exp);
++			emitstring(J, F, OP_GETVAR, "%iter");
++			emit(J, F, OP_ROT2);
++			emit(J, F, OP_UNDEF);
++			emit(J, F, OP_ROT2);
++			emit(J, F, OP_CALL);
++			emitarg(J, F, 1);
++			emit(J, F, OP_UNDEF);
++			loop = here(J, F);
++			emit(J, F, OP_DUP2);
++			emitstring(J, F, OP_GETVAR, "%ystep");
++			emit(J, F, OP_ROT3);
++			emit(J, F, OP_UNDEF);
++			emit(J, F, OP_ROT3);
++			emit(J, F, OP_CALL);
++			emitarg(J, F, 2);
++			emit(J, F, OP_ROT2);
++			emit(J, F, OP_POP);
++			emit(J, F, OP_DUP);
++			emitstring(J, F, OP_GETPROP_S, "done");
++			done = emitjump(J, F, OP_JTRUE);
++			emitstring(J, F, OP_GETPROP_S, "value");
++			emit(J, F, OP_YIELD);
++			emitjumpto(J, F, OP_JUMP, loop);
++			label(J, F, done);
++			emitstring(J, F, OP_GETPROP_S, "value");
++			emit(J, F, OP_ROT2);
++			emit(J, F, OP_POP);
++			break;
++		}
++		if (exp->a)
++			cexp(J, F, exp->a);
++		else
++			emit(J, F, OP_UNDEF);
++		emitline(J, F, exp);
++		emit(J, F, OP_YIELD);
+ 		break;
+ 
+ 	case EXP_NEW:
++		if (hasspread(exp->b)) { /* [C] -> %construct(C, [args]) */
++			cexp(J, F, exp->a);
++			emit(J, F, OP_NEWARRAY);
++			carray(J, F, exp->b);
++			emitstring(J, F, OP_GETVAR, "%construct");
++			emit(J, F, OP_ROT3);
++			emit(J, F, OP_UNDEF);
++			emit(J, F, OP_ROT3);
++			emit(J, F, OP_CALL);
++			emitarg(J, F, 2);
++			break;
++		}
+ 		cexp(J, F, exp->a);
+ 		n = cargs(J, F, exp->b);
+ 		emitline(J, F, exp);
+@@ -1360,7 +1563,7 @@
+ 		js_Ast *stm = list->a;
+ 		if (stm->type == AST_FUNDEC) {
+ 			emitline(J, F, stm);
+-			emitfunction(J, F, newfun(J, stm->line, stm->a, stm->b, stm->c, 0, F->strict, 0));
++			emitfunction(J, F, newfun(J, stm->line, stm->a, stm->b, stm->c, 0, F->strict, 0, (int)stm->number));
+ 			emitline(J, F, stm);
+ 			emit(J, F, OP_SETLOCAL);
+ 			emitarg(J, F, addlocal(J, F, stm->a, 1));
+@@ -1418,10 +1621,10 @@
+ 
+ js_Function *jsC_compilefunction(js_State *J, js_Ast *prog)
+ {
+-	return newfun(J, prog->line, prog->a, prog->b, prog->c, 0, J->default_strict, 1);
++	return newfun(J, prog->line, prog->a, prog->b, prog->c, 0, J->default_strict, 1, 0);
+ }
+ 
+ js_Function *jsC_compilescript(js_State *J, js_Ast *prog, int default_strict)
+ {
+-	return newfun(J, prog ? prog->line : 0, NULL, NULL, prog, 1, default_strict, 0);
++	return newfun(J, prog ? prog->line : 0, NULL, NULL, prog, 1, default_strict, 0, 0);
+ }
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsdate.c b/mujs/jsdate.c
+--- a/mujs/jsdate.c	2026-11-03 12:07:56.313615736 +0100
++++ b/mujs/jsdate.c	2026-11-03 12:07:56.318736957 +0100
 @@ -10,9 +10,15 @@
  
  #define js_optnumber(J,I,V) (js_isdefined(J,I) ? js_tonumber(J,I) : V)
@@ -70,36 +542,10 @@ diff -ru a/mujs/jsdate.c b/mujs/jsdate.c
  
  static double DaylightSavingTA(double t)
  {
-diff -ru a/mujs/jsdtoa.c b/mujs/jsdtoa.c
---- a/mujs/jsdtoa.c	2026-11-02 20:34:58.058900331 +0100
-+++ b/mujs/jsdtoa.c	2026-11-02 20:05:36.737224754 +0100
-@@ -408,7 +408,14 @@
- static uint64_t double_to_uint64(double d)
- {
- 	uint64_t n;
-+#ifdef __MARM__
-+	/* the ARM FPA word order (the Nokia 9300's GCC 2.9): the high word first */
-+	unsigned int w[2];
-+	memcpy(w, &d, 8);
-+	n = ((uint64_t)w[0] << 32) | w[1];
-+#else
- 	memcpy(&n, &d, 8);
-+#endif
- 	return n;
- }
- 
-@@ -440,7 +447,9 @@
- 	diy_fp_t res = in;
- 	/* Normalize now */
- 	/* the original number could have been a denormal. */
--	while (! (res.f & (DP_HIDDEN_BIT << 1))) {
-+	/* (the test on the high word: GCC 2.9 (armi) compiled the 64-bit test of this loop's first
-+	 * round as 0 == 0, so a normalized value was shifted once more and lost its top bit) */
-+	while (!((unsigned int)(res.f >> 32) & 0x00200000u)) {
- 		res.f <<= 1;
- 		res.e--;
- 	}
-@@ -533,13 +542,13 @@
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsdtoa.c b/mujs/jsdtoa.c
+--- a/mujs/jsdtoa.c	2026-11-03 12:07:56.313850620 +0100
++++ b/mujs/jsdtoa.c	2026-11-03 12:07:56.318773516 +0100
+@@ -542,13 +542,13 @@
   * already produce underflow or overflow, so there's no need to worry about
   * additional digits.
   */
@@ -115,7 +561,7 @@ diff -ru a/mujs/jsdtoa.c b/mujs/jsdtoa.c
  	10.,
  	100.,
  	1.0e4,
-@@ -560,7 +569,7 @@
+@@ -569,7 +569,7 @@
   * one).
   */
  double
@@ -124,7 +570,7 @@ diff -ru a/mujs/jsdtoa.c b/mujs/jsdtoa.c
  {
  	int sign, expSign = FALSE;
  	double fraction, dblExp, *d;
-@@ -714,11 +723,15 @@
+@@ -723,11 +723,15 @@
  	if (exp < -maxExponent) {
  		exp = maxExponent;
  		expSign = TRUE;
@@ -140,7 +586,7 @@ diff -ru a/mujs/jsdtoa.c b/mujs/jsdtoa.c
  	} else if (exp < 0) {
  		expSign = TRUE;
  		exp = -exp;
-@@ -747,3 +760,11 @@
+@@ -756,3 +760,11 @@
  	}
  	return fraction;
  }
@@ -152,9 +598,9 @@ diff -ru a/mujs/jsdtoa.c b/mujs/jsdtoa.c
 +{
 +	return bwc_strtod(string, endPtr);
 +}
-diff -ru a/mujs/jserror.c b/mujs/jserror.c
---- a/mujs/jserror.c	2026-11-02 20:34:58.058969357 +0100
-+++ b/mujs/jserror.c	2026-11-02 20:32:37.288551473 +0100
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jserror.c b/mujs/jserror.c
+--- a/mujs/jserror.c	2026-11-03 12:07:56.313922872 +0100
++++ b/mujs/jserror.c	2026-11-03 12:07:56.318798452 +0100
 @@ -7,9 +7,11 @@
  {
  	char buf[256];
@@ -168,26 +614,117 @@ diff -ru a/mujs/jserror.c b/mujs/jserror.c
  		const char *name = J->trace[n].name;
  		const char *file = J->trace[n].file;
  		int line = J->trace[n].line;
-diff -ru a/mujs/jsgc.c b/mujs/jsgc.c
---- a/mujs/jsgc.c	2026-11-02 20:34:58.059075421 +0100
-+++ b/mujs/jsgc.c	2026-11-02 19:51:29.827938883 +0100
-@@ -242,6 +242,7 @@
- 		++nstr;
- 	}
- 
-+	{
- 	unsigned int ntot = nenv + nfun + nobj + nstr + nprop;
- 	unsigned int gtot = genv + gfun + gobj + gstr + gprop;
- 	unsigned int remaining = ntot - gtot;
-@@ -255,6 +256,7 @@
- 			100*gtot/ntot, genv, nenv, gfun, nfun, gobj, nobj, gprop, nprop, gstr, nstr);
- 		js_report(J, buf);
- 	}
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jses.c b/mujs/jses.c
+--- a/mujs/jses.c	1970-01-01 01:00:00.000000000 +0100
++++ b/mujs/jses.c	2026-11-03 12:07:56.318511617 +0100
+@@ -0,0 +1,92 @@
++/* Browser 9300: the engine's ES2015+ runtime: js/es.js (as jses.h) and the parts in C. */
++#include "jses.h"
++
++static void ES_construct(js_State *J)
++{
++	int n, i;
++	if (!js_iscallable(J, 1))
++		js_typeerror(J, "%s is not a constructor", js_typeof(J, 1));
++	n = js_isobject(J, 2) ? js_getlength(J, 2) : 0;
++	js_copy(J, 1);
++	for (i = 0; i < n; ++i)
++		js_getindex(J, 2, i);
++	js_construct(J, n);
++}
++
++static void ES_setPrototypeOf(js_State *J)
++{
++	js_Object *obj, *proto, *p;
++	if (!js_isobject(J, 1)) {
++		js_copy(J, 1);
++		return;
 +	}
++	obj = js_toobject(J, 1);
++	if (js_isnull(J, 2))
++		proto = NULL;
++	else if (js_isobject(J, 2))
++		proto = js_toobject(J, 2);
++	else
++		js_typeerror(J, "Object prototype may only be an Object or null");
++	for (p = proto; p; p = p->prototype)
++		if (p == obj)
++			js_typeerror(J, "Cyclic __proto__ value");
++	obj->prototype = proto;
++	js_copy(J, 1);
++}
++
++/* generator.%co(mode, value): mode 0 next, 1 throw, 2 return -> [value, done] */
++static void ES_co(js_State *J)
++{
++	js_Object *g;
++	int mode = js_tointeger(J, 1), st, y;
++	if (!js_isobject(J, 0))
++		js_typeerror(J, "not a generator");
++	g = js_toobject(J, 0);
++	js_getproperty(J, 0, "%st");
++	st = js_isnumber(J, -1) ? js_tointeger(J, -1) : -1;
++	js_pop(J, 1);
++	if (st < 0)
++		js_typeerror(J, "not a generator");
++	if (st == 2)
++		js_typeerror(J, "Generator is already running");
++	if (st == 3 || mode == 2 || (st == 0 && mode == 1)) {
++		js_pushnumber(J, 3);
++		js_defproperty(J, 0, "%st", JS_DONTENUM);
++		if (mode == 1) {
++			js_copy(J, 2);
++			js_throw(J);
++		}
++		js_newarray(J);
++		if (mode == 2) js_copy(J, 2); else js_pushundefined(J);
++		js_setindex(J, -2, 0);
++		js_pushboolean(J, 1);
++		js_setindex(J, -2, 1);
++		return;
++	}
++	js_copy(J, 2);
++	y = jsR_resumegen(J, g, mode);
++	js_newarray(J);
++	js_rot2(J);
++	js_setindex(J, -2, 0);
++	js_pushboolean(J, !y);
++	js_setindex(J, -2, 1);
++}
++
++void jsB_inites(js_State *J)
++{
++	js_getglobal(J, "Object");
++	js_newcfunction(J, ES_setPrototypeOf, "setPrototypeOf", 2);
++	js_defproperty(J, -2, "setPrototypeOf", JS_DONTENUM);
++	js_pop(J, 1);
++	js_newcfunction(J, ES_construct, "%construct", 2);
++	js_defglobal(J, "%construct", JS_DONTENUM);
++	if (js_ploadstring(J, "[es]", kBwEs) || (js_pushglobal(J), js_pcall(J, 0)))
++		js_report(J, js_trystring(J, -1, "[es] failed"));
++	js_pop(J, 1);
++	js_getglobal(J, "%genproto");
++	if (js_isobject(J, -1)) {
++		js_newcfunction(J, ES_co, "%co", 2);
++		js_defproperty(J, -2, "%co", JS_DONTENUM);
++	}
++	js_pop(J, 1);
++}
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsgc.c b/mujs/jsgc.c
+--- a/mujs/jsgc.c	2026-11-03 12:07:56.314110474 +0100
++++ b/mujs/jsgc.c	2026-11-03 12:07:56.318823825 +0100
+@@ -11,6 +11,10 @@
+ 	js_free(J, fun->funtab);
+ 	js_free(J, fun->vartab);
+ 	js_free(J, fun->code);
++#ifdef BW_CALLNAMES
++	js_free(J, fun->callpc);
++	js_free(J, fun->callname);
++#endif
+ 	js_free(J, fun);
  }
  
- void js_freestate(js_State *J)
-@@ -280,5 +282,8 @@
+@@ -282,5 +286,8 @@
  
  	js_free(J, J->lexbuf.text);
  	J->alloc(J->actx, J->stack, 0);
@@ -196,9 +733,9 @@ diff -ru a/mujs/jsgc.c b/mujs/jsgc.c
 +	J->alloc(J->actx, J->ssent, 0);
  	J->alloc(J->actx, J, 0);
  }
-diff -ru a/mujs/jsi.h b/mujs/jsi.h
---- a/mujs/jsi.h	2026-11-02 20:34:58.060340362 +0100
-+++ b/mujs/jsi.h	2026-11-02 20:27:30.242539345 +0100
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsi.h b/mujs/jsi.h
+--- a/mujs/jsi.h	2026-11-03 12:07:56.314228553 +0100
++++ b/mujs/jsi.h	2026-11-03 12:07:56.318591007 +0100
 @@ -197,8 +197,20 @@
  
  /* State struct */
@@ -220,10 +757,123 @@ diff -ru a/mujs/jsi.h b/mujs/jsi.h
  	void *actx;
  	void *uctx;
  	js_Alloc alloc;
-diff -ru a/mujs/jsintern.c b/mujs/jsintern.c
---- a/mujs/jsintern.c	2026-11-02 20:34:58.059134141 +0100
-+++ b/mujs/jsintern.c	2026-11-02 19:51:06.198518638 +0100
-@@ -38,14 +38,16 @@
+@@ -228,6 +240,20 @@
+ 	const char *text;
+ 	double number;
+ 	js_Ast *gcast; /* list of allocated nodes to free after parsing */
++	/* Browser 9300: ES2015+ lowering (jsparse.c) */
++	const char *es_raw;	/* a template piece's raw text */
++	const char *es_linestart; /* where the lexer's line starts (columns in errors) */
++	int es_arrow;		/* inside an arrow function of the current function */
++	int es_this, es_args;	/* the current function's arrows use this / arguments */
++	int es_tmpn;		/* hidden names made */
++	js_Ast *es_tmps;	/* the current function's hidden temps (a list) */
++	js_Ast *es_pro;		/* the current function's prologue statements (a list, reversed) */
++	js_Ast *es_names;	/* the declared names in scope (renaming of block lets) */
++	int es_level, es_block, es_renamed;
++	js_Ast *es_class;	/* the class being parsed (super, fields) */
++	js_Object *curgen;	/* the generator running (jsrun.c) */
++	int genyield;		/* its frame stopped at a yield */
++	int es_gen, es_async;	/* inside a generator / async function */
+ 
+ 	/* runtime environment */
+ 	js_Object *Object_prototype;
+@@ -372,6 +398,7 @@
+ 	enum js_Class type;
+ 	int extensible;
+ 	js_Property *properties;
++	js_Property *ohead, *otail; /* Browser 9300: insertion order */
+ 	int count; /* number of properties, for array sparseness check */
+ 	js_Object *prototype;
+ 	union {
+@@ -424,6 +451,7 @@
+ struct js_Property
+ {
+ 	js_Property *left, *right;
++	js_Property *onext, *oprev; /* Browser 9300: the object's properties in insertion order */
+ 	int level;
+ 	int atts;
+ 	js_Value value;
+@@ -478,6 +506,7 @@
+ /* jsproperty.c */
+ js_Object *jsV_newobject(js_State *J, enum js_Class type, js_Object *prototype);
+ js_Property *jsV_getownproperty(js_State *J, js_Object *obj, const char *name);
++js_Property **jsV_ownprops(js_State *J, js_Object *obj, int *n);
+ js_Property *jsV_getpropertyx(js_State *J, js_Object *obj, const char *name, int *own);
+ js_Property *jsV_getproperty(js_State *J, js_Object *obj, const char *name);
+ js_Property *jsV_setproperty(js_State *J, js_Object *obj, const char *name);
+@@ -526,6 +555,17 @@
+ 	TK_XOR_ASS,
+ 	TK_INC,
+ 	TK_DEC,
++	/* Browser 9300: ES2015+ */
++	TK_ARROW,
++	TK_ELLIPSIS,
++	TK_QDOT,
++	TK_NULLISH,
++	TK_POW,
++	TK_POW_ASS,
++	TK_NULLISH_ASS,
++	TK_LAND_ASS,
++	TK_LOR_ASS,
++	TK_TEMPLATE, /* text: cooked, es_raw: raw, number: 1 when "${" follows */
+ 
+ 	/* keywords */
+ 	TK_BREAK,
+@@ -569,6 +609,8 @@
+ 
+ void jsY_initlex(js_State *J, const char *filename, const char *source);
+ int jsY_lex(js_State *J);
++int jsY_lextemplate(js_State *J);
++int jsY_lextemplatenext(js_State *J);
+ int jsY_lexjson(js_State *J);
+ 
+ /* Parser */
+@@ -661,6 +703,13 @@
+ 
+ 	EXP_VAR, /* var initializer */
+ 
++	/* Browser 9300: ES2015+ */
++	EXP_SPREAD,	/* ...a (in arrays, calls, object literals, patterns) */
++	EXP_OPTCHAIN,	/* a chain with ?. in it; its MEMBER/INDEX/CALL nodes with number 1 are the ?. points */
++	EXP_NULLISH,	/* a ?? b */
++	EXP_YIELD,	/* yield a (number 1: yield*) */
++	EXP_AWAIT,	/* await a */
++
+ 	/* statements */
+ 	STM_BLOCK,
+ 	STM_EMPTY,
+@@ -819,10 +868,17 @@
+ 	OP_JTRUE,
+ 	OP_JFALSE,
+ 	OP_RETURN,
++	OP_YIELD,	/* Browser 9300: <value> -- <sent value> (suspends the generator) */
+ };
+ 
+ struct js_Function
+ {
++	js_JumpList *optjumps; /* Browser 9300: compiling a ?. chain: its jumps to the end */
++	int generator; /* Browser 9300: 1 a generator, 2 an async function */
++#ifdef BW_CALLNAMES
++	/* (PC test builds) each call's callee, for "x.y is not a function" */
++	int *callpc; const char **callname; int ncall, capcall;
++#endif
+ 	const char *name;
+ 	int script;
+ 	int lightweight;
+@@ -852,6 +908,8 @@
+ /* Builtins */
+ 
+ void jsB_init(js_State *J);
++void jsB_inites(js_State *J);
++int jsR_resumegen(js_State *J, js_Object *g, int mode);
+ void jsB_initobject(js_State *J);
+ void jsB_initarray(js_State *J);
+ void jsB_initfunction(js_State *J);
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsintern.c b/mujs/jsintern.c
+--- a/mujs/jsintern.c	2026-11-03 12:07:56.314342507 +0100
++++ b/mujs/jsintern.c	2026-11-03 12:07:56.318836472 +0100
+@@ -38,7 +38,8 @@
  	char string[1];
  };
  
@@ -233,16 +883,7 @@ diff -ru a/mujs/jsintern.c b/mujs/jsintern.c
  
  static js_StringNode *jsS_newstringnode(js_State *J, const char *string, const char **result)
  {
- 	size_t n = strlen(string);
-+	js_StringNode *node;
- 	if (n > JS_STRLIMIT)
- 		js_rangeerror(J, "invalid string length");
--	js_StringNode *node = js_malloc(J, soffsetof(js_StringNode, string) + n + 1);
-+	node = js_malloc(J, soffsetof(js_StringNode, string) + n + 1);
- 	node->left = node->right = &jsS_sentinel;
- 	node->level = 1;
- 	memcpy(node->string, string, n + 1);
-@@ -92,17 +94,17 @@
+@@ -93,17 +94,17 @@
  	return jsS_newstringnode(J, string, result);
  }
  
@@ -263,7 +904,7 @@ diff -ru a/mujs/jsintern.c b/mujs/jsintern.c
  }
  
  void jsS_dumpstrings(js_State *J)
-@@ -110,7 +112,7 @@
+@@ -111,7 +112,7 @@
  	js_StringNode *root = J->strings;
  	printf("interned strings {\n");
  	if (root && root != &jsS_sentinel)
@@ -272,7 +913,7 @@ diff -ru a/mujs/jsintern.c b/mujs/jsintern.c
  	printf("}\n");
  }
  
-@@ -121,6 +123,18 @@
+@@ -122,6 +123,18 @@
  	js_free(J, node);
  }
  
@@ -291,10 +932,21 @@ diff -ru a/mujs/jsintern.c b/mujs/jsintern.c
  void jsS_freestrings(js_State *J)
  {
  	if (J->strings && J->strings != &jsS_sentinel)
-diff -ru a/mujs/jslex.c b/mujs/jslex.c
---- a/mujs/jslex.c	2026-11-02 20:34:58.059162323 +0100
-+++ b/mujs/jslex.c	2026-11-02 19:50:39.352709902 +0100
-@@ -20,7 +20,7 @@
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jslex.c b/mujs/jslex.c
+--- a/mujs/jslex.c	2026-11-03 12:07:56.314413283 +0100
++++ b/mujs/jslex.c	2026-11-03 12:07:56.318458065 +0100
+@@ -13,14 +13,17 @@
+ 	vsnprintf(msgbuf, 256, fmt, ap);
+ 	va_end(ap);
+ 
+-	snprintf(buf, 256, "%s:%d: ", J->filename, J->lexline);
++	if (J->es_linestart && J->source >= J->es_linestart && J->lexline == J->line)
++		snprintf(buf, 256, "%s:%d:%d: ", J->filename, J->lexline, (int)(J->source - J->es_linestart));
++	else
++		snprintf(buf, 256, "%s:%d: ", J->filename, J->lexline);
+ 	strcat(buf, msgbuf);
+ 
+ 	js_newsyntaxerror(J, buf);
  	js_throw(J);
  }
  
@@ -303,7 +955,15 @@ diff -ru a/mujs/jslex.c b/mujs/jslex.c
  	"(end-of-file)",
  	"'\\x01'", "'\\x02'", "'\\x03'", "'\\x04'", "'\\x05'", "'\\x06'", "'\\x07'",
  	"'\\x08'", "'\\x09'", "'\\x0A'", "'\\x0B'", "'\\x0C'", "'\\x0D'", "'\\x0E'", "'\\x0F'",
-@@ -71,7 +71,7 @@
+@@ -55,6 +58,7 @@
+ 	"'+='", "'-='", "'*='", "'/='", "'%='",
+ 	"'<<='", "'>>='", "'>>>='", "'&='", "'|='", "'^='",
+ 	"'++'", "'--'",
++	"'=>'", "'...'", "'?.'", "'?\?'", "'**'", "'**='", "'?\?='", "'&&='", "'||='", "(template)",
+ 
+ 	"'break'", "'case'", "'catch'", "'continue'", "'debugger'",
+ 	"'default'", "'delete'", "'do'", "'else'", "'false'", "'finally'", "'for'",
+@@ -71,7 +75,7 @@
  	return "<unknown>";
  }
  
@@ -312,9 +972,335 @@ diff -ru a/mujs/jslex.c b/mujs/jslex.c
  	"break", "case", "catch", "continue", "debugger", "default", "delete",
  	"do", "else", "false", "finally", "for", "function", "if", "in",
  	"instanceof", "new", "null", "return", "switch", "this", "throw",
-diff -ru a/mujs/jsnumber.c b/mujs/jsnumber.c
---- a/mujs/jsnumber.c	2026-11-02 20:34:58.059238591 +0100
-+++ b/mujs/jsnumber.c	2026-11-02 20:05:36.737918758 +0100
+@@ -167,6 +171,7 @@
+ 		++J->source;
+ 	if (jsY_isnewline(c)) {
+ 		J->line++;
++		J->es_linestart = J->source;
+ 		c = '\n';
+ 	}
+ 	J->lexchar = c;
+@@ -181,6 +186,12 @@
+ 	if (jsY_accept(J, '\\')) {
+ 		if (jsY_accept(J, 'u')) {
+ 			int x = 0;
++			if (jsY_accept(J, '{')) { /* ES2015 \u{X...} */
++				while (jsY_ishex(J->lexchar)) { x = x * 16 + jsY_tohex(J->lexchar); jsY_next(J); if (x > 0x10FFFF) goto error; }
++				if (J->lexchar != '}') goto error;
++				J->lexchar = x;
++				return;
++			}
+ 			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 12; jsY_next(J);
+ 			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 8; jsY_next(J);
+ 			if (!jsY_ishex(J->lexchar)) { goto error; } x |= jsY_tohex(J->lexchar) << 4; jsY_next(J);
+@@ -338,15 +349,54 @@
+ 
+ #else
+ 
++static double lexradix(js_State *J, int radix)
++{
++	double n = 0;
++	int d, any = 0;
++	for (;;) {
++		if (J->lexchar == '_') { jsY_next(J); continue; }
++		d = jsY_ishex(J->lexchar) ? jsY_tohex(J->lexchar) : 99;
++		if (d >= radix) break;
++		n = n * radix + d;
++		any = 1;
++		jsY_next(J);
++	}
++	if (!any)
++		jsY_error(J, "malformed number");
++	return n;
++}
++
++/* Browser 9300: numbers with ES2015+ syntax (0b, 0o, 1_000, 10n) are copied without the
++ * separators for js_strtod */
++static int lexnumber2(js_State *J);
++
+ static int lexnumber(js_State *J)
+ {
+ 	const char *s = J->source - 1;
++	const char *p;
++
++	if (*s >= '0' && *s <= '9')
++		for (p = s; (*p >= '0' && *p <= '9') || *p == '.' || *p == '_'; ++p)
++			if (*p == '_' && p[1] >= '0' && p[1] <= '9')
++				return lexnumber2(J);
+ 
+ 	if (jsY_accept(J, '0')) {
+ 		if (jsY_accept(J, 'x') || jsY_accept(J, 'X')) {
+-			J->number = lexhex(J);
++			J->number = lexradix(J, 16);
++			if (J->lexchar == 'n') jsY_next(J);
+ 			return TK_NUMBER;
+ 		}
++		if (jsY_accept(J, 'b') || jsY_accept(J, 'B')) {
++			J->number = lexradix(J, 2);
++			if (J->lexchar == 'n') jsY_next(J);
++			return TK_NUMBER;
++		}
++		if (jsY_accept(J, 'o') || jsY_accept(J, 'O')) {
++			J->number = lexradix(J, 8);
++			if (J->lexchar == 'n') jsY_next(J);
++			return TK_NUMBER;
++		}
++		if (J->lexchar == 'n') { jsY_next(J); J->number = 0; return TK_NUMBER; }
+ 		if (jsY_isdec(J->lexchar))
+ 			jsY_error(J, "number with leading zero");
+ 		if (jsY_accept(J, '.')) {
+@@ -377,6 +427,12 @@
+ 			jsY_error(J, "missing exponent");
+ 	}
+ 
++	if (J->lexchar == 'n') { /* BigInt: approximated by a number */
++		jsY_next(J);
++		J->number = js_strtod(s, NULL);
++		return TK_NUMBER;
++	}
++
+ 	if (jsY_isidentifierstart(J->lexchar))
+ 		jsY_error(J, "number with letter suffix");
+ 
+@@ -384,6 +440,28 @@
+ 	return TK_NUMBER;
+ }
+ 
++static int lexnumber2(js_State *J)
++{
++	char buf[64];
++	int n = 0;
++	while ((J->lexchar >= '0' && J->lexchar <= '9') || J->lexchar == '_' || J->lexchar == '.' ||
++			J->lexchar == 'e' || J->lexchar == 'E' ||
++			((J->lexchar == '-' || J->lexchar == '+') && n > 0 && (buf[n-1] == 'e' || buf[n-1] == 'E'))) {
++		if (J->lexchar != '_') {
++			if (n >= 62) jsY_error(J, "number too long");
++			buf[n++] = J->lexchar;
++		}
++		jsY_next(J);
++	}
++	buf[n] = 0;
++	if (J->lexchar == 'n')
++		jsY_next(J);
++	if (jsY_isidentifierstart(J->lexchar))
++		jsY_error(J, "number with letter suffix");
++	J->number = js_strtod(buf, NULL);
++	return TK_NUMBER;
++}
++
+ #endif
+ 
+ static int lexescape(js_State *J)
+@@ -399,6 +477,12 @@
+ 	case EOF: jsY_error(J, "unterminated escape sequence");
+ 	case 'u':
+ 		jsY_next(J);
++		if (jsY_accept(J, '{')) { /* ES2015 \u{X...} */
++			while (jsY_ishex(J->lexchar)) { x = x * 16 + jsY_tohex(J->lexchar); jsY_next(J); if (x > 0x10FFFF) return 1; }
++			if (!jsY_accept(J, '}')) return 1;
++			textpush(J, x);
++			break;
++		}
+ 		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 12; jsY_next(J); }
+ 		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 8; jsY_next(J); }
+ 		if (!jsY_ishex(J->lexchar)) return 1; else { x |= jsY_tohex(J->lexchar) << 4; jsY_next(J); }
+@@ -454,6 +538,52 @@
+ 	return TK_STRING;
+ }
+ 
++/* Browser 9300: a template literal's piece, from just after '`' or the '}' of a "${...}" up to
++ * and including the next '`' or "${" */
++int jsY_lextemplate(js_State *J)
++{
++	const char *start, *end;
++	char *raw;
++	int more = 0, i, n;
++
++	start = J->lexchar == EOF ? J->source : J->source - runelen(J->lexchar);
++	textinit(J);
++	for (;;) {
++		if (J->lexchar == EOF)
++			jsY_error(J, "template literal not terminated");
++		if (J->lexchar == '`') {
++			end = J->source - 1;
++			jsY_next(J);
++			break;
++		}
++		if (J->lexchar == '$' && *J->source == '{') {
++			end = J->source - 1;
++			jsY_next(J);
++			jsY_next(J);
++			more = 1;
++			break;
++		}
++		if (jsY_accept(J, '\\')) {
++			if (lexescape(J))
++				textpush(J, '?'); /* malformed: only an error when not tagged */
++		} else {
++			textpush(J, J->lexchar);
++			jsY_next(J);
++		}
++	}
++	J->text = js_intern(J, textend(J));
++	n = (int)(end - start);
++	raw = js_malloc(J, n + 1);
++	for (i = 0; start < end; ++start)
++		if (*start != '\r')
++			raw[i++] = *start;
++	raw[i] = 0;
++	J->es_raw = js_intern(J, raw);
++	js_free(J, raw);
++	J->number = more;
++	return TK_TEMPLATE;
++}
++
+ /* the ugliest language wart ever... */
+ static int isregexpcontext(int last)
+ {
+@@ -468,6 +598,7 @@
+ 	case TK_NULL:
+ 	case TK_THIS:
+ 	case TK_TRUE:
++	case TK_TEMPLATE:
+ 		return 0;
+ 	default:
+ 		return 1;
+@@ -518,6 +649,7 @@
+ 		if (jsY_accept(J, 'g')) ++g;
+ 		else if (jsY_accept(J, 'i')) ++i;
+ 		else if (jsY_accept(J, 'm')) ++m;
++		else if (jsY_accept(J, 'u') || jsY_accept(J, 'y') || jsY_accept(J, 's') || jsY_accept(J, 'd')) ; /* Browser 9300: accepted, not honoured */
+ 		else jsY_error(J, "illegal flag in regular expression: %c", J->lexchar);
+ 	}
+ 
+@@ -592,7 +724,38 @@
+ 		case ',': jsY_next(J); return ',';
+ 		case ':': jsY_next(J); return ':';
+ 		case ';': jsY_next(J); return ';';
+-		case '?': jsY_next(J); return '?';
++		case '?':
++			jsY_next(J);
++			if (J->lexchar == '?') {
++				jsY_next(J);
++				if (jsY_accept(J, '='))
++					return TK_NULLISH_ASS;
++				return TK_NULLISH;
++			}
++			if (J->lexchar == '.' && !(*J->source >= '0' && *J->source <= '9')) {
++				jsY_next(J);
++				return TK_QDOT;
++			}
++			return '?';
++		case '`':
++			jsY_next(J);
++			return jsY_lextemplate(J);
++		case '#':
++			if (J->line == 1 && J->lasttoken == 0 && *J->source == '!') { /* #! line */
++				lexlinecomment(J);
++				continue;
++			}
++			jsY_next(J);
++			if (!jsY_isidentifierstart(J->lexchar))
++				jsY_error(J, "unexpected character: '#'");
++			textinit(J);
++			textpush(J, '#');
++			while (jsY_isidentifierpart(J->lexchar)) {
++				textpush(J, J->lexchar);
++				jsY_next(J);
++			}
++			J->text = textend(J);
++			return TK_IDENTIFIER;
+ 		case '[': jsY_next(J); return '[';
+ 		case ']': jsY_next(J); return ']';
+ 		case '{': jsY_next(J); return '{';
+@@ -604,6 +767,10 @@
+ 			return lexstring(J);
+ 
+ 		case '.':
++			if (J->source[0] == '.' && J->source[1] == '.') {
++				jsY_next(J); jsY_next(J); jsY_next(J);
++				return TK_ELLIPSIS;
++			}
+ 			return lexnumber(J);
+ 
+ 		case '<':
+@@ -640,6 +807,8 @@
+ 					return TK_STRICTEQ;
+ 				return TK_EQ;
+ 			}
++			if (jsY_accept(J, '>'))
++				return TK_ARROW;
+ 			return '=';
+ 
+ 		case '!':
+@@ -669,6 +838,11 @@
+ 
+ 		case '*':
+ 			jsY_next(J);
++			if (jsY_accept(J, '*')) {
++				if (jsY_accept(J, '='))
++					return TK_POW_ASS;
++				return TK_POW;
++			}
+ 			if (jsY_accept(J, '='))
+ 				return TK_MUL_ASS;
+ 			return '*';
+@@ -681,16 +855,22 @@
+ 
+ 		case '&':
+ 			jsY_next(J);
+-			if (jsY_accept(J, '&'))
++			if (jsY_accept(J, '&')) {
++				if (jsY_accept(J, '='))
++					return TK_LAND_ASS;
+ 				return TK_AND;
++			}
+ 			if (jsY_accept(J, '='))
+ 				return TK_AND_ASS;
+ 			return '&';
+ 
+ 		case '|':
+ 			jsY_next(J);
+-			if (jsY_accept(J, '|'))
++			if (jsY_accept(J, '|')) {
++				if (jsY_accept(J, '='))
++					return TK_LOR_ASS;
+ 				return TK_OR;
++			}
+ 			if (jsY_accept(J, '='))
+ 				return TK_OR_ASS;
+ 			return '|';
+@@ -734,6 +914,7 @@
+ {
+ 	J->filename = filename;
+ 	J->source = source;
++	J->es_linestart = source;
+ 	J->line = 1;
+ 	J->lasttoken = 0;
+ 	jsY_next(J); /* load first lookahead character */
+@@ -741,7 +922,18 @@
+ 
+ int jsY_lex(js_State *J)
+ {
+-	return J->lasttoken = jsY_lexx(J);
++	int t = jsY_lexx(J);
++	/* after "${" an expression starts (a regexp may follow) */
++	J->lasttoken = (t == TK_TEMPLATE && J->number) ? '{' : t;
++	return t;
++}
++
++/* Browser 9300: the parser continues a template after the '}' of its "${...}" */
++int jsY_lextemplatenext(js_State *J)
++{
++	int t = jsY_lextemplate(J);
++	J->lasttoken = J->number ? '{' : t;
++	return t;
+ }
+ 
+ static int lexjsonnumber(js_State *J)
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsnumber.c b/mujs/jsnumber.c
+--- a/mujs/jsnumber.c	2026-11-03 12:07:56.314568938 +0100
++++ b/mujs/jsnumber.c	2026-11-03 12:07:56.318861724 +0100
 @@ -112,11 +112,15 @@
  }
  
@@ -372,9 +1358,121 @@ diff -ru a/mujs/jsnumber.c b/mujs/jsnumber.c
  }
  
  void jsB_initnumber(js_State *J)
-diff -ru a/mujs/json.c b/mujs/json.c
---- a/mujs/json.c	2026-11-02 20:34:58.059290818 +0100
-+++ b/mujs/json.c	2026-11-02 19:50:39.348468816 +0100
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsobject.c b/mujs/jsobject.c
+--- a/mujs/jsobject.c	2026-11-03 12:07:56.314642982 +0100
++++ b/mujs/jsobject.c	2026-11-03 12:07:56.318875334 +0100
+@@ -154,14 +154,16 @@
+ 	}
+ }
+ 
+-static int O_getOwnPropertyNames_walk(js_State *J, js_Property *ref, int i)
++/* Browser 9300: the walks go in ES2015 order (jsV_ownprops) */
++static int O_getOwnPropertyNames_walk(js_State *J, js_Object *obj, int i)
+ {
+-	if (ref->left->level)
+-		i = O_getOwnPropertyNames_walk(J, ref->left, i);
+-	js_pushstring(J, ref->name);
+-	js_setindex(J, -2, i++);
+-	if (ref->right->level)
+-		i = O_getOwnPropertyNames_walk(J, ref->right, i);
++	int n, k;
++	js_Property **v = jsV_ownprops(J, obj, &n);
++	for (k = 0; k < n; ++k) {
++		js_pushstring(J, v[k]->name);
++		js_setindex(J, -2, i++);
++	}
++	if (v) js_free(J, v);
+ 	return i;
+ }
+ 
+@@ -179,7 +181,7 @@
+ 	js_newarray(J);
+ 
+ 	if (obj->properties->level)
+-		i = O_getOwnPropertyNames_walk(J, obj->properties, 0);
++		i = O_getOwnPropertyNames_walk(J, obj, 0);
+ 	else
+ 		i = 0;
+ 
+@@ -280,18 +282,21 @@
+ 	js_copy(J, 1);
+ }
+ 
+-static int O_defineProperties_walk(js_State *J, js_Property *ref, int i)
++static int O_defineProperties_walk(js_State *J, js_Object *obj, int i)
+ {
+-	if (ref->left->level)
+-		i = O_defineProperties_walk(J, ref->left, i);
+-	if (!(ref->atts & JS_DONTENUM)) {
+-		if (ref->value.t.type != JS_TOBJECT)
+-			js_typeerror(J, "not an object");
+-		js_pushstring(J, ref->name);
+-		js_setindex(J, -2, i++);
++	int n, k;
++	js_Property **v = jsV_ownprops(J, obj, &n);
++	for (k = 0; k < n; ++k) {
++		if (!(v[k]->atts & JS_DONTENUM)) {
++			if (v[k]->value.t.type != JS_TOBJECT) {
++				js_free(J, v);
++				js_typeerror(J, "not an object");
++			}
++			js_pushstring(J, v[k]->name);
++			js_setindex(J, -2, i++);
++		}
+ 	}
+-	if (ref->right->level)
+-		i = O_defineProperties_walk(J, ref->right, i);
++	if (v) js_free(J, v);
+ 	return i;
+ }
+ 
+@@ -306,7 +311,7 @@
+ 	props = js_toobject(J, 2);
+ 	if (props->properties->level) {
+ 		js_newarray(J);
+-		n = O_defineProperties_walk(J, props->properties, 0);
++		n = O_defineProperties_walk(J, props, 0);
+ 		for (i = 0; i < n; ++i) {
+ 			js_getindex(J, -1, i);
+ 			name = js_tostring(J, -1);
+@@ -349,16 +354,17 @@
+ 	}
+ }
+ 
+-static int O_keys_walk(js_State *J, js_Property *ref, int i)
++static int O_keys_walk(js_State *J, js_Object *obj, int i)
+ {
+-	if (ref->left->level)
+-		i = O_keys_walk(J, ref->left, i);
+-	if (!(ref->atts & JS_DONTENUM)) {
+-		js_pushstring(J, ref->name);
+-		js_setindex(J, -2, i++);
++	int n, k;
++	js_Property **v = jsV_ownprops(J, obj, &n);
++	for (k = 0; k < n; ++k) {
++		if (!(v[k]->atts & JS_DONTENUM)) {
++			js_pushstring(J, v[k]->name);
++			js_setindex(J, -2, i++);
++		}
+ 	}
+-	if (ref->right->level)
+-		i = O_keys_walk(J, ref->right, i);
++	if (v) js_free(J, v);
+ 	return i;
+ }
+ 
+@@ -375,7 +381,7 @@
+ 	js_newarray(J);
+ 
+ 	if (obj->properties->level)
+-		i = O_keys_walk(J, obj->properties, 0);
++		i = O_keys_walk(J, obj, 0);
+ 	else
+ 		i = 0;
+ 
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/json.c b/mujs/json.c
+--- a/mujs/json.c	2026-11-03 12:07:56.314732667 +0100
++++ b/mujs/json.c	2026-11-03 12:07:56.318924310 +0100
 @@ -185,7 +185,7 @@
  
  static void fmtstr(js_State *J, js_Buffer **sb, const char *s)
@@ -384,9 +1482,1598 @@ diff -ru a/mujs/json.c b/mujs/json.c
  	int i, n;
  	Rune c;
  	js_putc(J, sb, '"');
-diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
---- a/mujs/jsproperty.c	2026-11-02 20:34:58.059469409 +0100
-+++ b/mujs/jsproperty.c	2026-11-02 19:51:29.827478422 +0100
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsparse.c b/mujs/jsparse.c
+--- a/mujs/jsparse.c	2026-11-03 12:07:56.314803412 +0100
++++ b/mujs/jsparse.c	2026-11-03 12:07:56.318407498 +0100
+@@ -18,6 +18,12 @@
+ static js_Ast *memberexp(js_State *J);
+ static js_Ast *statement(js_State *J);
+ static js_Ast *funbody(js_State *J);
++static js_Ast *conditional(js_State *J, int notin);
++static js_Ast *unary(js_State *J);
++static js_Ast *bindingtarget(js_State *J, int kind);
++static js_Ast *classexp(js_State *J, int line, js_Ast *name);
++static js_Ast *templatelit(js_State *J, js_Ast *tag);
++static js_Ast *propname(js_State *J);
+ 
+ JS_NORETURN static void jsP_error(js_State *J, const char *fmt, ...) JS_PRINTFLIKE(2,3);
+ 
+@@ -36,7 +42,10 @@
+ 	vsnprintf(msgbuf, 256, fmt, ap);
+ 	va_end(ap);
+ 
+-	snprintf(buf, 256, "%s:%d: ", J->filename, J->lexline);
++	if (J->es_linestart && J->source >= J->es_linestart && J->lexline == J->line)
++		snprintf(buf, 256, "%s:%d:%d: ", J->filename, J->lexline, (int)(J->source - J->es_linestart));
++	else
++		snprintf(buf, 256, "%s:%d: ", J->filename, J->lexline);
+ 	strcat(buf, msgbuf);
+ 
+ 	js_newsyntaxerror(J, buf);
+@@ -153,6 +162,386 @@
+ 	jsP_error(J, "unexpected token: %s (expected ';')", jsY_tokenstring(J->lookahead));
+ }
+ 
++/* Browser 9300: ES2015+ syntax, lowered to ES5 trees where it can be (let/const, arrows,
++ * classes, destructuring, default/rest parameters, for-of, templates, **, ??=, ||=, &&=).
++ * Hidden names start with '%' so scripts cannot name them. */
++
++typedef struct {
++	const char *source, *text, *raw, *linestart;
++	int line, lexline, lexchar, lasttoken, newline, lookahead;
++	double number;
++} jsP_LexState;
++
++static void lexsave(js_State *J, jsP_LexState *s)
++{
++	s->source = J->source; s->line = J->line; s->lexline = J->lexline; s->lexchar = J->lexchar;
++	s->lasttoken = J->lasttoken; s->newline = J->newline; s->lookahead = J->lookahead;
++	s->number = J->number; s->raw = J->es_raw; s->linestart = J->es_linestart;
++	if (J->lookahead == TK_IDENTIFIER || J->lookahead == TK_STRING || J->lookahead == TK_REGEXP)
++		s->text = js_intern(J, J->text);
++	else
++		s->text = J->text;
++}
++
++static void lexrestore(js_State *J, jsP_LexState *s)
++{
++	J->source = s->source; J->line = s->line; J->lexline = s->lexline; J->lexchar = s->lexchar;
++	J->lasttoken = s->lasttoken; J->newline = s->newline; J->lookahead = s->lookahead;
++	J->number = s->number; J->es_raw = s->raw; J->text = s->text; J->es_linestart = s->linestart;
++}
++
++/* the token after the lookahead (and whether a line break is before it) */
++static int jsP_peek(js_State *J, int *nl)
++{
++	jsP_LexState s;
++	int t;
++	lexsave(J, &s);
++	jsP_next(J);
++	t = J->lookahead;
++	if (nl) *nl = J->newline;
++	lexrestore(J, &s);
++	return t;
++}
++
++static int isword(js_State *J, const char *w)
++{
++	return J->lookahead == TK_IDENTIFIER && !strcmp(J->text, w);
++}
++
++static const char *hidname(js_State *J, const char *base)
++{
++	char buf[48];
++	snprintf(buf, sizeof buf, "%%%s%d", base, ++J->es_tmpn);
++	return js_intern(J, buf);
++}
++
++static js_Ast *idexp(js_State *J, const char *name)
++{
++	js_Ast *a = jsP_newnode(J, EXP_IDENTIFIER, J->lexline, 0, 0, 0, 0);
++	a->string = js_intern(J, name);
++	return a;
++}
++
++static js_Ast *idast(js_State *J, const char *name)
++{
++	js_Ast *a = jsP_newnode(J, AST_IDENTIFIER, J->lexline, 0, 0, 0, 0);
++	a->string = js_intern(J, name);
++	return a;
++}
++
++static js_Ast *strexp(js_State *J, const char *s)
++{
++	js_Ast *a = jsP_newnode(J, EXP_STRING, J->lexline, 0, 0, 0, 0);
++	a->string = js_intern(J, s);
++	return a;
++}
++
++static js_Ast *numexp(js_State *J, double n)
++{
++	js_Ast *a = jsP_newnode(J, EXP_NUMBER, J->lexline, 0, 0, 0, 0);
++	a->number = n;
++	return a;
++}
++
++static js_Ast *undefexp(js_State *J)
++{
++	int line = J->lexline;
++	return EXP1(VOID, numexp(J, 0));
++}
++
++typedef struct { js_Ast *head, *tail; } jsP_Build;
++
++static void bpush(js_State *J, jsP_Build *b, js_Ast *node)
++{
++	js_Ast *l = LIST(node);
++	if (b->tail) {
++		b->tail->b = l;
++		l->parent = b->tail;
++	} else {
++		b->head = l;
++	}
++	b->tail = l;
++}
++
++static js_Ast *list1(js_State *J, js_Ast *a)
++{
++	return LIST(a);
++}
++
++static js_Ast *list2(js_State *J, js_Ast *a, js_Ast *b)
++{
++	jsP_Build l = { 0, 0 };
++	bpush(J, &l, a);
++	bpush(J, &l, b);
++	return l.head;
++}
++
++static js_Ast *helpercall(js_State *J, const char *name, js_Ast *args)
++{
++	int line = J->lexline;
++	return EXP2(CALL, idexp(J, name), args);
++}
++
++/* a copy of an expression (for "a op= b" lowered to "a = a op b") */
++static js_Ast *cloneexp(js_State *J, js_Ast *n)
++{
++	js_Ast *c;
++	if (!n)
++		return NULL;
++	c = jsP_newnode(J, n->type, n->line, cloneexp(J, n->a), cloneexp(J, n->b), cloneexp(J, n->c), cloneexp(J, n->d));
++	c->number = n->number;
++	c->string = n->string;
++	return c;
++}
++
++/* a function's lowering state, saved around a nested function */
++typedef struct {
++	int arrow, this_, args, block, gen, async, level;
++	js_Ast *tmps, *pro;
++} jsP_FunCtx;
++
++static void funbegin(js_State *J, jsP_FunCtx *c, int arrow, int gen, int async)
++{
++	c->arrow = J->es_arrow; c->this_ = J->es_this; c->args = J->es_args;
++	c->block = J->es_block; c->gen = J->es_gen; c->async = J->es_async;
++	c->tmps = J->es_tmps; c->pro = J->es_pro;
++	if (arrow) {
++		J->es_arrow++;
++	} else {
++		J->es_arrow = 0;
++		J->es_this = 0;
++		J->es_args = 0;
++	}
++	J->es_tmps = NULL;
++	J->es_pro = NULL;
++	J->es_block = 0;
++	J->es_gen = gen;
++	J->es_async = async;
++	c->level = ++J->es_level;
++}
++
++static void popnames(js_State *J, int level)
++{
++	while (J->es_names && J->es_names->number >= level) {
++		if (J->es_names->a)
++			J->es_renamed--;
++		J->es_names = J->es_names->b;
++	}
++}
++
++/* the body with the function's prologue in front ("use strict" stays first) */
++static js_Ast *funend(js_State *J, jsP_FunCtx *c, js_Ast *body, int arrow)
++{
++	jsP_Build b = { 0, 0 };
++	js_Ast *rest = body, *l, *rev = NULL;
++	int line = J->lexline;
++
++	if (body && body->a && body->a->type == EXP_STRING && !strcmp(body->a->string, "use strict")) {
++		bpush(J, &b, body->a);
++		rest = body->b;
++	}
++	if (!arrow && J->es_this)
++		bpush(J, &b, STM1(VAR, LIST(EXP2(VAR, idast(J, "%this"), EXP0(THIS)))));
++	if (!arrow && J->es_args)
++		bpush(J, &b, STM1(VAR, LIST(EXP2(VAR, idast(J, "%args"), idexp(J, "arguments")))));
++	if (J->es_tmps)
++		bpush(J, &b, STM1(VAR, jsP_list(J->es_tmps)));
++	for (l = J->es_pro; l; l = l->b)
++		rev = jsP_newnode(J, AST_LIST, 0, l->a, rev, 0, 0);
++	for (l = rev; l; l = l->b)
++		bpush(J, &b, l->a);
++
++	popnames(J, c->level);
++	J->es_level = c->level - 1;
++	J->es_arrow = c->arrow;
++	if (!arrow) {
++		J->es_this = c->this_;
++		J->es_args = c->args;
++	}
++	J->es_tmps = c->tmps; J->es_pro = c->pro; J->es_block = c->block;
++	J->es_gen = c->gen; J->es_async = c->async;
++
++	if (!b.head)
++		return body;
++	b.tail->b = rest;
++	return jsP_list(b.head);
++}
++
++/* a statement for the current function's prologue */
++static void prologue(js_State *J, js_Ast *stm)
++{
++	J->es_pro = jsP_newnode(J, AST_LIST, 0, stm, J->es_pro, 0, 0);
++}
++
++/* a hidden variable of the current function */
++static const char *newtemp(js_State *J)
++{
++	const char *name = hidname(J, "t");
++	J->es_tmps = jsP_newnode(J, AST_LIST, 0, jsP_newnode(J, EXP_VAR, 0, idast(J, name), 0, 0, 0), J->es_tmps, 0, 0);
++	return name;
++}
++
++/* Names in scope, for let/const/class in blocks: one that would clash with a name already
++ * visible (function-scoped var semantics) is given a hidden name for the rest of its block. */
++static int visible(js_State *J, const char *name)
++{
++	js_Ast *n;
++	for (n = J->es_names; n; n = n->b)
++		if (!strcmp(n->string, name))
++			return 1;
++	return 0;
++}
++
++static void declname(js_State *J, js_Ast *id, int blockscoped)
++{
++	js_Ast *n;
++	char buf[160];
++	n = jsP_newnode(J, AST_IDENTIFIER, 0, 0, 0, 0, 0);
++	n->string = id->string;
++	n->number = J->es_level;
++	n->b = J->es_names;
++	if (blockscoped && J->es_block > 0 && strlen(id->string) < 120 && visible(J, id->string)) {
++		snprintf(buf, sizeof buf, "%s%%%d", id->string, ++J->es_tmpn);
++		n->a = idast(J, buf);
++		id->string = n->a->string;
++		J->es_renamed++;
++	}
++	J->es_names = n;
++}
++
++static const char *resolvename(js_State *J, const char *name)
++{
++	js_Ast *n;
++	if (!J->es_renamed)
++		return name;
++	for (n = J->es_names; n; n = n->b)
++		if (!strcmp(n->string, name))
++			return n->a ? n->a->string : name;
++	return name;
++}
++
++static void blockbegin(js_State *J)
++{
++	J->es_block++;
++	J->es_level++;
++}
++
++static void blockend(js_State *J)
++{
++	popnames(J, J->es_level);
++	J->es_level--;
++	J->es_block--;
++}
++
++static js_Ast *thisexp(js_State *J, int line)
++{
++	if (J->es_arrow) {
++		J->es_this = 1;
++		return idexp(J, "%this");
++	}
++	return EXP0(THIS);
++}
++
++/* Destructuring: pat (from a binding pattern or an array/object literal) gets the value val.
++ * decl: the steps are var initializers (EXP_VAR), else assignments (EXP_ASS). */
++static void dsstep(js_State *J, jsP_Build *out, int decl, js_Ast *target, js_Ast *val)
++{
++	int line = J->lexline;
++	if (decl) {
++		if (target->type == EXP_IDENTIFIER)
++			target = idast(J, target->string);
++		if (target->type != AST_IDENTIFIER)
++			jsP_error(J, "invalid destructuring target");
++		bpush(J, out, EXP2(VAR, target, val));
++	} else {
++		bpush(J, out, EXP2(ASS, target, val));
++	}
++}
++
++static void destructure(js_State *J, jsP_Build *out, int decl, js_Ast *pat, js_Ast *val)
++{
++	int line = pat->line;
++	const char *t;
++	js_Ast *l;
++	int i;
++
++	switch (pat->type) {
++	case EXP_ASS: /* target = default */
++		if (val->type != EXP_IDENTIFIER) {
++			t = newtemp(J);
++			dsstep(J, out, decl, idexp(J, t), val);
++			val = idexp(J, t);
++		}
++		destructure(J, out, decl, pat->a,
++			EXP3(COND, EXP2(STRICTEQ, cloneexp(J, val), undefexp(J)), pat->b, cloneexp(J, val)));
++		return;
++
++	case EXP_ARRAY:
++		t = newtemp(J);
++		dsstep(J, out, decl, idexp(J, t), helpercall(J, "%arr", list1(J, val)));
++		for (i = 0, l = pat->a; l; l = l->b) {
++			js_Ast *e = l->a;
++			if (e->type == EXP_ELISION) {
++				++i;
++				continue;
++			}
++			if (e->type == EXP_SPREAD) {
++				destructure(J, out, decl, e->a, helpercall(J, "%slice", list2(J, idexp(J, t), numexp(J, i))));
++				break;
++			}
++			destructure(J, out, decl, e, EXP2(INDEX, idexp(J, t), numexp(J, i)));
++			++i;
++		}
++		return;
++
++	case EXP_OBJECT: {
++		jsP_Build keys = { 0, 0 };
++		t = newtemp(J);
++		dsstep(J, out, decl, idexp(J, t), val);
++		for (l = pat->a; l; l = l->b) {
++			js_Ast *e = l->a, *key, *acc;
++			if (e->type == EXP_SPREAD) {
++				destructure(J, out, decl, e->a, helpercall(J, "%objrest", list2(J, idexp(J, t), EXP1(ARRAY, keys.head))));
++				break;
++			}
++			if (e->type != EXP_PROP_VAL)
++				jsP_error(J, "invalid destructuring pattern");
++			key = e->a;
++			if (key->type == AST_IDENTIFIER) {
++				acc = EXP2(MEMBER, idexp(J, t), idast(J, key->string));
++				bpush(J, &keys, strexp(J, key->string));
++			} else if (key->type == EXP_STRING) {
++				acc = EXP2(INDEX, idexp(J, t), strexp(J, key->string));
++				bpush(J, &keys, strexp(J, key->string));
++			} else if (key->type == EXP_NUMBER) {
++				acc = EXP2(INDEX, idexp(J, t), numexp(J, key->number));
++				bpush(J, &keys, numexp(J, key->number));
++			} else {
++				const char *k = newtemp(J);
++				dsstep(J, out, decl, idexp(J, k), key);
++				acc = EXP2(INDEX, idexp(J, t), idexp(J, k));
++				bpush(J, &keys, idexp(J, k));
++			}
++			destructure(J, out, decl, e->b, acc);
++		}
++		return;
++	}
++
++	default:
++		dsstep(J, out, decl, pat, val);
++	}
++}
++
++/* the steps as one expression ("(a = .., b = .., value)") */
++static js_Ast *dsexpression(js_State *J, jsP_Build *steps, js_Ast *value)
++{
++	int line = J->lexline;
++	js_Ast *e = NULL, *l;
++	for (l = steps->head; l; l = l->b)
++		e = e ? EXP2(COMMA, e, l->a) : l->a;
++	return e ? EXP2(COMMA, e, value) : value;
++}
++
+ /* Literals */
+ 
+ static js_Ast *identifier(js_State *J)
+@@ -188,6 +577,8 @@
+ 	int line = J->lexline;
+ 	if (J->lookahead == ',')
+ 		return EXP0(ELISION);
++	if (jsP_accept(J, TK_ELLIPSIS))
++		return EXP1(SPREAD, assignment(J, 0));
+ 	return assignment(J, 0);
+ }
+ 
+@@ -213,37 +604,71 @@
+ 	} else if (J->lookahead == TK_STRING) {
+ 		name = jsP_newstrnode(J, EXP_STRING, J->text);
+ 		jsP_next(J);
++	} else if (jsP_accept(J, '[')) { /* computed: any expression but a literal */
++		name = assignment(J, 0);
++		jsP_expect(J, ']');
++		if (name->type == EXP_STRING || name->type == EXP_NUMBER)
++			return name;
++		if (name->type == AST_IDENTIFIER)
++			name->type = EXP_IDENTIFIER;
+ 	} else {
+ 		name = identifiername(J);
+ 	}
+ 	return name;
+ }
+ 
++static js_Ast *methodfun(js_State *J, int line, int gen, int async);
++
+ static js_Ast *propassign(js_State *J)
+ {
+ 	js_Ast *name, *value, *arg, *body;
+ 	int line = J->lexline;
+ 
++	int gen = 0, async = 0;
++	js_Ast *f;
++	(void)arg; (void)body;
++
++	if (jsP_accept(J, TK_ELLIPSIS))
++		return EXP1(SPREAD, assignment(J, 0));
++	if (jsP_accept(J, '*'))
++		gen = 1;
+ 	name = propname(J);
+ 
+-	if (J->lookahead != ':' && name->type == AST_IDENTIFIER) {
+-		if (!strcmp(name->string, "get")) {
++	if (name->type == AST_IDENTIFIER && !gen && J->lookahead != ':' && J->lookahead != '(' &&
++			J->lookahead != ',' && J->lookahead != '}' && J->lookahead != '=') {
++		if (!strcmp(name->string, "get") || !strcmp(name->string, "set")) {
++			int isget = name->string[0] == 'g';
+ 			name = propname(J);
+-			jsP_expect(J, '(');
+-			jsP_expect(J, ')');
+-			body = funbody(J);
+-			return EXP3(PROP_GET, name, NULL, body);
++			f = methodfun(J, line, 0, 0);
++			if (isget)
++				return EXP3(PROP_GET, name, NULL, f->c);
++			if (!f->b)
++				jsP_error(J, "setter without a parameter");
++			return EXP3(PROP_SET, name, f->b, f->c);
+ 		}
+-		if (!strcmp(name->string, "set")) {
++		if (!strcmp(name->string, "async")) {
++			async = 1;
++			if (jsP_accept(J, '*'))
++				gen = 1;
+ 			name = propname(J);
+-			jsP_expect(J, '(');
+-			arg = identifier(J);
+-			jsP_expect(J, ')');
+-			body = funbody(J);
+-			return EXP3(PROP_SET, name, LIST(arg), body);
+ 		}
+ 	}
+ 
++	if (J->lookahead == '(') /* method */
++		return EXP2(PROP_VAL, name, methodfun(J, line, gen, async));
++
++	if (name->type == AST_IDENTIFIER && (J->lookahead == ',' || J->lookahead == '}' || J->lookahead == '=')) {
++		/* shorthand {a}, or {a = 1} in a pattern */
++		value = jsP_newstrnode(J, EXP_IDENTIFIER, resolvename(J, name->string));
++		if (!strcmp(name->string, "arguments") && J->es_arrow) {
++			J->es_args = 1;
++			value->string = js_intern(J, "%args");
++		}
++		if (jsP_accept(J, '='))
++			value = EXP2(ASS, value, assignment(J, 0));
++		return EXP2(PROP_VAL, name, value);
++	}
++
+ 	jsP_expect(J, ':');
+ 	value = assignment(J, 0);
+ 	return EXP2(PROP_VAL, name, value);
+@@ -265,64 +690,265 @@
+ 
+ /* Functions */
+ 
++/* The formal parameters (after '(', up to ')'), with defaults, rest and patterns lowered into
++ * the function's prologue; call between funbegin and funend. */
+ static js_Ast *parameters(js_State *J)
+ {
+-	js_Ast *head, *tail;
+-	if (J->lookahead == ')')
+-		return NULL;
+-	head = tail = LIST(identifier(J));
+-	while (jsP_accept(J, ',')) {
+-		tail = tail->b = LIST(identifier(J));
++	jsP_Build b = { 0, 0 };
++	js_Ast *id, *pat, *def;
++	int n = 0, line;
++
++	while (J->lookahead != ')') {
++		line = J->lexline;
++		if (jsP_accept(J, TK_ELLIPSIS)) {
++			jsP_Build steps = { 0, 0 };
++			pat = bindingtarget(J, 2);
++			destructure(J, &steps, 1, pat, helpercall(J, "%slice", list2(J, idexp(J, "arguments"), numexp(J, n))));
++			prologue(J, STM1(VAR, steps.head));
++			break;
++		}
++		if (J->lookahead == TK_IDENTIFIER) {
++			id = identifier(J);
++			declname(J, id, 0);
++			pat = NULL;
++		} else {
++			pat = bindingtarget(J, 2);
++			id = idast(J, hidname(J, "p"));
++		}
++		if (jsP_accept(J, '=')) {
++			def = assignment(J, 0);
++			prologue(J, STM3(IF, EXP2(STRICTEQ, idexp(J, id->string), undefexp(J)),
++				EXP2(ASS, idexp(J, id->string), def), NULL));
++		}
++		if (pat) {
++			jsP_Build steps = { 0, 0 };
++			destructure(J, &steps, 1, pat, idexp(J, id->string));
++			prologue(J, STM1(VAR, steps.head));
++		}
++		bpush(J, &b, id);
++		++n;
++		if (!jsP_accept(J, ','))
++			break;
+ 	}
+-	return jsP_list(head);
++	return b.head ? jsP_list(b.head) : NULL;
+ }
+ 
+-static js_Ast *fundec(js_State *J, int line)
++/* "(params) { body }" of a function (FUN node without a name); flags: 1 generator, 2 async */
++static js_Ast *funrest(js_State *J, int line, js_Ast *name, int gen, int async)
+ {
+-	js_Ast *a, *b, *c;
+-	a = identifier(J);
++	jsP_FunCtx c;
++	js_Ast *b, *body, *f;
++	funbegin(J, &c, 0, gen, async);
+ 	jsP_expect(J, '(');
+ 	b = parameters(J);
+ 	jsP_expect(J, ')');
+-	c = funbody(J);
+-	return jsP_newnode(J, AST_FUNDEC, line, a, b, c, 0);
++	body = funbody(J);
++	body = funend(J, &c, body, 0);
++	f = EXP3(FUN, name, b, body);
++	f->number = gen | (async << 1);
++	return f;
++}
++
++static js_Ast *methodfun(js_State *J, int line, int gen, int async)
++{
++	return funrest(J, line, NULL, gen, async);
+ }
+ 
+-static js_Ast *funstm(js_State *J, int line)
++static js_Ast *fundec(js_State *J, int line, int async)
+ {
+-	js_Ast *a, *b, *c;
++	js_Ast *a, *f, *n;
++	int gen = jsP_accept(J, '*');
+ 	a = identifier(J);
+-	jsP_expect(J, '(');
+-	b = parameters(J);
+-	jsP_expect(J, ')');
+-	c = funbody(J);
++	declname(J, a, 0);
++	f = funrest(J, line, NULL, gen, async);
++	n = jsP_newnode(J, AST_FUNDEC, line, a, f->b, f->c, 0);
++	n->number = f->number;
++	return n;
++}
++
++static js_Ast *funstm(js_State *J, int line, int async)
++{
++	js_Ast *a, *f;
++	int gen = jsP_accept(J, '*');
++	a = identifier(J);
++	declname(J, a, 0);
++	f = funrest(J, line, a, gen, async);
+ 	/* rewrite function statement as "var X = function X() {}" */
+-	return STM1(VAR, LIST(EXP2(VAR, a, EXP3(FUN, a, b, c))));
++	return STM1(VAR, LIST(EXP2(VAR, a, f)));
+ }
+ 
+-static js_Ast *funexp(js_State *J, int line)
++static js_Ast *funexp(js_State *J, int line, int async)
+ {
+-	js_Ast *a, *b, *c;
++	js_Ast *a;
++	int gen = jsP_accept(J, '*');
+ 	a = identifieropt(J);
+-	jsP_expect(J, '(');
+-	b = parameters(J);
+-	jsP_expect(J, ')');
+-	c = funbody(J);
+-	return EXP3(FUN, a, b, c);
++	return funrest(J, line, a, gen, async);
++}
++
++/* Is the '(' in the lookahead the start of an arrow function's parameters? Scans to the
++ * matching ')' (quickly giving up on what cannot be a parameter list) and looks for "=>". */
++static int isarrowparen(js_State *J)
++{
++	jsP_LexState s;
++	int depth = 1, indef = 0, ok = 0, sp = 0, t;
++	int tstack[32];
++
++	lexsave(J, &s);
++	jsP_next(J);
++	t = J->lookahead;
++	if (t != ')' && t != TK_IDENTIFIER && t != '[' && t != '{' && t != TK_ELLIPSIS)
++		goto done;
++	for (;;) {
++		t = J->lookahead;
++		if (t == 0)
++			goto done;
++		if (depth == 1 && !indef) {
++			if (t != TK_IDENTIFIER && t != ',' && t != TK_ELLIPSIS && t != '=' && t != ')' && t != '[' && t != '{')
++				goto done;
++			if (t == '=')
++				indef = 1;
++		} else if (depth == 1 && t == ',') {
++			indef = 0;
++		}
++		if (t == '(' || t == '[' || t == '{') {
++			++depth;
++		} else if (t == ')' || t == ']') {
++			if (--depth == 0)
++				break;
++		} else if (t == '}') {
++			if (sp > 0 && tstack[sp-1] == depth) { /* the template goes on (its next piece) */
++				J->lookahead = jsY_lextemplatenext(J);
++				if (!J->number)
++					--sp;
++				jsP_next(J);
++				continue;
++			}
++			--depth;
++		} else if (t == TK_TEMPLATE && J->number) {
++			if (sp == 32)
++				goto done;
++			tstack[sp++] = depth;
++		}
++		jsP_next(J);
++	}
++	jsP_next(J);
++	ok = J->lookahead == TK_ARROW;
++done:
++	lexrestore(J, &s);
++	return ok;
++}
++
++/* an arrow function from its parameters (single: the one identifier, else "(...)") */
++static js_Ast *arrowfun(js_State *J, int line, js_Ast *single, int async, int notin)
++{
++	jsP_FunCtx c;
++	js_Ast *params, *body, *f;
++	funbegin(J, &c, 1, 0, async);
++	if (single) {
++		declname(J, single, 0);
++		params = LIST(single);
++	} else {
++		jsP_expect(J, '(');
++		params = parameters(J);
++		jsP_expect(J, ')');
++	}
++	jsP_expect(J, TK_ARROW);
++	if (J->lookahead == '{') {
++		body = funbody(J);
++	} else {
++		js_Ast *e = assignment(J, notin);
++		body = LIST(STM1(RETURN, e));
++	}
++	body = funend(J, &c, body, 1);
++	f = EXP3(FUN, NULL, params, body);
++	f->number = async << 1;
++	return f;
+ }
+ 
+ /* Expressions */
+ 
++static js_Ast *arguments(js_State *J)
++{
++	jsP_Build b = { 0, 0 };
++	int line;
++	while (J->lookahead != ')') {
++		line = J->lexline;
++		if (jsP_accept(J, TK_ELLIPSIS))
++			bpush(J, &b, EXP1(SPREAD, assignment(J, 0)));
++		else
++			bpush(J, &b, assignment(J, 0));
++		if (!jsP_accept(J, ','))
++			break;
++	}
++	return b.head ? jsP_list(b.head) : NULL;
++}
++
+ static js_Ast *primary(js_State *J)
+ {
+ 	js_Ast *a;
+ 	int line = J->lexline;
+ 
+ 	if (J->lookahead == TK_IDENTIFIER) {
+-		a = jsP_newstrnode(J, EXP_IDENTIFIER, J->text);
++		if (J->text[0] == '#') { /* #x in obj */
++			a = jsP_newstrnode(J, EXP_STRING, J->text);
++			jsP_next(J);
++			return a;
++		}
++		if (!strcmp(J->text, "class")) {
++			jsP_next(J);
++			return classexp(J, line, NULL);
++		}
++		if (!strcmp(J->text, "async")) {
++			int nl, t = jsP_peek(J, &nl);
++			if (t == TK_FUNCTION && !nl) {
++				jsP_next(J);
++				jsP_next(J);
++				return funexp(J, line, 1);
++			}
++		}
++		if (!strcmp(J->text, "super") && J->es_class) {
++			js_Ast *base, *key;
++			jsP_next(J);
++			if (jsP_accept(J, '(')) { /* super(...) in a constructor */
++				js_Ast *args = arguments(J);
++				js_Ast *l;
++				jsP_expect(J, ')');
++				l = jsP_newnode(J, AST_LIST, 0, thisexp(J, line), 0, 0, 0);
++				l->b = jsP_newnode(J, AST_LIST, 0, idexp(J, J->es_class->string), 0, 0, 0);
++				l->b->b = jsP_newnode(J, AST_LIST, 0, EXP1(ARRAY, args), 0, 0, 0);
++				l->b->b->b = jsP_newnode(J, AST_LIST, 0, idexp(J, J->es_class->a->string), 0, 0, 0);
++				return helpercall(J, "%superCall", jsP_list(l));
++			}
++			base = idexp(J, J->es_class->string);
++			if (!J->es_class->number)
++				base = EXP2(MEMBER, base, idast(J, "prototype"));
++			if (jsP_accept(J, '.')) {
++				a = EXP2(MEMBER, base, identifiername(J));
++			} else {
++				jsP_expect(J, '[');
++				key = expression(J, 0);
++				jsP_expect(J, ']');
++				a = EXP2(INDEX, base, key);
++			}
++			if (jsP_accept(J, '(')) { /* super.m(...): this stays */
++				js_Ast *args = arguments(J);
++				jsP_expect(J, ')');
++				a = EXP2(CALL, EXP2(MEMBER, a, idast(J, "call")),
++					jsP_newnode(J, AST_LIST, 0, thisexp(J, line), args, 0, 0));
++				jsP_list(a->b);
++			}
++			return a;
++		}
++		a = jsP_newstrnode(J, EXP_IDENTIFIER, resolvename(J, J->text));
++		if (J->es_arrow && !strcmp(a->string, "arguments")) {
++			J->es_args = 1;
++			a->string = js_intern(J, "%args");
++		}
+ 		jsP_next(J);
+ 		return a;
+ 	}
++	if (J->lookahead == TK_TEMPLATE)
++		return templatelit(J, NULL);
+ 	if (J->lookahead == TK_STRING) {
+ 		a = jsP_newstrnode(J, EXP_STRING, J->text);
+ 		jsP_next(J);
+@@ -340,7 +966,7 @@
+ 		return a;
+ 	}
+ 
+-	if (jsP_accept(J, TK_THIS)) return EXP0(THIS);
++	if (jsP_accept(J, TK_THIS)) return thisexp(J, line);
+ 	if (jsP_accept(J, TK_NULL)) return EXP0(NULL);
+ 	if (jsP_accept(J, TK_TRUE)) return EXP0(TRUE);
+ 	if (jsP_accept(J, TK_FALSE)) return EXP0(FALSE);
+@@ -363,17 +989,6 @@
+ 	jsP_error(J, "unexpected token in expression: %s", jsY_tokenstring(J->lookahead));
+ }
+ 
+-static js_Ast *arguments(js_State *J)
+-{
+-	js_Ast *head, *tail;
+-	if (J->lookahead == ')')
+-		return NULL;
+-	head = tail = LIST(assignment(J, 0));
+-	while (jsP_accept(J, ',')) {
+-		tail = tail->b = LIST(assignment(J, 0));
+-	}
+-	return jsP_list(head);
+-}
+ 
+ static js_Ast *newexp(js_State *J)
+ {
+@@ -391,7 +1006,7 @@
+ 	}
+ 
+ 	if (jsP_accept(J, TK_FUNCTION))
+-		return funexp(J, line);
++		return funexp(J, line, 0);
+ 
+ 	return primary(J);
+ }
+@@ -406,6 +1021,7 @@
+ 	line = J->lexline;
+ 	if (jsP_accept(J, '.')) { a = EXP2(MEMBER, a, identifiername(J)); goto loop; }
+ 	if (jsP_accept(J, '[')) { a = EXP2(INDEX, a, expression(J, 0)); jsP_expect(J, ']'); goto loop; }
++	if (J->lookahead == TK_TEMPLATE) { a = templatelit(J, a); goto loop; }
+ 	POPREC();
+ 	return a;
+ }
+@@ -413,7 +1029,7 @@
+ static js_Ast *callexp(js_State *J)
+ {
+ 	js_Ast *a = newexp(J);
+-	int line;
++	int line, opt = 0;
+ 	SAVEREC();
+ loop:
+ 	INCREC();
+@@ -421,7 +1037,18 @@
+ 	if (jsP_accept(J, '.')) { a = EXP2(MEMBER, a, identifiername(J)); goto loop; }
+ 	if (jsP_accept(J, '[')) { a = EXP2(INDEX, a, expression(J, 0)); jsP_expect(J, ']'); goto loop; }
+ 	if (jsP_accept(J, '(')) { a = EXP2(CALL, a, arguments(J)); jsP_expect(J, ')'); goto loop; }
++	if (J->lookahead == TK_TEMPLATE) { a = templatelit(J, a); goto loop; }
++	if (jsP_accept(J, TK_QDOT)) {
++		opt = 1;
++		if (jsP_accept(J, '(')) { a = EXP2(CALL, a, arguments(J)); jsP_expect(J, ')'); }
++		else if (jsP_accept(J, '[')) { a = EXP2(INDEX, a, expression(J, 0)); jsP_expect(J, ']'); }
++		else a = EXP2(MEMBER, a, identifiername(J));
++		a->number = 1;
++		goto loop;
++	}
+ 	POPREC();
++	if (opt)
++		a = EXP1(OPTCHAIN, a);
+ 	return a;
+ }
+ 
+@@ -448,22 +1075,37 @@
+ 	else if (jsP_accept(J, '-')) a = EXP1(NEG, unary(J));
+ 	else if (jsP_accept(J, '~')) a = EXP1(BITNOT, unary(J));
+ 	else if (jsP_accept(J, '!')) a = EXP1(LOGNOT, unary(J));
++	else if (J->es_async && isword(J, "await")) { jsP_next(J); a = EXP1(AWAIT, unary(J)); }
+ 	else a = postfix(J);
+ 	DECREC();
+ 	return a;
+ }
+ 
+-static js_Ast *multiplicative(js_State *J)
++static js_Ast *exponent(js_State *J)
+ {
+ 	js_Ast *a = unary(J);
++	int line = J->lexline;
++	if (jsP_accept(J, TK_POW)) {
++		js_Ast *b;
++		INCREC();
++		b = exponent(J);
++		DECREC();
++		return helpercall(J, "%pow", list2(J, a, b));
++	}
++	return a;
++}
++
++static js_Ast *multiplicative(js_State *J)
++{
++	js_Ast *a = exponent(J);
+ 	int line;
+ 	SAVEREC();
+ loop:
+ 	INCREC();
+ 	line = J->lexline;
+-	if (jsP_accept(J, '*')) { a = EXP2(MUL, a, unary(J)); goto loop; }
+-	if (jsP_accept(J, '/')) { a = EXP2(DIV, a, unary(J)); goto loop; }
+-	if (jsP_accept(J, '%')) { a = EXP2(MOD, a, unary(J)); goto loop; }
++	if (jsP_accept(J, '*')) { a = EXP2(MUL, a, exponent(J)); goto loop; }
++	if (jsP_accept(J, '/')) { a = EXP2(DIV, a, exponent(J)); goto loop; }
++	if (jsP_accept(J, '%')) { a = EXP2(MOD, a, exponent(J)); goto loop; }
+ 	POPREC();
+ 	return a;
+ }
+@@ -601,6 +1243,12 @@
+ {
+ 	js_Ast *a = logor(J, notin);
+ 	int line = J->lexline;
++	while (jsP_accept(J, TK_NULLISH)) {
++		INCREC();
++		a = EXP2(NULLISH, a, logor(J, notin));
++		DECREC();
++		line = J->lexline;
++	}
+ 	if (jsP_accept(J, '?')) {
+ 		js_Ast *b, *c;
+ 		INCREC();
+@@ -615,10 +1263,61 @@
+ 
+ static js_Ast *assignment(js_State *J, int notin)
+ {
+-	js_Ast *a = conditional(J, notin);
++	js_Ast *a;
+ 	int line = J->lexline;
++
++	if (J->lookahead == TK_IDENTIFIER) {
++		int nl, t = jsP_peek(J, &nl);
++		if (t == TK_ARROW && J->text[0] != '#')
++			return arrowfun(J, line, identifier(J), 0, notin);
++		if (!nl && !strcmp(J->text, "async") && (t == TK_IDENTIFIER || t == '(')) {
++			jsP_LexState s;
++			int ok;
++			lexsave(J, &s);
++			jsP_next(J);
++			if (t == TK_IDENTIFIER)
++				ok = jsP_peek(J, NULL) == TK_ARROW;
++			else
++				ok = isarrowparen(J);
++			if (ok)
++				return arrowfun(J, line, t == TK_IDENTIFIER ? identifier(J) : NULL, 1, notin);
++			lexrestore(J, &s);
++		}
++		if (J->es_gen && !strcmp(J->text, "yield")) {
++			int star = 0;
++			jsP_next(J);
++			if (!J->newline && jsP_accept(J, '*'))
++				star = 1;
++			if (J->newline || J->lookahead == ')' || J->lookahead == ']' || J->lookahead == '}' ||
++					J->lookahead == ',' || J->lookahead == ';' || J->lookahead == ':' || J->lookahead == 0)
++				a = EXP1(YIELD, NULL);
++			else
++				a = EXP1(YIELD, assignment(J, notin));
++			a->number = star;
++			return a;
++		}
++	} else if (J->lookahead == '(' && isarrowparen(J)) {
++		return arrowfun(J, line, NULL, 0, notin);
++	}
++
++	a = conditional(J, notin);
++	line = J->lexline;
+ 	INCREC();
+-	if (jsP_accept(J, '=')) a = EXP2(ASS, a, assignment(J, notin));
++	if ((a->type == EXP_ARRAY || a->type == EXP_OBJECT) && J->lookahead == '=') {
++		jsP_Build steps = { 0, 0 };
++		const char *t = newtemp(J);
++		js_Ast *rhs;
++		jsP_next(J);
++		rhs = assignment(J, notin);
++		dsstep(J, &steps, 0, idexp(J, t), rhs);
++		destructure(J, &steps, 0, a, idexp(J, t));
++		a = dsexpression(J, &steps, idexp(J, t));
++	}
++	else if (jsP_accept(J, '=')) a = EXP2(ASS, a, assignment(J, notin));
++	else if (jsP_accept(J, TK_POW_ASS)) a = EXP2(ASS, a, helpercall(J, "%pow", list2(J, cloneexp(J, a), assignment(J, notin))));
++	else if (jsP_accept(J, TK_NULLISH_ASS)) a = EXP2(NULLISH, a, EXP2(ASS, cloneexp(J, a), assignment(J, notin)));
++	else if (jsP_accept(J, TK_LOR_ASS)) a = EXP2(LOGOR, a, EXP2(ASS, cloneexp(J, a), assignment(J, notin)));
++	else if (jsP_accept(J, TK_LAND_ASS)) a = EXP2(LOGAND, a, EXP2(ASS, cloneexp(J, a), assignment(J, notin)));
+ 	else if (jsP_accept(J, TK_MUL_ASS)) a = EXP2(ASS_MUL, a, assignment(J, notin));
+ 	else if (jsP_accept(J, TK_DIV_ASS)) a = EXP2(ASS_DIV, a, assignment(J, notin));
+ 	else if (jsP_accept(J, TK_MOD_ASS)) a = EXP2(ASS_MOD, a, assignment(J, notin));
+@@ -650,22 +1349,110 @@
+ 
+ /* Statements */
+ 
+-static js_Ast *vardec(js_State *J, int notin)
++/* kind: 0 var, 1 let/const (block-scoped), 2 a parameter */
++static void vardec(js_State *J, jsP_Build *out, int notin, int kind)
+ {
+-	js_Ast *a = identifier(J);
++	js_Ast *a;
+ 	int line = J->lexline;
++	if (J->lookahead == '[' || J->lookahead == '{') {
++		js_Ast *pat = bindingtarget(J, kind);
++		if (!jsP_accept(J, '=')) { /* for (const [a, b] of ...): the loop gives the value */
++			bpush(J, out, EXP1(VAR, pat));
++			return;
++		}
++		destructure(J, out, 1, pat, assignment(J, notin));
++		return;
++	}
++	a = identifier(J);
++	declname(J, a, kind == 1);
+ 	if (jsP_accept(J, '='))
+-		return EXP2(VAR, a, assignment(J, notin));
+-	return EXP1(VAR, a);
++		bpush(J, out, EXP2(VAR, a, assignment(J, notin)));
++	else
++		bpush(J, out, EXP1(VAR, a));
+ }
+ 
+-static js_Ast *vardeclist(js_State *J, int notin)
++static js_Ast *vardeclist(js_State *J, int notin, int kind)
+ {
+-	js_Ast *head, *tail;
+-	head = tail = LIST(vardec(J, notin));
++	jsP_Build b = { 0, 0 };
++	vardec(J, &b, notin, kind);
+ 	while (jsP_accept(J, ','))
+-		tail = tail->b = LIST(vardec(J, notin));
+-	return jsP_list(head);
++		vardec(J, &b, notin, kind);
++	return jsP_list(b.head);
++}
++
++/* a binding pattern or identifier (patterns: EXP_ARRAY / EXP_OBJECT of targets) */
++static js_Ast *bindingelement(js_State *J, int kind)
++{
++	js_Ast *t = bindingtarget(J, kind);
++	int line = J->lexline;
++	if (jsP_accept(J, '='))
++		return EXP2(ASS, t, assignment(J, 0));
++	return t;
++}
++
++static js_Ast *bindingtarget(js_State *J, int kind)
++{
++	jsP_Build b = { 0, 0 };
++	js_Ast *key, *val, *id;
++	int line = J->lexline;
++
++	if (jsP_accept(J, '[')) {
++		while (J->lookahead != ']') {
++			if (J->lookahead == ',') {
++				jsP_next(J);
++				bpush(J, &b, EXP0(ELISION));
++				continue;
++			}
++			if (jsP_accept(J, TK_ELLIPSIS))
++				bpush(J, &b, EXP1(SPREAD, bindingtarget(J, kind)));
++			else
++				bpush(J, &b, bindingelement(J, kind));
++			if (!jsP_accept(J, ','))
++				break;
++		}
++		jsP_expect(J, ']');
++		return EXP1(ARRAY, b.head ? jsP_list(b.head) : NULL);
++	}
++	if (jsP_accept(J, '{')) {
++		while (J->lookahead != '}') {
++			if (jsP_accept(J, TK_ELLIPSIS)) {
++				bpush(J, &b, EXP1(SPREAD, bindingtarget(J, kind)));
++			} else {
++				key = propname(J);
++				if (jsP_accept(J, ':')) {
++					val = bindingelement(J, kind);
++				} else {
++					if (key->type != AST_IDENTIFIER)
++						jsP_error(J, "unexpected token in pattern: %s", jsY_tokenstring(J->lookahead));
++					id = idast(J, key->string);
++					declname(J, id, kind == 1);
++					val = id;
++					if (jsP_accept(J, '='))
++						val = EXP2(ASS, id, assignment(J, 0));
++				}
++				bpush(J, &b, EXP2(PROP_VAL, key, val));
++			}
++			if (!jsP_accept(J, ','))
++				break;
++		}
++		jsP_expect(J, '}');
++		return EXP1(OBJECT, b.head ? jsP_list(b.head) : NULL);
++	}
++	id = identifier(J);
++	declname(J, id, kind == 1);
++	return id;
++}
++
++/* is the lookahead "let"/"const" starting a declaration? */
++static int islexical(js_State *J)
++{
++	int t;
++	if (J->lookahead != TK_IDENTIFIER)
++		return 0;
++	if (strcmp(J->text, "let") && strcmp(J->text, "const"))
++		return 0;
++	t = jsP_peek(J, NULL);
++	return t == TK_IDENTIFIER || t == '[' || t == '{';
+ }
+ 
+ static js_Ast *statementlist(js_State *J)
+@@ -716,7 +1503,9 @@
+ 	js_Ast *a;
+ 	int line = J->lexline;
+ 	jsP_expect(J, '{');
++	blockbegin(J);
+ 	a = statementlist(J);
++	blockend(J);
+ 	jsP_expect(J, '}');
+ 	return STM1(BLOCK, a);
+ }
+@@ -730,12 +1519,70 @@
+ 	return a;
+ }
+ 
++/* for (head of expr) body: over %arr(expr) by index; head is a var list (one EXP_VAR, its a
++ * the target or pattern) or an expression (target or pattern) */
++static js_Ast *forof(js_State *J, int line, js_Ast *head, int decl, int isawait)
++{
++	jsP_Build init = { 0, 0 }, steps = { 0, 0 }, body = { 0, 0 };
++	const char *arr = newtemp(J), *i = newtemp(J);
++	js_Ast *e, *bind, *val, *stm;
++	e = assignment(J, 0);
++	jsP_expect(J, ')');
++	if (isawait) { /* for (var %it = %aiter(e), %r; !(%r = await %it.next()).done;) { x = await %r.value } */
++		bpush(J, &init, EXP2(VAR, idast(J, arr), helpercall(J, "%aiter", list1(J, e))));
++		bpush(J, &init, EXP1(VAR, idast(J, i)));
++		val = EXP1(AWAIT, EXP2(MEMBER, idexp(J, i), idast(J, "value")));
++	} else {
++		bpush(J, &init, EXP2(VAR, idast(J, arr), helpercall(J, "%arr", list1(J, e))));
++		bpush(J, &init, EXP2(VAR, idast(J, i), numexp(J, 0)));
++		val = EXP2(INDEX, idexp(J, arr), idexp(J, i));
++	}
++	if (decl) {
++		if (head->b)
++			jsP_error(J, "more than one loop variable in for-of statement");
++		destructure(J, &steps, 1, head->a->a, val);
++		bind = STM1(VAR, jsP_list(steps.head));
++	} else if (head->type == EXP_ARRAY || head->type == EXP_OBJECT) {
++		destructure(J, &steps, 0, head, val);
++		bind = dsexpression(J, &steps, numexp(J, 0));
++	} else {
++		bind = EXP2(ASS, head, val);
++	}
++	bpush(J, &body, bind);
++	stm = statement(J);
++	bpush(J, &body, stm);
++	if (isawait)
++		return STM4(FOR_VAR, jsP_list(init.head),
++			EXP1(LOGNOT, EXP2(MEMBER, EXP2(ASS, idexp(J, i), EXP1(AWAIT, EXP2(CALL, EXP2(MEMBER, idexp(J, arr), idast(J, "next")), NULL))), idast(J, "done"))),
++			NULL,
++			STM1(BLOCK, jsP_list(body.head)));
++	return STM4(FOR_VAR, jsP_list(init.head),
++		EXP2(LT, idexp(J, i), EXP2(MEMBER, idexp(J, arr), idast(J, "length"))),
++		EXP1(PREINC, idexp(J, i)),
++		STM1(BLOCK, jsP_list(body.head)));
++}
++
+ static js_Ast *forstatement(js_State *J, int line)
+ {
+ 	js_Ast *a, *b, *c, *d;
++	int kind = 0, isawait = 0;
++	if (J->es_async && isword(J, "await")) { /* for await (x of asyncIterable) */
++		jsP_next(J);
++		isawait = 1;
++	}
+ 	jsP_expect(J, '(');
+-	if (jsP_accept(J, TK_VAR)) {
+-		a = vardeclist(J, 1);
++	if (islexical(J)) {
++		jsP_next(J);
++		kind = 1;
++	}
++	if (kind || jsP_accept(J, TK_VAR)) {
++		a = vardeclist(J, 1, kind);
++		if (isword(J, "of")) {
++			jsP_next(J);
++			return forof(J, line, a, 1, isawait);
++		}
++		if (a->a->a->type != AST_IDENTIFIER)
++			jsP_error(J, "destructuring in for-in is not supported");
+ 		if (jsP_accept(J, ';')) {
+ 			b = forexpression(J, ';');
+ 			c = forexpression(J, ')');
+@@ -751,9 +1598,16 @@
+ 		jsP_error(J, "unexpected token in for-var-statement: %s", jsY_tokenstring(J->lookahead));
+ 	}
+ 
+-	if (J->lookahead != ';')
+-		a = expression(J, 1);
+-	else
++	if (J->lookahead != ';') {
++		if (J->lookahead == '[' || J->lookahead == '{') /* a pattern: not destructured yet */
++			a = conditional(J, 1);
++		else
++			a = expression(J, 1);
++		if (isword(J, "of")) {
++			jsP_next(J);
++			return forof(J, line, a, 0, isawait);
++		}
++	} else
+ 		a = NULL;
+ 	if (jsP_accept(J, ';')) {
+ 		b = forexpression(J, ';');
+@@ -783,11 +1637,37 @@
+ 	}
+ 
+ 	else if (jsP_accept(J, TK_VAR)) {
+-		a = vardeclist(J, 0);
++		a = vardeclist(J, 0, 0);
++		semicolon(J);
++		stm = STM1(VAR, a);
++	}
++
++	else if (islexical(J)) {
++		jsP_next(J);
++		a = vardeclist(J, 0, 1);
+ 		semicolon(J);
+ 		stm = STM1(VAR, a);
+ 	}
+ 
++	else if (isword(J, "class") && jsP_peek(J, NULL) == TK_IDENTIFIER) {
++		jsP_next(J);
++		a = identifier(J);
++		declname(J, a, 1);
++		stm = STM1(VAR, LIST(EXP2(VAR, a, classexp(J, line, a))));
++	}
++
++	else if (isword(J, "async") && J->lookahead == TK_IDENTIFIER) {
++		int nl, t = jsP_peek(J, &nl);
++		if (t == TK_FUNCTION && !nl) {
++			jsP_next(J);
++			jsP_next(J);
++			stm = funstm(J, line, 1);
++		} else {
++			stm = expression(J, 0);
++			semicolon(J);
++		}
++	}
++
+ 	/* empty statement */
+ 	else if (jsP_accept(J, ';')) {
+ 		stm = STM0(EMPTY);
+@@ -811,7 +1691,7 @@
+ 		jsP_expect(J, '(');
+ 		b = expression(J, 0);
+ 		jsP_expect(J, ')');
+-		semicolon(J);
++		jsP_accept(J, ';'); /* (ES2015: inserted after do-while even on the same line) */
+ 		stm = STM2(DO, a, b);
+ 	}
+ 
+@@ -824,7 +1704,9 @@
+ 	}
+ 
+ 	else if (jsP_accept(J, TK_FOR)) {
++		blockbegin(J);
+ 		stm = forstatement(J, line);
++		blockend(J);
+ 	}
+ 
+ 	else if (jsP_accept(J, TK_CONTINUE)) {
+@@ -861,7 +1743,9 @@
+ 		a = expression(J, 0);
+ 		jsP_expect(J, ')');
+ 		jsP_expect(J, '{');
++		blockbegin(J);
+ 		b = caselist(J);
++		blockend(J);
+ 		jsP_expect(J, '}');
+ 		stm = STM2(SWITCH, a, b);
+ 	}
+@@ -876,10 +1760,27 @@
+ 		a = block(J);
+ 		b = c = d = NULL;
+ 		if (jsP_accept(J, TK_CATCH)) {
+-			jsP_expect(J, '(');
+-			b = identifier(J);
+-			jsP_expect(J, ')');
+-			c = block(J);
++			blockbegin(J);
++			if (jsP_accept(J, '(')) {
++				if (J->lookahead == TK_IDENTIFIER) {
++					b = identifier(J);
++					declname(J, b, 0);
++					jsP_expect(J, ')');
++					c = block(J);
++				} else { /* catch ({message}) */
++					jsP_Build steps = { 0, 0 };
++					js_Ast *pat = bindingtarget(J, 1);
++					b = idast(J, hidname(J, "e"));
++					jsP_expect(J, ')');
++					destructure(J, &steps, 1, pat, idexp(J, b->string));
++					c = block(J);
++					c->a = jsP_list(jsP_newnode(J, AST_LIST, 0, STM1(VAR, jsP_list(steps.head)), c->a, 0, 0));
++				}
++			} else { /* catch { } */
++				b = idast(J, hidname(J, "e"));
++				c = block(J);
++			}
++			blockend(J);
+ 		}
+ 		if (jsP_accept(J, TK_FINALLY)) {
+ 			d = block(J);
+@@ -895,8 +1796,7 @@
+ 	}
+ 
+ 	else if (jsP_accept(J, TK_FUNCTION)) {
+-		jsP_warning(J, "function statements are not standard");
+-		stm = funstm(J, line);
++		stm = funstm(J, line, 0);
+ 	}
+ 
+ 	/* labelled statement or expression statement */
+@@ -928,7 +1828,15 @@
+ {
+ 	int line = J->lexline;
+ 	if (jsP_accept(J, TK_FUNCTION))
+-		return fundec(J, line);
++		return fundec(J, line, 0);
++	if (isword(J, "async")) {
++		int nl, t = jsP_peek(J, &nl);
++		if (t == TK_FUNCTION && !nl) {
++			jsP_next(J);
++			jsP_next(J);
++			return fundec(J, line, 1);
++		}
++	}
+ 	return statement(J);
+ }
+ 
+@@ -952,6 +1860,209 @@
+ 	return a;
+ }
+ 
++
++/* Browser 9300: `a${b}c` -> "a" + b + "c"; tag`a${b}` -> tag(%tpl(site, ["a",""], raw), b) */
++static js_Ast *templatelit(js_State *J, js_Ast *tag)
++{
++	jsP_Build cooked = { 0, 0 }, raw = { 0, 0 }, args = { 0, 0 };
++	js_Ast *e = NULL, *x;
++	int line = J->lexline, more;
++
++	for (;;) {
++		bpush(J, &cooked, strexp(J, J->text));
++		bpush(J, &raw, strexp(J, J->es_raw));
++		if (!tag && (J->text[0] || !e))
++			e = e ? EXP2(ADD, e, strexp(J, J->text)) : strexp(J, J->text);
++		more = (int)J->number;
++		if (!more)
++			break;
++		jsP_next(J);
++		x = expression(J, 0);
++		if (J->lookahead != '}')
++			jsP_error(J, "unexpected token in template: %s (expected '}')", jsY_tokenstring(J->lookahead));
++		J->lookahead = jsY_lextemplatenext(J);
++		if (tag)
++			bpush(J, &args, x);
++		else
++			e = EXP2(ADD, e, x);
++	}
++	jsP_next(J);
++	if (!tag)
++		return e;
++	x = jsP_newnode(J, AST_LIST, 0, numexp(J, ++J->es_tmpn), 0, 0, 0);
++	x->b = jsP_newnode(J, AST_LIST, 0, EXP1(ARRAY, jsP_list(cooked.head)), 0, 0, 0);
++	x->b->b = jsP_newnode(J, AST_LIST, 0, EXP1(ARRAY, jsP_list(raw.head)), 0, 0, 0);
++	x = jsP_newnode(J, AST_LIST, 0, helpercall(J, "%tpl", jsP_list(x)), args.head, 0, 0);
++	return EXP2(CALL, tag, jsP_list(x));
++}
++
++/* Browser 9300: a class, after "class" (and its name for a declaration):
++ *   (function (%S) { function C(..) {..}  %inherit(C, %S); %defm(C.prototype, "m", function..);
++ *     ..; var %F = function () { fields }; return C; })(super)
++ * super(..) is %superCall(this, %S, [..], %F); fields start a base class's constructor. */
++static js_Ast *classexp(js_State *J, int line, js_Ast *name)
++{
++	jsP_FunCtx c;
++	jsP_Build body = { 0, 0 }, fields = { 0, 0 };
++	js_Ast *sup = NULL, *ctor = NULL, *cls, *savecls = J->es_class, *proto, *ctorname, *f, *l, *iife;
++	const char *sname = hidname(J, "S"), *fname = hidname(J, "F");
++	int derived = 0;
++
++	if (!name && J->lookahead == TK_IDENTIFIER && !isword(J, "extends"))
++		name = identifier(J);
++	if (isword(J, "extends")) {
++		jsP_next(J);
++		sup = callexp(J);
++		derived = 1;
++	}
++	ctorname = name ? idast(J, name->string) : idast(J, hidname(J, "C"));
++
++	funbegin(J, &c, 0, 0, 0); /* the wrapper function */
++	cls = jsP_newnode(J, AST_IDENTIFIER, line, idast(J, fname), 0, 0, 0);
++	cls->string = derived ? sname : js_intern(J, "Object");
++	J->es_class = cls;
++
++	jsP_expect(J, '{');
++	while (!jsP_accept(J, '}')) {
++		int isstatic = 0, gen = 0, async = 0, kind = 0; /* kind: 0 method, 1 get, 2 set, 3 field */
++		js_Ast *key, *target, *val;
++		line = J->lexline;
++		if (jsP_accept(J, ';'))
++			continue;
++		if (isword(J, "static")) {
++			int t = jsP_peek(J, NULL);
++			if (t != '(' && t != '=' && t != ';' && t != '}') {
++				jsP_next(J);
++				isstatic = 1;
++				if (J->lookahead == '{') { /* static { ... } */
++					jsP_FunCtx sc;
++					cls->number = 1;
++					funbegin(J, &sc, 0, 0, 0);
++					f = EXP3(FUN, NULL, NULL, funend(J, &sc, funbody(J), 0));
++					cls->number = 0;
++					bpush(J, &body, EXP2(CALL, EXP2(MEMBER, f, idast(J, "call")), list1(J, idexp(J, ctorname->string))));
++					continue;
++				}
++			}
++		}
++		if (jsP_accept(J, '*'))
++			gen = 1;
++		if (!gen && (isword(J, "get") || isword(J, "set") || isword(J, "async"))) {
++			int t = jsP_peek(J, NULL);
++			if (t != '(' && t != '=' && t != ';' && t != '}') {
++				if (isword(J, "async"))
++					async = 1;
++				else
++					kind = J->text[0] == 'g' ? 1 : 2;
++				jsP_next(J);
++				if (async && jsP_accept(J, '*'))
++					gen = 1;
++			}
++		}
++		if (J->lookahead == TK_IDENTIFIER && J->text[0] == '#') { /* #private: a hidden-ish property */
++			key = jsP_newstrnode(J, AST_IDENTIFIER, J->text);
++			jsP_next(J);
++		} else {
++			key = propname(J);
++		}
++		if (J->lookahead != '(')
++			kind = 3;
++
++		cls->number = isstatic;
++		if (kind == 3) { /* field */
++			jsP_FunCtx fc;
++			js_Ast *e;
++			int iscomputed = key->type != AST_IDENTIFIER && key->type != EXP_STRING && key->type != EXP_NUMBER;
++			funbegin(J, &fc, 0, 0, 0);
++			e = jsP_accept(J, '=') ? assignment(J, 0) : undefexp(J);
++			semicolon(J);
++			if (isstatic) {
++				target = idexp(J, ctorname->string);
++				e = funend(J, &fc, list1(J, STM1(RETURN, e)), 0);
++				e = EXP2(CALL, EXP2(MEMBER, EXP3(FUN, NULL, NULL, e), idast(J, "call")), list1(J, idexp(J, ctorname->string)));
++			} else {
++				target = EXP0(THIS);
++			}
++			if (key->type == AST_IDENTIFIER)
++				val = strexp(J, key->string);
++			else
++				val = key;
++			if (iscomputed && !isstatic) { /* evaluated once, when the class is made */
++				const char *k = newtemp(J);
++				bpush(J, &body, EXP2(ASS, idexp(J, k), key));
++				val = idexp(J, k);
++			}
++			l = jsP_newnode(J, AST_LIST, 0, target, 0, 0, 0);
++			l->b = jsP_newnode(J, AST_LIST, 0, val, 0, 0, 0);
++			l->b->b = jsP_newnode(J, AST_LIST, 0, e, 0, 0, 0);
++			e = helpercall(J, "%defp", jsP_list(l));
++			if (isstatic) {
++				bpush(J, &body, e);
++			} else {
++				js_Ast *stms = funend(J, &fc, list1(J, e), 0);
++				for (l = stms; l; l = l->b)
++					bpush(J, &fields, l->a);
++			}
++			continue;
++		}
++
++		if (!isstatic && kind == 0 && key->type == AST_IDENTIFIER && !strcmp(key->string, "constructor")) {
++			cls->number = 0;
++			ctor = funrest(J, line, NULL, 0, 0);
++			continue;
++		}
++		f = funrest(J, line, NULL, gen, async);
++		cls->number = 0;
++		proto = isstatic ? idexp(J, ctorname->string) : EXP2(MEMBER, idexp(J, ctorname->string), idast(J, "prototype"));
++		l = jsP_newnode(J, AST_LIST, 0, proto, 0, 0, 0);
++		l->b = jsP_newnode(J, AST_LIST, 0, key->type == AST_IDENTIFIER ? strexp(J, key->string) : key, 0, 0, 0);
++		if (kind == 0) {
++			l->b->b = jsP_newnode(J, AST_LIST, 0, f, 0, 0, 0);
++			bpush(J, &body, helpercall(J, "%defm", jsP_list(l)));
++		} else {
++			l->b->b = jsP_newnode(J, AST_LIST, 0, kind == 1 ? f : EXP0(NULL), 0, 0, 0);
++			l->b->b->b = jsP_newnode(J, AST_LIST, 0, kind == 2 ? f : EXP0(NULL), 0, 0, 0);
++			bpush(J, &body, helpercall(J, "%defa", jsP_list(l)));
++		}
++	}
++	J->es_class = savecls;
++
++	/* the constructor */
++	if (!ctor) {
++		jsP_FunCtx fc;
++		js_Ast *b = NULL;
++		funbegin(J, &fc, 0, 0, 0);
++		if (derived) {
++			l = jsP_newnode(J, AST_LIST, 0, EXP0(THIS), 0, 0, 0);
++			l->b = jsP_newnode(J, AST_LIST, 0, idexp(J, sname), 0, 0, 0);
++			l->b->b = jsP_newnode(J, AST_LIST, 0, idexp(J, "arguments"), 0, 0, 0);
++			l->b->b->b = jsP_newnode(J, AST_LIST, 0, idexp(J, fname), 0, 0, 0);
++			b = list1(J, helpercall(J, "%superCall", jsP_list(l)));
++		}
++		b = funend(J, &fc, b, 0);
++		ctor = EXP3(FUN, NULL, NULL, b);
++	}
++	if (!derived && fields.head) /* fields first in a base class's constructor */
++		ctor->c = jsP_list(jsP_newnode(J, AST_LIST, 0,
++			STM3(IF, idexp(J, fname), EXP2(CALL, EXP2(MEMBER, idexp(J, fname), idast(J, "call")), list1(J, EXP0(THIS))), NULL),
++			ctor->c, 0, 0));
++
++	{
++		jsP_Build w = { 0, 0 };
++		js_Ast *fn = jsP_newnode(J, AST_FUNDEC, line, ctorname, ctor->b, ctor->c, 0);
++		bpush(J, &w, fn);
++		bpush(J, &w, STM1(VAR, list1(J, EXP2(VAR, idast(J, fname), fields.head ? EXP3(FUN, NULL, NULL, jsP_list(fields.head)) : EXP0(NULL)))));
++		if (derived)
++			bpush(J, &w, helpercall(J, "%inherit", list2(J, idexp(J, ctorname->string), idexp(J, sname))));
++		for (l = body.head; l; l = l->b)
++			bpush(J, &w, l->a);
++		bpush(J, &w, STM1(RETURN, idexp(J, ctorname->string)));
++		f = funend(J, &c, jsP_list(w.head), 0);
++	}
++	iife = EXP3(FUN, NULL, derived ? list1(J, idast(J, sname)) : NULL, f);
++	return EXP2(CALL, iife, derived ? list1(J, sup) : NULL);
++}
++
+ /* Constant folding */
+ 
+ static int toint32(double d)
+@@ -1022,7 +2133,7 @@
+ 			case EXP_MOD: return jsP_setnumnode(node, fmod(x, y));
+ 			case EXP_ADD: return jsP_setnumnode(node, x + y);
+ 			case EXP_SUB: return jsP_setnumnode(node, x - y);
+-			case EXP_SHL: return jsP_setnumnode(node, toint32(x) << (touint32(y) & 0x1F));
++			case EXP_SHL: return jsP_setnumnode(node, (int)((unsigned int)toint32(x) << (touint32(y) & 0x1F)));
+ 			case EXP_SHR: return jsP_setnumnode(node, toint32(x) >> (touint32(y) & 0x1F));
+ 			case EXP_USHR: return jsP_setnumnode(node, touint32(x) >> (touint32(y) & 0x1F));
+ 			case EXP_BITAND: return jsP_setnumnode(node, toint32(x) & toint32(y));
+@@ -1041,10 +2152,17 @@
+ {
+ 	js_Ast *p;
+ 
++	jsP_FunCtx c;
++
+ 	jsY_initlex(J, filename, source);
++	J->es_arrow = J->es_this = J->es_args = 0;
++	J->es_tmps = J->es_pro = J->es_names = J->es_class = NULL;
++	J->es_level = J->es_block = J->es_renamed = J->es_gen = J->es_async = 0;
+ 	jsP_next(J);
+ 	J->astdepth = 0;
++	funbegin(J, &c, 0, 0, 0);
+ 	p = script(J, 0);
++	p = funend(J, &c, p, 0);
+ 	if (p)
+ 		jsP_foldconst(p);
+ 
+@@ -1057,6 +2175,9 @@
+ 	int line = 0;
+ 	if (params) {
+ 		jsY_initlex(J, filename, params);
++		J->es_arrow = J->es_this = J->es_args = 0;
++		J->es_tmps = J->es_pro = J->es_names = J->es_class = NULL;
++		J->es_level = J->es_block = J->es_renamed = J->es_gen = J->es_async = 0;
+ 		jsP_next(J);
+ 		J->astdepth = 0;
+ 		p = parameters(J);
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsproperty.c b/mujs/jsproperty.c
+--- a/mujs/jsproperty.c	2026-11-03 12:07:56.314893289 +0100
++++ b/mujs/jsproperty.c	2026-11-03 12:07:56.318940096 +0100
 @@ -19,12 +19,30 @@
  	split() fixes consecutive right horizontal links.
  */
@@ -424,16 +3111,94 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  
  static js_Property *newproperty(js_State *J, js_Object *obj, const char *name)
  {
-@@ -43,7 +61,7 @@
+@@ -38,12 +56,73 @@
+ 	node->getter = NULL;
+ 	node->setter = NULL;
+ 	memcpy(node->name, name, n);
++	node->onext = NULL;
++	node->oprev = obj->otail;
++	if (obj->otail)
++		obj->otail->onext = node;
++	else
++		obj->ohead = node;
++	obj->otail = node;
+ 	++obj->count;
+ 	++J->gccounter;
  	return node;
  }
  
 -static js_Property *lookup(js_Property *node, const char *name)
++/* Browser 9300: an array index ("0".."4294967294", canonical) */
++static int isindexname(const char *s, double *v)
++{
++	double n = 0;
++	if (*s == '0')
++		return s[1] == 0 ? (*v = 0, 1) : 0;
++	if (!*s)
++		return 0;
++	for (; *s; ++s) {
++		if (*s < '0' || *s > '9')
++			return 0;
++		n = n * 10 + (*s - '0');
++		if (n > 4294967294.0)
++			return 0;
++	}
++	*v = n;
++	return 1;
++}
++
++/* Browser 9300: the own properties in the order ES2015 enumerates them (integer keys
++ * ascending, then the others as they were added); malloc'ed, NULL when none */
++js_Property **jsV_ownprops(js_State *J, js_Object *obj, int *np)
++{
++	js_Property **out, *p, *t;
++	double *key, v, kt;
++	int n = 0, ni = 0, i, j, gap;
++	*np = 0;
++	for (p = obj->ohead; p; p = p->onext)
++		++n;
++	if (!n)
++		return NULL;
++	out = js_malloc(J, n * sizeof *out);
++	key = js_malloc(J, n * sizeof *key);
++	for (p = obj->ohead; p; p = p->onext)
++		if (isindexname(p->name, &v)) {
++			key[ni] = v;
++			out[ni++] = p;
++		}
++	/* shell sort of the integer keys */
++	for (gap = ni / 2; gap > 0; gap /= 2)
++		for (i = gap; i < ni; ++i)
++			for (j = i; j >= gap && key[j-gap] > key[j]; j -= gap) {
++				kt = key[j]; key[j] = key[j-gap]; key[j-gap] = kt;
++				t = out[j]; out[j] = out[j-gap]; out[j-gap] = t;
++			}
++	j = ni;
++	for (p = obj->ohead; p; p = p->onext)
++		if (!isindexname(p->name, &v))
++			out[j++] = p;
++	js_free(J, key);
++	*np = n;
++	return out;
++}
++
 +static js_Property *lookup(js_State *J, js_Property *node, const char *name)
  {
  	while (node != &sentinel) {
  		int c = strcmp(name, node->name);
-@@ -103,15 +121,15 @@
+@@ -99,19 +178,27 @@
+ 
+ static void freeproperty(js_State *J, js_Object *obj, js_Property *node)
+ {
++	if (node->oprev)
++		node->oprev->onext = node->onext;
++	else
++		obj->ohead = node->onext;
++	if (node->onext)
++		node->onext->oprev = node->oprev;
++	else
++		obj->otail = node->oprev;
+ 	js_free(J, node);
  	--obj->count;
  }
  
@@ -452,7 +3217,7 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  		} else {
  			*garbage = node;
  			if (node->left == &sentinel && node->right == &sentinel) {
-@@ -121,7 +139,7 @@
+@@ -121,7 +208,7 @@
  				a = node->right;
  				while (a->left != &sentinel)
  					a = a->left;
@@ -461,7 +3226,7 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  				temp->level = node->level;
  				temp->left = node->left;
  				temp->right = b;
-@@ -131,7 +149,7 @@
+@@ -131,7 +218,7 @@
  				a = node->left;
  				while (a->right != &sentinel)
  					a = a->right;
@@ -470,7 +3235,7 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  				temp->level = node->level;
  				temp->left = b;
  				temp->right = node->right;
-@@ -156,7 +174,7 @@
+@@ -156,7 +243,7 @@
  static js_Property *deleteproperty(js_State *J, js_Object *obj, js_Property *tree, const char *name)
  {
  	js_Property *garbage = &sentinel;
@@ -479,7 +3244,7 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  	if (garbage != &sentinel)
  		freeproperty(J, obj, garbage);
  	return tree;
-@@ -180,14 +198,14 @@
+@@ -180,14 +267,14 @@
  
  js_Property *jsV_getownproperty(js_State *J, js_Object *obj, const char *name)
  {
@@ -496,7 +3261,7 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  		if (ref)
  			return ref;
  		obj = obj->prototype;
-@@ -199,7 +217,7 @@
+@@ -199,7 +286,7 @@
  js_Property *jsV_getproperty(js_State *J, js_Object *obj, const char *name)
  {
  	do {
@@ -505,7 +3270,7 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  		if (ref)
  			return ref;
  		obj = obj->prototype;
-@@ -210,7 +228,7 @@
+@@ -210,7 +297,7 @@
  static js_Property *jsV_getenumproperty(js_State *J, js_Object *obj, const char *name)
  {
  	do {
@@ -514,7 +3279,7 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  		if (ref && !(ref->atts & JS_DONTENUM))
  			return ref;
  		obj = obj->prototype;
-@@ -223,7 +241,7 @@
+@@ -223,7 +310,7 @@
  	js_Property *result;
  
  	if (!obj->extensible) {
@@ -523,9 +3288,47 @@ diff -ru a/mujs/jsproperty.c b/mujs/jsproperty.c
  		if (J->strict && !result)
  			js_typeerror(J, "object is non-extensible");
  		return result;
-diff -ru a/mujs/jsrepr.c b/mujs/jsrepr.c
---- a/mujs/jsrepr.c	2026-11-02 20:34:58.059547946 +0100
-+++ b/mujs/jsrepr.c	2026-11-02 19:50:39.348858284 +0100
+@@ -263,13 +350,27 @@
+ 	return iter;
+ }
+ 
++/* Browser 9300: in ES2015 order (the list is built back to front) */
++static js_Iterator *itown(js_State *J, js_Iterator *iter, js_Object *obj, js_Object *seen)
++{
++	int n, i;
++	js_Property **v = jsV_ownprops(J, obj, &n);
++	for (i = n - 1; i >= 0; --i)
++		if (!(v[i]->atts & JS_DONTENUM))
++			if (!seen || !jsV_getenumproperty(J, seen, v[i]->name))
++				iter = itnewnode(J, v[i]->name, iter);
++	if (v)
++		js_free(J, v);
++	return iter;
++}
++
+ static js_Iterator *itflatten(js_State *J, js_Object *obj)
+ {
+ 	js_Iterator *iter = NULL;
+ 	if (obj->prototype)
+ 		iter = itflatten(J, obj->prototype);
+ 	if (obj->properties != &sentinel)
+-		iter = itwalk(J, iter, obj->properties, obj->prototype);
++		iter = itown(J, iter, obj, obj->prototype);
+ 	return iter;
+ }
+ 
+@@ -282,7 +383,7 @@
+ 	if (own) {
+ 		io->u.iter.head = NULL;
+ 		if (obj->properties != &sentinel)
+-			io->u.iter.head = itwalk(J, io->u.iter.head, obj->properties, NULL);
++			io->u.iter.head = itown(J, io->u.iter.head, obj, NULL);
+ 	} else {
+ 		io->u.iter.head = itflatten(J, obj);
+ 	}
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsrepr.c b/mujs/jsrepr.c
+--- a/mujs/jsrepr.c	2026-11-03 12:07:56.315164526 +0100
++++ b/mujs/jsrepr.c	2026-11-03 12:07:56.318969015 +0100
 @@ -14,7 +14,7 @@
  
  static void reprstr(js_State *J, js_Buffer **sb, const char *s)
@@ -535,10 +3338,21 @@ diff -ru a/mujs/jsrepr.c b/mujs/jsrepr.c
  	int i, n;
  	Rune c;
  	js_putc(J, sb, '"');
-diff -ru a/mujs/jsrun.c b/mujs/jsrun.c
---- a/mujs/jsrun.c	2026-11-02 20:34:58.059573758 +0100
-+++ b/mujs/jsrun.c	2026-11-02 20:27:30.241164769 +0100
-@@ -37,15 +37,32 @@
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsrun.c b/mujs/jsrun.c
+--- a/mujs/jsrun.c	2026-11-03 12:07:56.315270222 +0100
++++ b/mujs/jsrun.c	2026-11-03 12:07:56.318618511 +0100
+@@ -3,7 +3,9 @@
+ 
+ #include <assert.h>
+ 
+-static void jsR_run(js_State *J, js_Function *F);
++static void jsR_runx(js_State *J, js_Function *F, js_Object *resume, int mode, int startpc);
++static void jsR_pushtrace(js_State *J, const char *name, const char *file, int line);
++#define jsR_run(J, F) jsR_runx(J, F, NULL, 0, 0)
+ 
+ /* Push values on stack */
+ 
+@@ -37,15 +39,32 @@
  
  static void js_runlimit(js_State *J)
  {
@@ -571,7 +3385,7 @@ diff -ru a/mujs/jsrun.c b/mujs/jsrun.c
  	J->memlimit = memlimit;
  }
  
-@@ -219,10 +236,10 @@
+@@ -219,10 +238,10 @@
  
  static js_Value *stackidx(js_State *J, int idx)
  {
@@ -584,7 +3398,269 @@ diff -ru a/mujs/jsrun.c b/mujs/jsrun.c
  	return STACK + idx;
  }
  
-@@ -1468,6 +1485,11 @@
+@@ -277,18 +296,24 @@
+ 	return v->t.type == JS_TOBJECT && v->u.object->type == JS_CERROR;
+ }
+ 
++/* Browser 9300: symbols are strings "@@..." (js/es.js) */
++static const char *js_strtypeof(const char *p)
++{
++	return p[0] == '@' && p[1] == '@' ? "symbol" : "string";
++}
++
+ const char *js_typeof(js_State *J, int idx)
+ {
+ 	js_Value *v = stackidx(J, idx);
+ 	switch (v->t.type) {
+ 	default:
+-	case JS_TSHRSTR: return "string";
++	case JS_TSHRSTR: return js_strtypeof(v->u.shrstr);
+ 	case JS_TUNDEFINED: return "undefined";
+ 	case JS_TNULL: return "object";
+ 	case JS_TBOOLEAN: return "boolean";
+ 	case JS_TNUMBER: return "number";
+-	case JS_TLITSTR: return "string";
+-	case JS_TMEMSTR: return "string";
++	case JS_TLITSTR: return js_strtypeof(v->u.litstr);
++	case JS_TMEMSTR: return js_strtypeof(v->u.memstr->p);
+ 	case JS_TOBJECT:
+ 		if (v->u.object->type == JS_CFUNCTION || v->u.object->type == JS_CCFUNCTION)
+ 			return "function";
+@@ -645,6 +670,33 @@
+ 	return 0;
+ }
+ 
++/* Browser 9300: 'in': whether the property is there, without reading it (no getter runs) */
++static int jsR_inproperty(js_State *J, js_Object *obj, const char *name)
++{
++	int k;
++	if (obj->type == JS_CARRAY) {
++		if (!strcmp(name, "length"))
++			return 1;
++		if (obj->u.a.simple && js_isarrayindex(J, name, &k))
++			return k >= 0 && k < obj->u.a.flat_length;
++	} else if (obj->type == JS_CSTRING) {
++		if (!strcmp(name, "length"))
++			return 1;
++		if (js_isarrayindex(J, name, &k) && k >= 0 && k < obj->u.s.length)
++			return 1;
++	} else if (obj->type == JS_CREGEXP) {
++		if (!strcmp(name, "source") || !strcmp(name, "global") || !strcmp(name, "ignoreCase") ||
++				!strcmp(name, "multiline") || !strcmp(name, "lastIndex"))
++			return 1;
++	} else if (obj->type == JS_CUSERDATA) {
++		if (obj->u.user.has && obj->u.user.has(J, obj->u.user.data, name)) {
++			js_pop(J, 1);
++			return 1;
++		}
++	}
++	return jsV_getproperty(J, obj, name) != NULL;
++}
++
+ static void jsR_getproperty(js_State *J, js_Object *obj, const char *name)
+ {
+ 	if (!jsR_hasproperty(J, obj, name))
+@@ -1238,6 +1290,188 @@
+ 	jsR_restorescope(J);
+ }
+ 
++/* Browser 9300: generators and async functions. A call makes the generator object (its
++ * frame's state in hidden properties, so the GC sees it); %co (js/mujs/jses.c) resumes it. */
++static js_Object *jsR_envobj(js_State *J, js_Function *F, js_Environment *E)
++{
++	js_Object *o = jsV_newobject(J, JS_CFUNCTION, J->Function_prototype);
++	o->u.f.function = F;
++	o->u.f.scope = E;
++	return o;
++}
++
++static void jsR_hidnum(js_State *J, js_Object *g, const char *name, double n)
++{
++	js_pushobject(J, g);
++	js_pushnumber(J, n);
++	js_defproperty(J, -2, name, JS_DONTENUM);
++	js_pop(J, 1);
++}
++
++static void jsR_callgenerator(js_State *J, int n, js_Function *F, js_Environment *scope)
++{
++	js_Value v;
++	js_Object *g, *proto;
++	int i;
++
++	scope = jsR_newenvironment(J, jsV_newobject(J, JS_COBJECT, NULL), scope);
++
++	jsR_savescope(J, scope);
++
++	if (F->arguments) {
++		js_newarguments(J);
++		js_pushnumber(J, n);
++		js_defproperty(J, -2, "length", JS_DONTENUM);
++		for (i = 0; i < n; ++i) {
++			js_copy(J, i + 1);
++			js_setindex(J, -2, i);
++		}
++		js_initvar(J, "arguments", -1);
++		js_pop(J, 1);
++	}
++
++	for (i = 0; i < n && i < F->numparams; ++i)
++		js_initvar(J, F->vartab[i], i + 1);
++	js_pop(J, n);
++
++	for (; i < F->varlen; ++i) {
++		js_pushundefined(J);
++		js_initvar(J, F->vartab[i], -1);
++		js_pop(J, 1);
++	}
++
++	js_getglobal(J, "%genproto");
++	proto = js_isobject(J, -1) ? js_toobject(J, -1) : J->Object_prototype;
++	g = jsV_newobject(J, JS_COBJECT, proto);
++	js_pop(J, 1);
++	js_pushobject(J, g);
++	js_pushobject(J, jsR_envobj(J, F, scope));
++	js_defproperty(J, -2, "%f", JS_DONTENUM);
++	js_pushobject(J, jsR_envobj(J, F, scope));
++	js_defproperty(J, -2, "%e", JS_DONTENUM);
++	js_copy(J, 0);
++	js_defproperty(J, -2, "%t", JS_DONTENUM);
++	js_pop(J, 1);
++	jsR_hidnum(J, g, "%pc", 0);
++	jsR_hidnum(J, g, "%st", 0);
++	js_pushobject(J, g);
++	if (F->generator & 2) { /* an async function: the promise %async(g) gives; an async generator: %asyncgen(g) */
++		js_getglobal(J, F->generator == 3 ? "%asyncgen" : "%async");
++		js_pushundefined(J);
++		js_copy(J, -3);
++		js_call(J, 1);
++	}
++
++	v = *stackidx(J, -1);
++	TOP = --BOT; /* clear stack */
++	js_pushvalue(J, v);
++
++	jsR_restorescope(J);
++}
++
++/* Resumes g (a value on the stack: what yield gives; mode 1: thrown at the yield) and leaves
++ * what it yielded or returned there; 1 when it yielded */
++int jsR_resumegen(js_State *J, js_Object *g, int mode)
++{
++	js_Object *fo, *saved, *savegen = J->curgen;
++	js_Function *F;
++	js_Environment *E;
++	js_Value v;
++	int savebot = BOT, start, pcoff, n, i, yielded;
++
++	v = *stackidx(J, -1);
++	js_pop(J, 1);
++	js_pushobject(J, g);
++	js_getproperty(J, -1, "%f"); fo = js_toobject(J, -1); js_pop(J, 1);
++	js_getproperty(J, -1, "%st"); start = js_tointeger(J, -1) == 0; js_pop(J, 1);
++	js_getproperty(J, -1, "%pc"); pcoff = js_tointeger(J, -1); js_pop(J, 1);
++	js_getproperty(J, -1, "%e"); E = js_toobject(J, -1)->u.f.scope; js_pop(J, 1);
++	js_getproperty(J, -1, "%s"); saved = js_isobject(J, -1) ? js_toobject(J, -1) : NULL; js_pop(J, 1);
++	js_pop(J, 1);
++	F = fo->u.f.function;
++
++	if (js_try(J)) { /* thrown out of it: it is done */
++		J->curgen = savegen;
++		J->genyield = 0;
++		BOT = savebot;
++		jsR_hidnum(J, g, "%st", 3);
++		js_throw(J);
++	}
++
++	js_pushobject(J, fo);
++	js_pushobject(J, g);
++	js_getproperty(J, -1, "%t");
++	js_rot2(J);
++	js_pop(J, 1);
++	BOT = TOP - 1;
++	if (!start) {
++		n = 0;
++		if (saved) {
++			js_pushobject(J, saved);
++			n = js_getlength(J, -1);
++			js_pop(J, 1);
++		}
++		for (i = 0; i < n; ++i) {
++			js_pushobject(J, saved);
++			js_getindex(J, -1, i);
++			js_rot2(J);
++			js_pop(J, 1);
++		}
++		js_pushvalue(J, v);
++	}
++	jsR_hidnum(J, g, "%st", 2);
++	jsR_pushtrace(J, F->name, F->filename, F->line);
++	jsR_savescope(J, E);
++	J->curgen = g;
++	J->genyield = 0;
++	jsR_runx(J, F, start ? NULL : g, mode, start ? 0 : pcoff);
++	yielded = J->genyield;
++	J->genyield = 0;
++	J->curgen = savegen;
++	v = *stackidx(J, -1);
++	TOP = --BOT; /* clear stack */
++	js_pushvalue(J, v);
++	jsR_restorescope(J);
++	--J->tracetop;
++	BOT = savebot;
++	js_endtry(J);
++	jsR_hidnum(J, g, "%st", yielded ? 1 : 3);
++	return yielded;
++}
++
++/* at a yield: the frame's state into the generator */
++static void jsR_yield(js_State *J, js_Function *F, int pcoff, int basetry)
++{
++	js_Object *g = J->curgen;
++	int n = TOP - BOT - 2, i, k;
++	if (!g)
++		js_error(J, "yield outside a generator");
++	js_pushobject(J, g);
++	js_newarray(J);
++	for (i = 0; i < n; ++i) {
++		js_copy(J, i + 1);
++		js_setindex(J, -2, i);
++	}
++	js_defproperty(J, -2, "%s", JS_DONTENUM);
++	js_pushnumber(J, pcoff);
++	js_defproperty(J, -2, "%pc", JS_DONTENUM);
++	js_pushobject(J, jsR_envobj(J, F, J->E));
++	js_defproperty(J, -2, "%e", JS_DONTENUM);
++	js_newarray(J);
++	for (k = 0, i = basetry; i < J->trytop; ++i) {
++		js_pushnumber(J, J->trybuf[i].pc - F->code);
++		js_setindex(J, -2, k++);
++		js_pushnumber(J, J->trybuf[i].top - BOT);
++		js_setindex(J, -2, k++);
++		js_pushobject(J, jsR_envobj(J, F, J->trybuf[i].E));
++		js_setindex(J, -2, k++);
++	}
++	js_defproperty(J, -2, "%y", JS_DONTENUM);
++	js_pop(J, 1);
++	J->trytop = basetry;
++	J->genyield = 1;
++}
++
+ static void jsR_callscript(js_State *J, int n, js_Function *F, js_Environment *scope)
+ {
+ 	js_Value v;
+@@ -1317,7 +1551,9 @@
+ 
+ 	if (obj->type == JS_CFUNCTION) {
+ 		jsR_pushtrace(J, obj->u.f.function->name, obj->u.f.function->filename, obj->u.f.function->line);
+-		if (obj->u.f.function->lightweight)
++		if (obj->u.f.function->generator)
++			jsR_callgenerator(J, n, obj->u.f.function, obj->u.f.scope);
++		else if (obj->u.f.function->lightweight)
+ 			jsR_calllwfunction(J, n, obj->u.f.function, obj->u.f.scope);
+ 		else
+ 			jsR_callfunction(J, n, obj->u.f.function, obj->u.f.scope);
+@@ -1468,6 +1704,11 @@
  
  void js_throw(js_State *J)
  {
@@ -596,9 +3672,201 @@ diff -ru a/mujs/jsrun.c b/mujs/jsrun.c
  	if (J->trytop > 0) {
  		js_Value v = *stackidx(J, -1);
  		--J->trytop;
-diff -ru a/mujs/jsstate.c b/mujs/jsstate.c
---- a/mujs/jsstate.c	2026-11-02 20:34:58.059791645 +0100
-+++ b/mujs/jsstate.c	2026-11-02 19:51:29.827019496 +0100
+@@ -1566,6 +1807,13 @@
+ 	js_stacktrace(J);
+ }
+ 
++/* Browser 9300: reading or setting a property of undefined or null: the error names it */
++static void jsR_nullprop(js_State *J, int idx, const char *name, int set)
++{
++	js_typeerror(J, "Cannot %s properties of %s (%s '%.60s')", set ? "set" : "read",
++		js_isnull(J, idx) ? "null" : "undefined", set ? "setting" : "reading", name);
++}
++
+ static int jsR_isindex(js_State *J, int idx, int *k)
+ {
+ 	js_Value *v = stackidx(J, idx);
+@@ -1578,13 +1826,14 @@
+ 	return 0;
+ }
+ 
+-static void jsR_run(js_State *J, js_Function *F)
++static void jsR_runx(js_State *J, js_Function *F, js_Object *resume, int mode, int startpc)
+ {
+ 	js_Function **FT = F->funtab;
+ 	const char **VT = F->vartab ? F->vartab - 1 : NULL;
+ 	int lightweight = F->lightweight;
+ 	js_Instruction *pcstart = F->code;
+-	js_Instruction *pc = F->code;
++	js_Instruction *pc = F->code + startpc;
++	int basetry = J->trytop;
+ 	enum js_OpCode opcode;
+ 	int offset;
+ 	int savestrict;
+@@ -1600,10 +1849,37 @@
+ 	savestrict = J->strict;
+ 	J->strict = F->strict;
+ 
++#define READJUMP() (pc += 2, (int)pc[-2] | ((int)pc[-1] << 16))
++
+ #define READSTRING() \
+ 	memcpy(&str, pc, sizeof(str)); \
+ 	pc += sizeof(str) / sizeof(*pc)
+ 
++	/* Browser 9300: resuming a generator: its try blocks again, then on at the yield */
++	if (resume) {
++		int nt, i, rel;
++		js_Instruction *hpc;
++		js_Environment *TE;
++		js_pushobject(J, resume);
++		js_getproperty(J, -1, "%y");
++		nt = js_isobject(J, -1) ? js_getlength(J, -1) : 0;
++		for (i = 0; i + 2 < nt; i += 3) {
++			js_getindex(J, -1, i); hpc = pcstart + js_tointeger(J, -1); js_pop(J, 1);
++			js_getindex(J, -1, i + 1); rel = js_tointeger(J, -1); js_pop(J, 1);
++			js_getindex(J, -1, i + 2); TE = js_toobject(J, -1)->u.f.scope; js_pop(J, 1);
++			if (js_trypc(J, hpc)) {
++				pc = J->trybuf[J->trytop].pc;
++				goto run;
++			}
++			J->trybuf[J->trytop - 1].top = BOT + rel;
++			J->trybuf[J->trytop - 1].E = TE;
++		}
++		js_pop(J, 2);
++		if (mode == 1)
++			js_throw(J);
++	}
++run:
++
+ 	while (1) {
+ 		if (J->runlimit > 0) {
+ 			if (J->runlimit == 1)
+@@ -1725,8 +2001,8 @@
+ 			str = js_tostring(J, -2);
+ 			if (!js_isobject(J, -1))
+ 				js_typeerror(J, "operand to 'in' is not an object");
+-			b = js_hasproperty(J, -1, str);
+-			js_pop(J, 2 + b);
++			b = jsR_inproperty(J, js_toobject(J, -1), str);
++			js_pop(J, 2);
+ 			js_pushboolean(J, b);
+ 			break;
+ 
+@@ -1759,6 +2035,8 @@
+ 			break;
+ 
+ 		case OP_GETPROP:
++			if (js_isundefined(J, -2) || js_isnull(J, -2))
++				jsR_nullprop(J, -2, js_tostring(J, -1), 0);
+ 			if (jsR_isindex(J, -1, &ix)) {
+ 				obj = js_toobject(J, -2);
+ 				jsR_getindex(J, obj, ix);
+@@ -1772,12 +2050,16 @@
+ 
+ 		case OP_GETPROP_S:
+ 			READSTRING();
++			if (js_isundefined(J, -1) || js_isnull(J, -1))
++				jsR_nullprop(J, -1, str, 0);
+ 			obj = js_toobject(J, -1);
+ 			jsR_getproperty(J, obj, str);
+ 			js_rot2pop1(J);
+ 			break;
+ 
+ 		case OP_SETPROP:
++			if (js_isundefined(J, -3) || js_isnull(J, -3))
++				jsR_nullprop(J, -3, js_tostring(J, -2), 1);
+ 			if (jsR_isindex(J, -2, &ix)) {
+ 				obj = js_toobject(J, -3);
+ 				transient = !js_isobject(J, -3);
+@@ -1793,6 +2075,8 @@
+ 
+ 		case OP_SETPROP_S:
+ 			READSTRING();
++			if (js_isundefined(J, -2) || js_isnull(J, -2))
++				jsR_nullprop(J, -2, str, 1);
+ 			obj = js_toobject(J, -2);
+ 			transient = !js_isobject(J, -2);
+ 			jsR_setproperty(J, obj, str, transient);
+@@ -1847,6 +2131,14 @@
+ 			break;
+ 
+ 		case OP_CALL:
++#ifdef BW_CALLNAMES
++			if (!js_iscallable(J, -(int)*pc - 2)) {
++				int k;
++				for (k = 0; k < F->ncall; ++k)
++					if (F->callpc[k] == pc + 1 - pcstart)
++						js_typeerror(J, "%s is not a function (%s)", F->callname[k], js_typeof(J, -(int)*pc - 2));
++			}
++#endif
+ 			js_call(J, *pc++);
+ 			break;
+ 
+@@ -1954,7 +2246,7 @@
+ 			ix = js_toint32(J, -2);
+ 			uy = js_touint32(J, -1);
+ 			js_pop(J, 2);
+-			js_pushnumber(J, ix << (uy & 0x1F));
++			js_pushnumber(J, (int)((unsigned int)ix << (uy & 0x1F)));
+ 			break;
+ 
+ 		case OP_SHR:
+@@ -1992,7 +2284,7 @@
+ 		case OP_STRICTNE: b = js_strictequal(J); js_pop(J, 2); js_pushboolean(J, !b); break;
+ 
+ 		case OP_JCASE:
+-			offset = *pc++;
++			offset = READJUMP();
+ 			b = js_strictequal(J);
+ 			if (b) {
+ 				js_pop(J, 2);
+@@ -2031,7 +2323,7 @@
+ 			js_throw(J);
+ 
+ 		case OP_TRY:
+-			offset = *pc++;
++			offset = READJUMP();
+ 			if (js_trypc(J, pc)) {
+ 				pc = J->trybuf[J->trytop].pc;
+ 			} else {
+@@ -2076,11 +2368,11 @@
+ 			break;
+ 
+ 		case OP_JUMP:
+-			pc = pcstart + *pc;
++			pc = pcstart + ((int)pc[0] | ((int)pc[1] << 16));
+ 			break;
+ 
+ 		case OP_JTRUE:
+-			offset = *pc++;
++			offset = READJUMP();
+ 			b = js_toboolean(J, -1);
+ 			js_pop(J, 1);
+ 			if (b)
+@@ -2088,7 +2380,7 @@
+ 			break;
+ 
+ 		case OP_JFALSE:
+-			offset = *pc++;
++			offset = READJUMP();
+ 			b = js_toboolean(J, -1);
+ 			js_pop(J, 1);
+ 			if (!b)
+@@ -2098,6 +2390,11 @@
+ 		case OP_RETURN:
+ 			J->strict = savestrict;
+ 			return;
++
++		case OP_YIELD:
++			jsR_yield(J, F, (int)(pc - pcstart), basetry);
++			J->strict = savestrict;
++			return;
+ 		}
+ 	}
+ }
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsstate.c b/mujs/jsstate.c
+--- a/mujs/jsstate.c	2026-11-03 12:07:56.315348961 +0100
++++ b/mujs/jsstate.c	2026-11-03 12:07:56.318568801 +0100
 @@ -313,6 +313,13 @@
  		return NULL;
  	}
@@ -613,9 +3881,17 @@ diff -ru a/mujs/jsstate.c b/mujs/jsstate.c
  	J->gcmark = 1;
  	J->nextref = 0;
  	J->gcthresh = 0; /* reaches stability within ~ 2-5 GC cycles */
-diff -ru a/mujs/jsvalue.c b/mujs/jsvalue.c
---- a/mujs/jsvalue.c	2026-11-02 20:34:58.059960904 +0100
-+++ b/mujs/jsvalue.c	2026-11-02 20:08:41.233424520 +0100
+@@ -328,6 +335,7 @@
+ 	J->GE = J->E;
+ 
+ 	jsB_init(J);
++	jsB_inites(J);
+ 
+ 	js_endtry(J);
+ 	return J;
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/jsvalue.c b/mujs/jsvalue.c
+--- a/mujs/jsvalue.c	2026-11-03 12:07:56.315501464 +0100
++++ b/mujs/jsvalue.c	2026-11-03 12:07:56.319000873 +0100
 @@ -285,7 +285,11 @@
  			return js_itoa(buf, i);
  	}
@@ -629,9 +3905,9 @@ diff -ru a/mujs/jsvalue.c b/mujs/jsvalue.c
  	point = ndigits + exp;
  
  	if (signbit(f))
-diff -ru a/mujs/mujs.h b/mujs/mujs.h
---- a/mujs/mujs.h	2026-11-02 20:34:58.060421505 +0100
-+++ b/mujs/mujs.h	2026-11-02 20:01:54.517275174 +0100
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/mujs.h b/mujs/mujs.h
+--- a/mujs/mujs.h	2026-11-03 12:07:56.315652225 +0100
++++ b/mujs/mujs.h	2026-11-03 12:07:56.319068673 +0100
 @@ -57,6 +57,7 @@
  void js_freestate(js_State *J);
  void js_gc(js_State *J, int report);
@@ -640,3 +3916,164 @@ diff -ru a/mujs/mujs.h b/mujs/mujs.h
  
  int js_dostring(js_State *J, const char *source);
  int js_dofile(js_State *J, const char *filename);
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/one.c b/mujs/one.c
+--- a/mujs/one.c	2026-11-03 12:07:56.315727814 +0100
++++ b/mujs/one.c	2026-11-03 12:07:56.318523597 +0100
+@@ -5,6 +5,7 @@
+ #include "jsdate.c"
+ #include "jsdtoa.c"
+ #include "jserror.c"
++#include "jses.c"
+ #include "jsfunction.c"
+ #include "jsgc.c"
+ #include "jsintern.c"
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/opnames.h b/mujs/opnames.h
+--- a/mujs/opnames.h	2026-11-03 12:07:56.315785487 +0100
++++ b/mujs/opnames.h	2026-11-03 12:07:56.319100021 +0100
+@@ -83,3 +83,4 @@
+ "jtrue",
+ "jfalse",
+ "return",
++"yield",
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/regexp.c b/mujs/regexp.c
+--- a/mujs/regexp.c	2026-11-03 12:07:56.315918308 +0100
++++ b/mujs/regexp.c	2026-11-03 12:07:56.319019282 +0100
+@@ -57,6 +57,7 @@
+ 	const char *source;
+ 	int ncclass;
+ 	int nsub;
++	int nloop;
+ 	Renode *sub[REG_MAXSUB];
+ 
+ 	int lookahead;
+@@ -420,8 +421,18 @@
+ 		return g->yychar;
+ 	}
+ 
+-	if (g->yychar == '{')
+-		return lexcount(g);
++	if (g->yychar == '{') {
++		/* Browser 9300: a '{' that does not start {n}, {n,} or {n,m} is the character
++		 * itself (Annex B, as browsers read /(\[|{)|(}|])/ in jQuery 1.x) */
++		const char *p = g->source;
++		if (*p >= '0' && *p <= '9') {
++			while (*p >= '0' && *p <= '9') p++;
++			if (*p == ',') { p++; while (*p >= '0' && *p <= '9') p++; }
++			if (*p == '}')
++				return lexcount(g);
++		}
++		return L_CHAR;
++	}
+ 	if (g->yychar == '[')
+ 		return lexclass(g);
+ 	if (g->yychar == '(') {
+@@ -494,8 +505,12 @@
+ static Renode *newrep(struct cstate *g, Renode *atom, int ng, int min, int max)
+ {
+ 	Renode *rep = newnode(g, P_REP);
+-	if (max == REPINF && empty(atom))
+-		die(g, "infinite loop matching the empty string");
++	rep->c = 0;
++	if (max == REPINF && empty(atom)) { /* an iteration that matches nothing ends the loop */
++		if (g->nloop >= REG_MAXLOOP)
++			die(g, "too many loops matching the empty string");
++		rep->c = ++g->nloop;
++	}
+ 	rep->ng = ng;
+ 	rep->m = min;
+ 	rep->n = max;
+@@ -647,7 +662,8 @@
+ 	I_END, I_JUMP, I_SPLIT, I_PLA, I_NLA,
+ 	I_ANYNL, I_ANY, I_CHAR, I_CCLASS, I_NCCLASS, I_REF,
+ 	I_BOL, I_EOL, I_WORD, I_NWORD,
+-	I_LPAR, I_RPAR
++	I_LPAR, I_RPAR,
++	I_LMARK, I_LCHK
+ };
+ 
+ struct Reinst {
+@@ -673,7 +689,7 @@
+ 		max = node->n;
+ 		if (min == max) n = count(g, node->x, depth) * min;
+ 		else if (max < REPINF) n = count(g, node->x, depth) * max + (max - min);
+-		else n = count(g, node->x, depth) * (min + 1) + 2;
++		else n = count(g, node->x, depth) * (min + 1) + 2 + (node->c ? 2 : 0);
+ 		if (n > REG_MAXPROG) die(g, "program too large");
+ 		return n;
+ 	case P_PAR: return count(g, node->x, depth) + 2;
+@@ -722,6 +738,8 @@
+ 		inst = NULL; /* silence compiler warning. assert(node->m > 0). */
+ 		for (i = 0; i < node->m; ++i) {
+ 			inst = prog->end;
++			if (i == node->m - 1 && node->c && node->n == REPINF)
++				emit(prog, I_LMARK)->n = node->c - 1;
+ 			compile(prog, node->x);
+ 		}
+ 		if (node->m == node->n)
+@@ -740,7 +758,11 @@
+ 			}
+ 		} else if (node->m == 0) {
+ 			split = emit(prog, I_SPLIT);
++			if (node->c)
++				emit(prog, I_LMARK)->n = node->c - 1;
+ 			compile(prog, node->x);
++			if (node->c)
++				emit(prog, I_LCHK)->n = node->c - 1;
+ 			jump = emit(prog, I_JUMP);
+ 			if (node->ng) {
+ 				split->y = split + 1;
+@@ -751,6 +773,8 @@
+ 			}
+ 			jump->x = split;
+ 		} else {
++			if (node->c)
++				emit(prog, I_LCHK)->n = node->c - 1;
+ 			split = emit(prog, I_SPLIT);
+ 			if (node->ng) {
+ 				split->y = inst;
+@@ -934,6 +958,7 @@
+ 
+ 	g.source = pattern;
+ 	g.ncclass = 0;
++	g.nloop = 0;
+ 	g.nsub = 1;
+ 	for (i = 0; i < REG_MAXSUB; ++i)
+ 		g.sub[i] = 0;
+@@ -1227,6 +1252,15 @@
+ 			out->sub[pc->n].ep = sp;
+ 			pc = pc + 1;
+ 			break;
++		case I_LMARK:
++			out->mark[pc->n] = sp;
++			pc = pc + 1;
++			break;
++		case I_LCHK:
++			if (out->mark[pc->n] == sp)
++				return 1;
++			pc = pc + 1;
++			break;
+ 		default:
+ 			return 1;
+ 		}
+diff -ruN -x '*.o' -x jses.h -x Makefile -x docs -x '*.txt' -x genucd.py -x AUTHORS -x build -x '.git*' -x main.c -x pp.c -x 'mujs.pc*' -x tools -x one.c.orig a/mujs/regexp.h b/mujs/regexp.h
+--- a/mujs/regexp.h	2026-11-03 12:07:56.315977816 +0100
++++ b/mujs/regexp.h	2026-11-03 12:07:56.319111290 +0100
+@@ -36,12 +36,18 @@
+ #define REG_MAXSUB 16
+ #endif
+ 
++/* Browser 9300: loops whose body can match nothing (as (a*)*): where each iteration began */
++#ifndef REG_MAXLOOP
++#define REG_MAXLOOP 4
++#endif
++
+ struct Resub {
+ 	int nsub;
+ 	struct {
+ 		const char *sp;
+ 		const char *ep;
+ 	} sub[REG_MAXSUB];
++	const char *mark[REG_MAXLOOP];
+ };
+ 
+ #endif

@@ -8,7 +8,7 @@ from armemu import Emu
 args = sys.argv[1:]
 cmp = None
 if '--compare' in args: k = args.index('--compare'); cmp = args[k + 1]; del args[k:k + 2]
-page, url, scripts = args[0], args[1], [a.split('=', 1) for a in args[2:]]
+page, url, scripts = args[0], args[1], [a.rsplit('=', 1) for a in args[2:]]
 here = os.path.dirname(os.path.abspath(__file__))
 src = open(page, "rb").read()
 os.chdir(here)

@@ -776,6 +776,23 @@ typedef struct { SComplex x[SEL_LIST]; int nx; } SList;
 
 static int ident_char(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c >= 0x80 || c == '\\'; }
 
+/* the pseudo-classes read (with their argument when they need one) */
+static int pseudo_known(const SPart* P)
+{
+    static const char* const plain[] = {
+        "first-child", "last-child", "only-child", "first-of-type", "last-of-type", "only-of-type", "empty",
+        "checked", "disabled", "enabled", "root", "link", "any-link", "scope", "defined", "required", "optional",
+        "read-only", "read-write", "placeholder-shown", "indeterminate", "default", "valid", "invalid",
+        "hover", "focus", "active", "visited", "focus-within", "focus-visible", "target", "fullscreen", "modal",
+        "autofill", "playing", "paused", "user-invalid", "user-valid", "in-range", "out-of-range" };
+    static const char* const args[] = { "not", "is", "where", "has", "matches", "nth-child", "nth-last-child",
+        "nth-of-type", "nth-last-of-type", "lang", "dir" };
+    unsigned int k;
+    for (k = 0; k < sizeof plain / sizeof plain[0]; k++) if (!P->v && eq_ci_n(P->s, P->n, plain[k])) return 1;
+    for (k = 0; k < sizeof args / sizeof args[0]; k++) if (P->v && eq_ci_n(P->s, P->n, args[k])) return 1;
+    return 0;
+}
+
 static int sel_parse(const char* s, SList* L)
 {
     unsigned int i = 0, n = (unsigned int)strlen(s);
@@ -863,10 +880,7 @@ static int sel_parse(const char* s, SList* L)
                         P->vn = (unsigned int)(s + i - P->v);
                         i++;
                     }
-                    if (!(eq_ci_n(P->s, P->n, "first-child") || eq_ci_n(P->s, P->n, "last-child") || eq_ci_n(P->s, P->n, "only-child") ||
-                          eq_ci_n(P->s, P->n, "empty") || eq_ci_n(P->s, P->n, "checked") || eq_ci_n(P->s, P->n, "disabled") ||
-                          eq_ci_n(P->s, P->n, "enabled") || eq_ci_n(P->s, P->n, "root") || eq_ci_n(P->s, P->n, "link") ||
-                          (eq_ci_n(P->s, P->n, "not") && P->v)))
+                    if (!pseudo_known(P))
                         return -1;
                     continue;
                 }
@@ -894,6 +908,82 @@ static BwNode* prev_el(BwNode* n) { for (n = n->prev; n; n = n->prev) if (n->typ
 static BwNode* next_el(BwNode* n) { for (n = n->next; n; n = n->next) if (n->type == BWN_ELEMENT) return n; return 0; }
 
 static int match_compound(BwNode* n, const SCompound* C);
+static int match_list(BwNode* n, const SList* L);
+
+/* "an+b" (odd, even, 3, -n+2, 2n...) */
+static int nth_parse(const char* v, unsigned int vn, int* a, int* b)
+{
+    unsigned int i = 0;
+    int sign = 1, num = 0, any = 0;
+    char buf[32];
+    unsigned int k = 0;
+    for (; i < vn && k < sizeof buf - 1; i++) if (!is_ws((unsigned char)v[i])) buf[k++] = (char)lc((unsigned char)v[i]);
+    buf[k] = 0;
+    if (!strcmp(buf, "odd")) { *a = 2; *b = 1; return 0; }
+    if (!strcmp(buf, "even")) { *a = 2; *b = 0; return 0; }
+    i = 0;
+    if (buf[i] == '+' || buf[i] == '-') { sign = buf[i] == '-' ? -1 : 1; i++; }
+    while (buf[i] >= '0' && buf[i] <= '9') { num = num * 10 + (buf[i++] - '0'); any = 1; }
+    if (buf[i] == 'n') {
+        *a = sign * (any ? num : 1);
+        i++;
+        *b = 0;
+        if (buf[i] == '+' || buf[i] == '-') {
+            int s2 = buf[i] == '-' ? -1 : 1, m = 0;
+            i++;
+            if (!(buf[i] >= '0' && buf[i] <= '9')) return -1;
+            while (buf[i] >= '0' && buf[i] <= '9') m = m * 10 + (buf[i++] - '0');
+            *b = s2 * m;
+        }
+    } else {
+        if (!any) return -1;
+        *a = 0;
+        *b = sign * num;
+    }
+    return buf[i] ? -1 : 0;
+}
+
+static int nth_ok(int i, int a, int b)
+{
+    if (a == 0) return i == b;
+    return (i - b) / a >= 0 && (i - b) % a == 0;
+}
+
+/* the element's 1-based position among its element siblings (of its type), from the end */
+static int sib_index(BwNode* n, int oftype, int fromEnd)
+{
+    BwNode* k;
+    int i = 1;
+    for (k = fromEnd ? n->next : n->prev; k; k = fromEnd ? k->next : k->prev)
+        if (k->type == BWN_ELEMENT && (!oftype || eq(k->name, n->name))) i++;
+    return i;
+}
+
+/* :is() / :where() / :not() / :has() arguments, parsed as a selector list */
+static int match_arg(BwNode* n, const SPart* P, int has)
+{
+    char buf[256];
+    SList* L;
+    int r = 0, child = 0;
+    unsigned int off = 0;
+    BwNode* d;
+    if (P->vn >= sizeof buf) return 0;
+    while (off < P->vn && is_ws((unsigned char)P->v[off])) off++;
+    if (has && off < P->vn && P->v[off] == '>') { child = 1; off++; }
+    memcpy(buf, P->v + off, P->vn - off);
+    buf[P->vn - off] = 0;
+    L = (SList*)malloc(sizeof(SList));
+    if (!L) return 0;
+    if (sel_parse(buf, L) == 0) {
+        if (!has) r = match_list(n, L);
+        else if (child) { for (d = n->first; d && !r; d = d->next) if (d->type == BWN_ELEMENT && match_list(d, L)) r = 1; }
+        else { for (d = n->first; d && !r; d = bwd_next(n, d, 1)) if (d->type == BWN_ELEMENT && match_list(d, L)) r = 1; }
+    } else if (!has && eq_ci_n(P->s, P->n, "not")) {
+        r = 0;
+    }
+    free(L);
+    return r;
+}
 
 static int match_part(BwNode* n, const SPart* P)
 {
@@ -947,24 +1037,36 @@ static int match_part(BwNode* n, const SPart* P)
         if (eq_ci_n(P->s, P->n, "disabled")) return bwd_attr(n, "disabled") != 0;
         if (eq_ci_n(P->s, P->n, "enabled")) return bwd_attr(n, "disabled") == 0;
         if (eq_ci_n(P->s, P->n, "root")) return n->parent && n->parent->type == BWN_DOCUMENT;
-        if (eq_ci_n(P->s, P->n, "link")) return eq(n->name, "a") && bwd_attr(n, "href") != 0;
-        if (eq_ci_n(P->s, P->n, "not")) {
-            char buf[128];
-            SList* L;
-            int r = 0, k;
-            if (P->vn >= sizeof buf) return 0;
-            memcpy(buf, P->v, P->vn);
-            buf[P->vn] = 0;
-            L = (SList*)malloc(sizeof(SList));
-            if (!L) return 0;
-            if (sel_parse(buf, L) == 0) {
-                for (k = 0; k < L->nx; k++) if (L->x[k].nc == 1 && match_compound(n, &L->x[k].c[0])) { r = 1; break; }
-                r = !r;
-            }
-            free(L);
-            return r;
+        if (eq_ci_n(P->s, P->n, "link") || eq_ci_n(P->s, P->n, "any-link")) return (eq(n->name, "a") || eq(n->name, "area")) && bwd_attr(n, "href") != 0;
+        if (eq_ci_n(P->s, P->n, "first-of-type")) return sib_index(n, 1, 0) == 1;
+        if (eq_ci_n(P->s, P->n, "last-of-type")) return sib_index(n, 1, 1) == 1;
+        if (eq_ci_n(P->s, P->n, "only-of-type")) return sib_index(n, 1, 0) == 1 && sib_index(n, 1, 1) == 1;
+        if (eq_ci_n(P->s, P->n, "scope")) return n->parent && n->parent->type == BWN_DOCUMENT;
+        if (eq_ci_n(P->s, P->n, "defined")) return 1;
+        if (eq_ci_n(P->s, P->n, "required")) return bwd_attr(n, "required") != 0;
+        if (eq_ci_n(P->s, P->n, "optional")) return bwd_attr(n, "required") == 0 && (eq(n->name, "input") || eq(n->name, "select") || eq(n->name, "textarea"));
+        if (eq_ci_n(P->s, P->n, "read-only")) return bwd_attr(n, "readonly") != 0 || !(eq(n->name, "input") || eq(n->name, "textarea"));
+        if (eq_ci_n(P->s, P->n, "read-write")) return bwd_attr(n, "readonly") == 0 && (eq(n->name, "input") || eq(n->name, "textarea"));
+        if (eq_ci_n(P->s, P->n, "placeholder-shown")) { v = bwd_attr(n, "value"); return bwd_attr(n, "placeholder") != 0 && (!v || !*v); }
+        if (eq_ci_n(P->s, P->n, "valid")) return 1;
+        if (eq_ci_n(P->s, P->n, "not")) return !match_arg(n, P, 0);
+        if (eq_ci_n(P->s, P->n, "is") || eq_ci_n(P->s, P->n, "where") || eq_ci_n(P->s, P->n, "matches")) return match_arg(n, P, 0);
+        if (eq_ci_n(P->s, P->n, "has")) return match_arg(n, P, 1);
+        if (eq_ci_n(P->s, P->n, "lang")) {
+            BwNode* k;
+            for (k = n; k && k->type == BWN_ELEMENT; k = k->parent)
+                if ((v = bwd_attr(k, "lang")) != 0) return strlen(v) >= P->vn && !strncmp(v, P->v, P->vn) && (v[P->vn] == 0 || v[P->vn] == '-');
+            return 0;
         }
-        return 0;
+        if (eq_ci_n(P->s, P->n, "dir")) return eq_ci_n(P->v, P->vn, "ltr");
+        if (P->v && (eq_ci_n(P->s, P->n, "nth-child") || eq_ci_n(P->s, P->n, "nth-last-child") ||
+                     eq_ci_n(P->s, P->n, "nth-of-type") || eq_ci_n(P->s, P->n, "nth-last-of-type"))) {
+            int a, b, oftype = P->n > 9 && (P->s[P->n - 7] == 'o' || P->s[P->n - 7] == 'O');
+            int last = P->s[4] == 'l' || P->s[4] == 'L';
+            if (nth_parse(P->v, P->vn, &a, &b)) return 0;
+            return nth_ok(sib_index(n, oftype, last), a, b);
+        }
+        return 0;  /* :hover :focus :visited ... */
     }
     return 0;
 }

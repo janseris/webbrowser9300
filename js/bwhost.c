@@ -277,7 +277,40 @@ typedef struct
     js_State* J;
     char* base;
     BwBuf missing;
+    int data;               /* fetch() / XMLHttpRequest URLs asked for */
     } Run;
+
+#define BW_MAX_DATA 12      /* fetch() / XMLHttpRequest GETs a page may have the browser fetch */
+
+/* __fetchText(url): the text the browser fetched for an absolute URL, or null (then the URL is
+ * listed for the browser to fetch before the next run) */
+static void h_fetchtext(js_State* J)
+{
+    Run* r = (Run*)js_getcontext(J);
+    const char* url = js_tostring(J, 1);
+    const char* text;
+    unsigned int len = 0;
+    if (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)) { js_pushnull(J); return; }
+    text = r->pg->fetch ? r->pg->fetch(r->pg->fetchCtx, url, &len) : 0;
+    if (text) { js_pushstring(J, text); return; }
+    if (!listed(&r->missing, url) && r->data < BW_MAX_DATA) {
+        r->data++;
+        bwb_str(&r->missing, url);
+        bwb_add(&r->missing, "\n", 1);
+        r->pg->externalMissing++;
+    }
+    js_pushnull(J);
+}
+
+/* __resolve(base, url): url made absolute */
+static void h_resolve(js_State* J)
+{
+    const char* u = js_tostring(J, 2);
+    char* a = script_url(js_tostring(J, 1), u, (unsigned int)strlen(u));
+    if (!a) { js_pushstring(J, u); return; }
+    js_pushstring(J, a);
+    free(a);
+}
 
 static int fatal(const char* m)
 {
@@ -311,6 +344,30 @@ static void note_error(Run* r, const char* where, const char* m)
     if (fatal(m)) r->pg->stopped = 1;
 }
 
+/* the promise jobs a script or callback left (js/es.js), and its unhandled rejections noted */
+static void run_jobs(Run* r)
+{
+    js_State* J = r->J;
+    int i, n;
+    js_getglobal(J, "%runJobs");
+    if (!js_iscallable(J, -1)) { js_pop(J, 1); return; }
+    js_pushundefined(J);
+    js_pushnumber(J, 20000);
+    if (js_pcall(J, 1)) note_error(r, "a promise job", js_tostring(J, -1));
+    js_pop(J, 1);
+    js_getglobal(J, "%unhandled");
+    js_pushundefined(J);
+    if (js_pcall(J, 0) || !js_isarray(J, -1)) { js_pop(J, 1); return; }
+    n = js_getlength(J, -1);
+    for (i = 0; i < n && i < 3; i++) {
+        js_getindex(J, -1, i);
+        js_getproperty(J, -1, "%v");
+        bwdj_note(&r->d, "unhandled promise rejection: ", js_trystring(J, -1, "?"));
+        js_pop(J, 2);
+    }
+    js_pop(J, 1);
+}
+
 /* runs a global function by name with a number argument; 0 or -1 if it threw */
 static int call_global(Run* r, const char* name, double a, double b, int nargs, double* result)
 {
@@ -324,6 +381,7 @@ static int call_global(Run* r, const char* name, double a, double b, int nargs, 
     if (err) note_error(r, name, js_tostring(J, -1));
     else if (result) *result = js_tonumber(J, -1);
     js_pop(J, 1);
+    if (!r->pg->stopped) run_jobs(r);
     return err ? -1 : 0;
 }
 
@@ -398,24 +456,26 @@ static void flush_written(Run* r, BwNode* s)
 static void note_thrown(Run* r, const char* where)
 {
     js_State* J = r->J;
-    char m[400];
-    const char* msg = js_tostring(J, -1);
-    unsigned int n = (unsigned int)strlen(msg);
-    if (n > 250) n = 250;
-    memcpy(m, msg, n);
-    m[n] = 0;
-    if (js_isobject(J, -1)) {
+    char m[400], tr[160];
+    const char* msg;
+    unsigned int n, t = 0;
+    tr[0] = 0;
+    if (js_isobject(J, -1)) {   /* (first: js_tostring makes the value a string) */
         js_getproperty(J, -1, "stackTrace");
         if (js_isstring(J, -1)) {
             const char* st = js_tostring(J, -1);
-            const char* e = st;
             int lines = 0;
-            while (*e && lines < 3) { if (*e == '\n') lines++; if (lines < 3) e++; }
-            if ((unsigned int)(e - st) + n < sizeof m - 2) { memcpy(m + n, st, (unsigned int)(e - st)); m[n + (e - st)] = 0; }
-            {   char* q; for (q = m; *q; q++) if (*q == '\n' || *q == '\t') *q = ' '; }
+            while (st[t] && t < sizeof tr - 1) { if (st[t] == '\n' && ++lines == 3) break; tr[t] = st[t] == '\n' || st[t] == '\t' ? ' ' : st[t]; t++; }
+            tr[t] = 0;
         }
         js_pop(J, 1);
     }
+    msg = js_tostring(J, -1);
+    n = (unsigned int)strlen(msg);
+    if (n > 250) n = 250;
+    memcpy(m, msg, n);
+    if (n + t < sizeof m - 1) { memcpy(m + n, tr, t); n += t; }
+    m[n] = 0;
     note_error(r, where, m);
 }
 
@@ -472,6 +532,7 @@ static void run_one(Run* r, BwNode* s)
         if (js_pcall(J, 0)) note_thrown(r, name);
     }
     js_pop(J, 1);
+    if (!pg->stopped) run_jobs(r);
     free(own);
     flush_written(r, s);
     r->d.current = 0;
@@ -528,6 +589,8 @@ int bw_js_page(js_State* J, BwJsPage* pg)
     js_newcfunction(J, h_eval, "eval", 1); js_setglobal(J, "eval");
     js_newcfunction(J, h_navigate, "__navigate", 1); js_setglobal(J, "__navigate");
     js_newcfunction(J, h_setcookie, "__setCookie", 1); js_setglobal(J, "__setCookie");
+    js_newcfunction(J, h_fetchtext, "__fetchText", 1); js_setglobal(J, "__fetchText");
+    js_newcfunction(J, h_resolve, "__resolve", 2); js_setglobal(J, "__resolve");
     js_pushstring(J, pg->href ? pg->href : ""); js_setglobal(J, "__href");
     js_pushstring(J, pg->ua ? pg->ua : ""); js_setglobal(J, "__ua");
     js_pushstring(J, pg->ref ? pg->ref : ""); js_setglobal(J, "__ref");
