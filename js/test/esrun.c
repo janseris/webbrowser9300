@@ -7,6 +7,12 @@
 #include <math.h>
 #include <time.h>
 #include "mujs.h"
+#ifdef BW_POOL
+#include "bwpool.h"
+static void* sa(unsigned int n) { return malloc(n); }
+static void* sr(void* p, unsigned int n) { return realloc(p, n); }
+static void* palloc(void* c, void* p, int n) { return bwpool_realloc((BwPool*)c, p, (unsigned int)n); }
+#endif
 static clock_t deadline;
 static int hook(void* c) { (void)c; return clock() < deadline ? 100000 : 0; }
 double bwp_sqrt(double x) { return sqrt(x); } double bwp_exp(double x) { return exp(x); } double bwp_log(double x) { return log(x); }
@@ -23,7 +29,12 @@ int main(int argc, char** argv)
         FILE* f = fopen(argv[i], "rb"); long n; char* b; js_State* J; const char* nm = strrchr(argv[i], '/');
         if (!f) continue;
         fseek(f, 0, SEEK_END); n = ftell(f); rewind(f); b = malloc(n + 1); fread(b, 1, n, f); b[n] = 0; fclose(f);
+#ifdef BW_POOL
+        BwPool* pool = bwpool_new(sa, sr, free);
+        J = js_newstate(palloc, pool, 0);
+#else
         J = js_newstate(0, 0, 0);
+#endif
         deadline = clock() + (strstr(argv[i], "runaway") ? 2 : 60) * CLOCKS_PER_SEC;
         js_setlimit(J, 100000, 0); js_setlimithook(J, hook, 0);
         js_newcfunction(J, print, "print", 0); js_setglobal(J, "print");
@@ -32,6 +43,9 @@ int main(int argc, char** argv)
         else
             printf("%s\t%s\n", nm ? nm + 1 : argv[i], js_trystring(J, -1, "?"));
         js_freestate(J); free(b);
+#ifdef BW_POOL
+        bwpool_free(pool);
+#endif
     }
     return 0;
 }

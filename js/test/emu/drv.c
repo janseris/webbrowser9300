@@ -4,6 +4,7 @@
  * the result. */
 #include "bwlibc.h"
 #include "mujs.h"
+#include "bwpool.h"
 void ig_memcpy(void* dst, const void* src, unsigned int n);
 void ig_memset(void* dst, int c, unsigned int n);
 
@@ -101,7 +102,12 @@ double bwp_acos(double x) { return bwp_atan2(bwp_sqrt(1 - x * x), x); }
 /* ---- the Python side's entry points */
 static int hook(void* ctx) { (void)ctx; return --H->slices > 0 ? 100000 : 0; }
 int emu_init(void) { heap_init(); return 0; }
-int mj_new(void) { js_State* J = js_newstate(0, 0, 0); js_setlimit(J, 100000, 0); js_setlimithook(J, hook, 0); return (int)J; }
+/* the engine's allocator as on the phone (js/bwpool.c) */
+static void* sys_alloc(unsigned int n) { return bwc_malloc(n); }
+static void* sys_realloc(void* p, unsigned int n) { return bwc_realloc(p, n); }
+static void sys_free(void* p) { bwc_free(p); }
+static void* pool_alloc(void* c, void* p, int n) { return bwpool_realloc((BwPool*)c, p, (unsigned int)n); }
+int mj_new(void) { js_State* J = js_newstate(pool_alloc, bwpool_new(sys_alloc, sys_realloc, sys_free), 0); js_setlimit(J, 100000, 0); js_setlimithook(J, hook, 0); return (int)J; }
 int mj_run(js_State* J, const char* src, int slices)
 {
     H->slices = slices;                     /* of 100 000 instructions */

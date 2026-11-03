@@ -14,6 +14,7 @@
 #include <e32std.h>
 #include <e32math.h>
 #include "browser.h"
+#include "../js/bwpool.h"
 
 extern "C"
     {
@@ -94,29 +95,44 @@ static TUint32 JsMs()
 
 struct TJsCtx
     {
+    BwPool* iPool;       // the engine's allocator (js/bwpool.c)
     TInt iLive;          // bytes the engine holds
     TInt iPeak;
     TInt iLimit;
     TUint32 iDeadline;   // JsMs
     };
 
-// MuJS's allocator: User::ReAlloc, with the bytes counted against the limit (NULL: MuJS throws
-// "out of memory", the script stops, the browser goes on)
+// MuJS's allocator: its own pool (js/bwpool.c: size classes; User::Alloc is first fit over the
+// whole app heap, which made the engine's many small blocks slow), the bytes counted against the
+// limit (NULL: MuJS throws "out of memory", the script stops, the browser goes on)
+static void* SysAlloc(unsigned int aSize) { return User::Alloc(aSize); }
+static void* SysReAlloc(void* aPtr, unsigned int aSize) { return User::ReAlloc(aPtr, aSize); }
+static void SysFree(void* aPtr) { User::Free(aPtr); }
+
 static void* JsAlloc(void* aCtx, void* aPtr, int aSize)
     {
     TJsCtx* c = (TJsCtx*)aCtx;
-    TInt old = aPtr ? User::AllocLen(aPtr) : 0;
+    TInt old = aPtr ? (TInt)bwpool_size(aPtr) : 0;
     if (aSize == 0)
         {
-        if (aPtr) { c->iLive -= old; User::Free(aPtr); }
+        if (aPtr) { c->iLive -= old; bwpool_realloc(c->iPool, aPtr, 0); }
         return NULL;
         }
-    if (aSize > old && c->iLive - old + aSize > c->iLimit) return NULL;
-    void* q = aPtr ? User::ReAlloc(aPtr, aSize) : User::Alloc(aSize);
+    // (what the pool has taken from the system counts: its free lists are not the browser's)
+    if (aSize > old && (TInt)bwpool_taken(c->iPool) + aSize > c->iLimit) return NULL;
+    void* q = bwpool_realloc(c->iPool, aPtr, (unsigned int)aSize);
     if (!q) return NULL;
-    c->iLive += User::AllocLen(q) - old;
+    c->iLive += (TInt)bwpool_size(q) - old;
     if (c->iLive > c->iPeak) c->iPeak = c->iLive;
     return q;
+    }
+
+// the engine and its pool freed
+static void JsDone(js_State* J, TJsCtx& aCtx)
+    {
+    js_freestate(J);
+    bwpool_free(aCtx.iPool);
+    aCtx.iPool = NULL;
     }
 
 // asked every KJsSlice instructions: more while the time lasts
@@ -128,6 +144,7 @@ static int JsLimitHook(void* aCtx)
 
 static void JsInitCtx(TJsCtx& aCtx, TInt aMs)
     {
+    aCtx.iPool = NULL;
     aCtx.iLive = 0;
     aCtx.iPeak = 0;
     TInt room = BrFreeRam() - KJsRamReserve;
@@ -138,8 +155,10 @@ static void JsInitCtx(TJsCtx& aCtx, TInt aMs)
 
 static js_State* JsNew(TJsCtx& aCtx)
     {
+    aCtx.iPool = bwpool_new(SysAlloc, SysReAlloc, SysFree);
+    if (!aCtx.iPool) return NULL;
     js_State* J = js_newstate(JsAlloc, &aCtx, 0);
-    if (!J) return NULL;
+    if (!J) { bwpool_free(aCtx.iPool); aCtx.iPool = NULL; return NULL; }
     js_setlimit(J, KJsSlice, 0);
     js_setlimithook(J, JsLimitHook, &aCtx);
     return J;
@@ -261,7 +280,7 @@ static void JsTestsOnThread(TAny* aRun)
         CopyC(r.iGot, sizeof r.iGot, buf);
         r.iOk = SameC(buf, t.iExpect) ? 1 : 0;
         r.iPeakKb = ctx.iPeak / 1024;
-        js_freestate(J);
+        JsDone(J, ctx);
         }
     // what Date says here (not checked: it depends on the clock and the settings)
     TJsCtx ctx;
@@ -275,7 +294,7 @@ static void JsTestsOnThread(TAny* aRun)
             js_pcall(J, 0);
             CopyC(run->iInfo, sizeof run->iInfo, js_tostring(J, -1));
             }
-        js_freestate(J);
+        JsDone(J, ctx);
         }
     }
 
@@ -428,7 +447,7 @@ static void PageOnThread(TAny* aJob)
     js_State* J = JsNew(job->iCtx);
     if (!J) { job->iResult = -1; return; }
     job->iResult = bw_js_page(J, &job->iPage);
-    js_freestate(J);
+    JsDone(J, job->iCtx);
     }
 
 static char* ZeroTerm(const TDesC8& aText)

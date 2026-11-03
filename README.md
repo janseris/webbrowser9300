@@ -24,7 +24,15 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
-- **0.43** (not yet run on the phone): **JavaScript of today's sites: ES2015+ syntax, Promise,
+- **0.44** (not yet run on the phone): **the JavaScript engine gets its own allocator.** On the
+  phone 0.43 passed all 21 tests but ran them 3-5 times slower than 0.42 did (b_obj 19.7 s, was
+  6.2 s; c_memory 29.8 s, was 5.9 s) while the emulated phone build ran the same instructions as
+  0.42: User::Alloc is first fit over the whole app heap's free list, and the ES runtime's
+  thousands of permanent blocks made every small allocation slower. `js/bwpool.c`: blocks up to
+  512 bytes in size classes with free lists, carved from 32 KB chunks; bigger ones from the system;
+  all of it back at once when the page's engine goes. The memory limit counts what the pool takes
+  from the system. Emulated: the same instructions, b_obj's peak 4.8 MB (5.2 MB in 0.43).
+- **0.43** (run on the phone: 21 of 21 tests right, but slower than 0.42): **JavaScript of today's sites: ES2015+ syntax, Promise,
   generators, async / await, and the newer web APIs.** Checked on the PC against Node, and in the
   ARM emulator as the phone builds it.
   - Syntax (`js/mujs/jsparse.c`, lowered to ES5 trees where it can be): `let` / `const` (as var,
