@@ -24,6 +24,13 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.50** (not yet run on the phone): **a 16 KB TCP window over Bluetooth.** The connection's
+  bearer is read as Maps 9300 does (a modem bearer on the BTCOMM port: Bluetooth dial-up); there
+  new sockets ask for 16 KB, elsewhere (USB's LAN bearer, ...) 48 KB as before. GnuBox's NetTest
+  (its test log #19) measured the same ~34 kB/s over Bluetooth with 8, 16, 32 or 64 KB windows,
+  the round trip growing from 358 ms (8 KB) to 624 ms (64 KB): a big window only queued data in
+  front of the link, and the page's other requests waited behind it. The log says which: 
+  "connection: Bluetooth 1, TCP window 16384 B".
 - **0.49** (not yet run on the phone): **WAP pages (WML).** A WML deck (`text/vnd.wap.wml`, now
   in the Accept header) is turned into an HTML page (`core/bwwml.c`) the parser and layout show:
   its cards one after another, each with its id as an anchor (a link to `#card` scrolls there);

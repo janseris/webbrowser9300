@@ -167,6 +167,7 @@ void CHttpClient::StartConnectionL()
                 iConn.Attach(info, RConnection::EAttachTypeNormal) == KErrNone)
                 {
                 iConnStarted = ETrue;
+                DetectBearer();
                 Progress(_L("Using the open connection"));
                 ResolveL();
                 return;
@@ -421,12 +422,32 @@ void CHttpClient::ResolveL()
     SetActive();
     }
 
+// The access point's bearer (as Maps 9300 finds it): Bluetooth dial-up is a modem bearer on the
+// BTCOMM port. There the TCP window is 16 KB: GnuBox's measurements (test log #19) gave the same
+// ~34 kB/s with 8-64 KB windows, and a bigger one only queued data in front of the link (round
+// trip 358 ms with 8 KB, 624 ms with 64 KB): the page's other requests waited behind it. USB
+// (a LAN bearer) and the rest keep 48 KB (220 kB/s needs more in flight).
+void CHttpClient::DetectBearer()
+    {
+    TInt win = 49152;
+    TBuf<40> bearer, port;
+    if (iConn.GetDesSetting(_L("IAP\\IAPBearerType"), bearer) == KErrNone && bearer.Compare(_L("ModemBearer")) == 0 &&
+        iConn.GetDesSetting(_L("ModemBearer\\PortName"), port) == KErrNone && port.Left(6).CompareF(_L("BTCOMM")) == 0)
+        win = 16384;
+    if (win != iRecvWin)
+        {
+        iRecvWin = win;
+        IgLogF2(_L("connection: Bluetooth %d, TCP window %d B"), win == 16384 ? 1 : 0, win);
+        }
+    }
+
 void CHttpClient::ConnectL()
     {
     CloseSocket();
     User::LeaveIfError(iSocket.Open(iSs, KAfInet, KSockStream, KProtocolInetTcp, iConn));
     iSocketOpen = ETrue;
-    iSocket.SetOpt(KSoTcpRecvWinSize, KSolInetTcp, 49152);    // the 8 KB default caps the link; before Connect
+    // the 8 KB default caps the link; before Connect. 16 KB over Bluetooth (DetectBearer)
+    iSocket.SetOpt(KSoTcpRecvWinSize, KSolInetTcp, iRecvWin > 0 ? iRecvWin : 49152);
     iAddr.SetPort(iPort);
     Progress(_L("Connecting to the server..."));
     iState = EConnecting;
@@ -504,6 +525,7 @@ void CHttpClient::RunL()
                 return;
                 }
             iConnStarted = ETrue;
+            DetectBearer();
             ResolveL();
             break;
 

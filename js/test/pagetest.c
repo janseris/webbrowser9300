@@ -46,7 +46,7 @@ int main(int argc, char** argv)
     x.left = 200000;
     memset(&pg, 0, sizeof pg);
     pg.html = b; pg.len = (unsigned)n; pg.href = argc > 2 ? argv[2] : "https://example.cz/a/b.html?x=1#top";
-    pg.ua = "Mozilla/5.0 (Series80/2.0; Nokia9300) Browser9300/0.49"; pg.ref = ""; pg.lang = "cs"; pg.w = 640; pg.h = 200;
+    pg.ua = "Mozilla/5.0 (Series80/2.0; Nokia9300) Browser9300/0.50"; pg.ref = ""; pg.lang = "cs"; pg.w = 640; pg.h = 200;
     pg.cookie = "seen=1"; pg.expired = expired; pg.ctx = &x; pg.fetch = fetch; pg.fetchCtx = &x;
     J = js_newstate(0, 0, 0); js_setlimit(J, 100000, 0); js_setlimithook(J, hook, &x);
     if (bw_js_page(J, &pg)) fprintf(stderr, "SETUP FAILED\n");
