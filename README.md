@@ -24,7 +24,9 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
-- **0.52** (not yet run on the phone): **a quicker JavaScript start, ES modules, and engine fixes
+- **0.53**: the JavaScript test compares a script's whole result (d_builtins' grew past the 512
+  characters kept for the screen and the log, so it showed as WRONG on the phone while right).
+- **0.52** (phone: 22 of 23 in the JS test, d_builtins only cut short; modwasm.html 13 OK): **a quicker JavaScript start, ES modules, and engine fixes
   found on real pages.** Every page has its own engine, and setting one up (the ES2015+ runtime
   and the page's window and DOM, both JavaScript) took 61 M instructions (PC; 18.6 M of them the
   runtime: 9.4 M now on the emulated phone). Now 34 M: interned strings in a hash table (was a
