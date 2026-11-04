@@ -40,6 +40,9 @@ static const char *const strictfuturewords[] = {
 
 static void checkfutureword(JF, js_Ast *exp)
 {
+	int c = exp->string[0];	/* Browser 9300: (only these letters start them) */
+	if (c != 'c' && c != 'e' && c != 'i' && c != 's' && c != 'l' && c != 'p' && c != 'y')
+		return;
 	if (jsY_findword(exp->string, futurewords, nelem(futurewords)) >= 0)
 		jsC_error(J, exp, "'%s' is a future reserved word", exp->string);
 	if (F->strict) {
@@ -125,7 +128,7 @@ static int addlocal(JF, js_Ast *ident, int reuse)
 	if (reuse || F->strict) {
 		int i;
 		for (i = 0; i < F->varlen; ++i) {
-			if (!strcmp(F->vartab[i], name)) {
+			if (F->vartab[i] == name) {	/* (interned) */
 				if (reuse)
 					return i+1;
 				if (F->strict)
@@ -145,7 +148,7 @@ static int findlocal(JF, const char *name)
 {
 	int i;
 	for (i = F->varlen; i > 0; --i)
-		if (!strcmp(F->vartab[i-1], name))
+		if (F->vartab[i-1] == name)	/* (interned) */
 			return i;
 	return -1;
 }
@@ -193,8 +196,8 @@ static void emitstring(JF, int opcode, const char *str)
 
 static void emitlocal(JF, int oploc, int opvar, js_Ast *ident)
 {
-	int is_arguments = !strcmp(ident->string, "arguments");
-	int is_eval = !strcmp(ident->string, "eval");
+	int is_arguments = ident->string[0] == 'a' && !strcmp(ident->string, "arguments");
+	int is_eval = ident->string[0] == 'e' && !strcmp(ident->string, "eval");
 	int i;
 
 	if (is_arguments) {

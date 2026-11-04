@@ -17,5 +17,20 @@ p(Array.prototype.includes.call([NaN], NaN)); p([1, 2, 3].findLast(x => x < 3));
 var grp = Object.groupBy([1, 2, 3, 4], x => x % 2 ? 'odd' : 'even'); p(grp);
 p(new Map(Object.entries({ q: 1 })).get('q'));
 p(JSON.stringify({ b: 1, a: 2, 1: 3 })); var ord = {}; ord.z = 1; ord.y = 2; delete ord.z; ord.z = 3; p(Object.keys(ord));
+// regexp flags y (sticky), s (dotAll), u
+(function () { var re = /\d+/y, s = 'ab12 34';
+re.lastIndex = 2; p([re.exec(s)[0], re.lastIndex]); p(re.exec(s)); p(re.lastIndex);
+var re2 = new RegExp('a.c', 'sy'); p([re2.test('a\nc'), re2.flags, String(re2), re2.sticky, re2.dotAll, /a.c/.test('a\nc'), new RegExp('x', 'gu').flags]);
+var t = /foo|bar/y, out = [], m; while ((m = t.exec('foobarbaz'))) out.push(m[0]); p([out.join('+'), t.lastIndex, 'xaxb'.replace(/x/y, '-')]); })();
+(function () { var r = [], s = '\u010d\u0159 ab\u2014cd \ud83d\ude00x ab', g = /ab/g, m; while ((m = g.exec(s))) r.push(m.index + ':' + g.lastIndex);
+var y = /\w+/y; y.lastIndex = 3; r.push(y.exec(s)[0], y.lastIndex); var t = /x/g; r.push(t.test(s), t.lastIndex); p(r); })();
+p([[5].reduce(function (a, b) { return a + b; }), [5].reduceRight(function (a, b) { return a + b; }), [, , 7].reduce(function (a, b) { return a + b; }), [1, 2, 3].reduceRight(function (a, b) { return a + '-' + b; })]);
+// what polyfill bundles test before they replace a built-in
+p([Symbol.length, Map.length, Set.length, WeakMap.length, String.fromCodePoint.length, 'name' in Function.prototype, (function foo() {}).name, Math.max.name,
+   Object.keys('ab').join(), Object.seal('1'), Object.getOwnPropertyNames(1).length, Object.getOwnPropertyDescriptor('13.7', 1).value,
+   JSON.stringify('\t\n\x0B\f\r \xa0       　﻿'.trim()), '​᠎'.trim().length,
+   JSON.stringify(' 　a b  '.trimStart()), JSON.stringify(' 　a b  '.trimEnd()), 1 / parseFloat('　﻿-0'), Number('　 12  '), Math.acosh(1)]);
+(function () { var e = Promise.resolve(1), t = function (x) { x(function () {}, function () {}); }; (e.constructor = {})[Symbol.species] = t;
+class P2 extends Promise {} p([e.then(function () {}) instanceof t, Promise[Symbol.species] === Promise, P2.resolve(2).then(function (v) { return v; }) instanceof P2]); })();
 return o.join(';');
 })()

@@ -35,8 +35,7 @@ static void jsB_parseInt(js_State *J)
 	double n;
 	char *e;
 
-	while (jsY_iswhite(*s) || jsY_isnewline(*s))
-		++s;
+	s = jsY_skipspace(s);
 	if (*s == '-') {
 		++s;
 		sign = -1;
@@ -66,7 +65,7 @@ static void jsB_parseFloat(js_State *J)
 	char *e;
 	double n;
 
-	while (jsY_iswhite(*s) || jsY_isnewline(*s)) ++s;
+	s = jsY_skipspace(s);
 	if (!strncmp(s, "Infinity", 8))
 		js_pushnumber(J, INFINITY);
 	else if (!strncmp(s, "+Infinity", 9))

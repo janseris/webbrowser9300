@@ -218,6 +218,8 @@ struct js_State
 	js_Panic panic;
 
 	js_StringNode *strings;
+	js_StringNode **stab;	/* Browser 9300: the interned strings' hash table (jsintern.c) */
+	int stabn, stabcount;
 
 	int default_strict;
 	int strict;
@@ -250,6 +252,8 @@ struct js_State
 	js_Ast *es_pro;		/* the current function's prologue statements (a list, reversed) */
 	js_Ast *es_names;	/* the declared names in scope (renaming of block lets) */
 	int es_level, es_block, es_renamed;
+	int es_module, es_modlevel;	/* Browser 9300: parsing a module (jsP_parsemodule), its function's level */
+	js_Ast *es_imph, *es_impt, *es_bndh, *es_bndt, *es_exph, *es_expt;	/* its imports, their bindings, its exports */
 	js_Ast *es_class;	/* the class being parsed (super, fields) */
 	js_Object *curgen;	/* the generator running (jsrun.c) */
 	int genyield;		/* its frame stopped at a yield */
@@ -441,6 +445,8 @@ struct js_Object
 			js_Put put;
 			js_Delete delete;
 			js_Finalize finalize;
+			js_GetIndex geti; /* Browser 9300: obj[k] for typed arrays, without names */
+			js_PutIndex puti;
 		} user;
 	} u;
 	js_Object *gcnext; /* allocation list */
@@ -601,6 +607,8 @@ enum
 
 int jsY_iswhite(int c);
 int jsY_isnewline(int c);
+const char *jsY_skipspace(const char *s);
+const char *jsY_trimend(const char *s, const char *e);
 int jsY_ishex(int c);
 int jsY_tohex(int c);
 
@@ -758,6 +766,7 @@ struct js_Ast
 
 js_Ast *jsP_parsefunction(js_State *J, const char *filename, const char *params, const char *body);
 js_Ast *jsP_parse(js_State *J, const char *filename, const char *source);
+js_Ast *jsP_parsemodule(js_State *J, const char *filename, const char *source);
 void jsP_freeparse(js_State *J);
 
 /* Compiler */
@@ -909,6 +918,15 @@ js_Function *jsC_compilescript(js_State *J, js_Ast *prog, int default_strict);
 
 void jsB_init(js_State *J);
 void jsB_inites(js_State *J);
+void jsB_initbytes(js_State *J);
+void jsB_initwasm(js_State *J);
+int jsB_bufferresize(js_State *J, int idx, unsigned int n);
+void jsB_newbuffer(js_State *J, unsigned int n);
+unsigned char *jsB_bufferbytes(js_State *J, int idx, unsigned int *n);
+double jsB_rdf64(const unsigned char *b);
+void jsB_wrf64(unsigned char *b, double d);
+float jsB_rdf32(const unsigned char *b);
+void jsB_wrf32(unsigned char *b, float f);
 int jsR_resumegen(js_State *J, js_Object *g, int mode);
 void jsB_initobject(js_State *J);
 void jsB_initarray(js_State *J);

@@ -138,6 +138,22 @@ static void js_loadstringx(js_State *J, const char *filename, const char *source
 	js_endtry(J);
 }
 
+/* Browser 9300: a module: a script whose value is the module's function (%ns, %meta) */
+void js_loadmodule(js_State *J, const char *filename, const char *source)
+{
+	js_Ast *P;
+	js_Function *F;
+	if (js_try(J)) {
+		jsP_freeparse(J);
+		js_throw(J);
+	}
+	P = jsP_parsemodule(J, filename, source);
+	F = jsC_compilescript(J, P, J->default_strict);
+	jsP_freeparse(J);
+	js_newscript(J, F, J->GE);
+	js_endtry(J);
+}
+
 void js_loadeval(js_State *J, const char *filename, const char *source)
 {
 	js_loadstringx(J, filename, source, 1);

@@ -27,6 +27,8 @@ enum {
 	/* regexec flags */
 	REG_NOTBOL = 4,
 	REG_RUNAWAY = 8, /* detect runaway backtracking */
+	REG_DOTALL = 16, /* Browser 9300: . matches line breaks too (the s flag) */
+	REG_STICKY = 32, /* Browser 9300: a match only where the text starts (the y flag) */
 };
 
 /* If you redefine REG_MAXSUB, you must make sure both the calling

@@ -425,21 +425,13 @@ static int isbol(js_Regexp *re, const char *text, const char *a)
 	return a == text || ((re->flags & JS_REGEXP_M) && a[-1] == '\n');
 }
 
-static int istrim(int c)
-{
-	return c == 0x9 || c == 0xB || c == 0xC || c == 0x20 || c == 0xA0 || c == 0xFEFF ||
-		c == 0xA || c == 0xD || c == 0x2028 || c == 0x2029;
-}
 
 static void Sp_trim(js_State *J)
 {
 	const char *s, *e;
 	s = checkstring(J, 0);
-	while (istrim(*s))
-		++s;
-	e = s + strlen(s);
-	while (e > s && istrim(e[-1]))
-		--e;
+	s = jsY_skipspace(s);
+	e = jsY_trimend(s, s + strlen(s));
 	js_pushlstring(J, s, e - s);
 }
 

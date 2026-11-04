@@ -24,6 +24,7 @@ static js_Ast *bindingtarget(js_State *J, int kind);
 static js_Ast *classexp(js_State *J, int line, js_Ast *name);
 static js_Ast *templatelit(js_State *J, js_Ast *tag);
 static js_Ast *propname(js_State *J);
+static void expectword(js_State *J, const char *w);
 
 JS_NORETURN static void jsP_error(js_State *J, const char *fmt, ...) JS_PRINTFLIKE(2,3);
 
@@ -387,7 +388,7 @@ static int visible(js_State *J, const char *name)
 {
 	js_Ast *n;
 	for (n = J->es_names; n; n = n->b)
-		if (!strcmp(n->string, name))
+		if (n->string == name)	/* (interned) */
 			return 1;
 	return 0;
 }
@@ -409,15 +410,21 @@ static void declname(js_State *J, js_Ast *id, int blockscoped)
 	J->es_names = n;
 }
 
-static const char *resolvename(js_State *J, const char *name)
+/* a name read: renamed, or an imported binding (Browser 9300: modules, live: %mN["key"]) */
+static js_Ast *nameexp(js_State *J, const char *name)
 {
 	js_Ast *n;
-	if (!J->es_renamed)
-		return name;
-	for (n = J->es_names; n; n = n->b)
-		if (!strcmp(n->string, name))
-			return n->a ? n->a->string : name;
-	return name;
+	int line = J->lexline;
+	if (J->es_renamed) {
+		name = js_intern(J, name);
+		for (n = J->es_names; n; n = n->b)
+			if (n->string == name) {
+				if (n->c)
+					return EXP2(INDEX, idexp(J, n->a->string), strexp(J, n->c->string));
+				return jsP_newstrnode(J, EXP_IDENTIFIER, n->a ? n->a->string : name);
+			}
+	}
+	return jsP_newstrnode(J, EXP_IDENTIFIER, name);
 }
 
 static void blockbegin(js_State *J)
@@ -659,7 +666,7 @@ static js_Ast *propassign(js_State *J)
 
 	if (name->type == AST_IDENTIFIER && (J->lookahead == ',' || J->lookahead == '}' || J->lookahead == '=')) {
 		/* shorthand {a}, or {a = 1} in a pattern */
-		value = jsP_newstrnode(J, EXP_IDENTIFIER, resolvename(J, name->string));
+		value = nameexp(J, name->string);
 		if (!strcmp(name->string, "arguments") && J->es_arrow) {
 			J->es_args = 1;
 			value->string = js_intern(J, "%args");
@@ -739,6 +746,8 @@ static js_Ast *funrest(js_State *J, int line, js_Ast *name, int gen, int async)
 	jsP_FunCtx c;
 	js_Ast *b, *body, *f;
 	funbegin(J, &c, 0, gen, async);
+	if (name && J->es_renamed)
+		declname(J, name, 0);	/* Browser 9300: inside, a function expression's name is itself (not an outer renamed let) */
 	jsP_expect(J, '(');
 	b = parameters(J);
 	jsP_expect(J, ')');
@@ -898,6 +907,25 @@ static js_Ast *primary(js_State *J)
 			jsP_next(J);
 			return classexp(J, line, NULL);
 		}
+		if (!strcmp(J->text, "import")) { /* Browser 9300: import.meta, import(url) */
+			int t = jsP_peek(J, NULL);
+			if (t == '.') {
+				jsP_next(J);
+				jsP_next(J);
+				expectword(J, "meta");
+				return idexp(J, "%meta");
+			}
+			if (t == '(') {
+				jsP_next(J);
+				jsP_next(J);
+				a = assignment(J, 0);
+				if (jsP_accept(J, ',') && J->lookahead != ')')
+					assignment(J, 0);
+				jsP_accept(J, ',');
+				jsP_expect(J, ')');
+				return helpercall(J, "%dimp", list2(J, a, J->es_module ? idexp(J, "%meta") : undefexp(J)));
+			}
+		}
 		if (!strcmp(J->text, "async")) {
 			int nl, t = jsP_peek(J, &nl);
 			if (t == TK_FUNCTION && !nl) {
@@ -939,8 +967,8 @@ static js_Ast *primary(js_State *J)
 			}
 			return a;
 		}
-		a = jsP_newstrnode(J, EXP_IDENTIFIER, resolvename(J, J->text));
-		if (J->es_arrow && !strcmp(a->string, "arguments")) {
+		a = nameexp(J, J->text);
+		if (J->es_arrow && a->type == EXP_IDENTIFIER && !strcmp(a->string, "arguments")) {
 			J->es_args = 1;
 			a->string = js_intern(J, "%args");
 		}
@@ -1822,11 +1850,253 @@ static js_Ast *statement(js_State *J)
 	return stm;
 }
 
+/* Browser 9300: modules (jsP_parsemodule). The module is a function (%ns, %meta): its imports
+ * first (var %mN = %imp(spec, %meta): the imported module's namespace, that module run first),
+ * then %impcheck(%meta) (a module not fetched yet stops this one), the imported bindings copied
+ * from the namespaces, the exports (getters on %ns, so they stay live), then the body. */
+static js_Ast *scriptelement(js_State *J);
+
+static void mpush(js_State *J, js_Ast **h, js_Ast **t, js_Ast *stm)
+{
+	jsP_Build b;
+	b.head = *h; b.tail = *t;
+	bpush(J, &b, stm);
+	*h = b.head; *t = b.tail;
+}
+
+static js_Ast *modspec(js_State *J)
+{
+	js_Ast *a;
+	if (J->lookahead != TK_STRING)
+		jsP_error(J, "unexpected token: %s (expected a module name)", jsY_tokenstring(J->lookahead));
+	a = jsP_newstrnode(J, EXP_STRING, J->text);
+	jsP_next(J);
+	/* import attributes (with { type: 'json' }): read past */
+	if (J->lookahead == TK_WITH || isword(J, "assert")) {
+		jsP_next(J);
+		jsP_expect(J, '{');
+		while (J->lookahead != '}' && J->lookahead != 0)
+			jsP_next(J);
+		jsP_expect(J, '}');
+	}
+	return a;
+}
+
+static void expectword(js_State *J, const char *w)
+{
+	if (!isword(J, w))
+		jsP_error(J, "unexpected token: %s (expected '%s')", jsY_tokenstring(J->lookahead), w);
+	jsP_next(J);
+}
+
+/* a name in an import / export list: an identifier, a keyword (default) or a string */
+static const char *modname(js_State *J)
+{
+	const char *n;
+	if (J->lookahead == TK_STRING || J->lookahead == TK_IDENTIFIER || J->lookahead >= TK_BREAK) {
+		n = J->lookahead >= TK_BREAK && J->lookahead != TK_STRING && J->lookahead != TK_IDENTIFIER ? jsY_tokenstring(J->lookahead) : J->text;
+		n = js_intern(J, n);
+		jsP_next(J);
+		return n;
+	}
+	jsP_error(J, "unexpected token: %s (expected a name)", jsY_tokenstring(J->lookahead));
+	return NULL;
+}
+
+static const char *modimport(js_State *J, js_Ast *spec)
+{
+	int line = J->lexline;
+	const char *m = hidname(J, "m");
+	mpush(J, &J->es_imph, &J->es_impt, STM1(VAR, LIST(EXP2(VAR, idast(J, m),
+		helpercall(J, "%imp", list2(J, spec, idexp(J, "%meta")))))));
+	return m;
+}
+
+static void modexport(js_State *J, const char *name, js_Ast *val)
+{
+	int line = J->lexline;
+	jsP_Build a = { 0, 0 };
+	bpush(J, &a, idexp(J, "%ns"));
+	bpush(J, &a, strexp(J, name));
+	bpush(J, &a, EXP3(FUN, NULL, NULL, LIST(STM1(RETURN, val))));
+	mpush(J, &J->es_exph, &J->es_expt, helpercall(J, "%exp", a.head));
+}
+
+#define MOD_MAX 256
+
+static js_Ast *importstm(js_State *J)
+{
+	int line = J->lexline, n = 0, i;
+	const char *keys[MOD_MAX];	/* NULL: the namespace */
+	js_Ast *locals[MOD_MAX];
+	const char *m;
+	if (J->lookahead == TK_STRING) {
+		modimport(J, modspec(J));
+		semicolon(J);
+		return STM0(EMPTY);
+	}
+	if (J->lookahead == TK_IDENTIFIER) {
+		keys[n] = js_intern(J, "default");
+		locals[n++] = identifier(J);
+		if (!jsP_accept(J, ','))
+			goto from;
+	}
+	if (jsP_accept(J, '*')) {
+		expectword(J, "as");
+		keys[n] = NULL;
+		locals[n++] = identifier(J);
+	} else {
+		jsP_expect(J, '{');
+		while (J->lookahead != '}') {
+			const char *k = modname(J);
+			if (n >= MOD_MAX)
+				jsP_error(J, "too many names in an import");
+			keys[n] = k;
+			if (isword(J, "as")) {
+				jsP_next(J);
+				locals[n++] = identifier(J);
+			} else {
+				locals[n] = idast(J, k);
+				n++;
+			}
+			if (!jsP_accept(J, ','))
+				break;
+		}
+		jsP_expect(J, '}');
+	}
+from:
+	expectword(J, "from");
+	m = modimport(J, modspec(J));
+	semicolon(J);
+	for (i = 0; i < n; i++) {	/* (live: each read is the namespace's property) */
+		js_Ast *b = jsP_newnode(J, AST_IDENTIFIER, 0, 0, 0, 0, 0);
+		b->string = locals[i]->string;
+		b->number = J->es_level;
+		b->a = idast(J, m);
+		b->c = keys[i] ? strexp(J, keys[i]) : NULL;
+		b->b = J->es_names;
+		J->es_names = b;
+		J->es_renamed++;
+	}
+	return STM0(EMPTY);
+}
+
+static js_Ast *exportstm(js_State *J)
+{
+	int line = J->lexline, n = 0, i;
+	js_Ast *old, *stm, *nm;
+	if (jsP_accept(J, '*')) {
+		const char *as = NULL, *m;
+		if (isword(J, "as")) {
+			jsP_next(J);
+			as = modname(J);
+		}
+		expectword(J, "from");
+		m = modimport(J, modspec(J));
+		semicolon(J);
+		if (as)
+			modexport(J, as, idexp(J, m));
+		else
+			mpush(J, &J->es_exph, &J->es_expt, helpercall(J, "%expall", list2(J, idexp(J, "%ns"), idexp(J, m))));
+		return STM0(EMPTY);
+	}
+	if (jsP_accept(J, '{')) {
+		const char *loc[MOD_MAX], *exp[MOD_MAX], *m = NULL;
+		while (J->lookahead != '}') {
+			if (n >= MOD_MAX)
+				jsP_error(J, "too many names in an export");
+			loc[n] = modname(J);
+			if (isword(J, "as")) {
+				jsP_next(J);
+				exp[n] = modname(J);
+			} else {
+				exp[n] = loc[n];
+			}
+			n++;
+			if (!jsP_accept(J, ','))
+				break;
+		}
+		jsP_expect(J, '}');
+		if (isword(J, "from")) {
+			jsP_next(J);
+			m = modimport(J, modspec(J));
+		}
+		semicolon(J);
+		for (i = 0; i < n; i++)
+			modexport(J, exp[i], m ? EXP2(INDEX, idexp(J, m), strexp(J, loc[i])) : nameexp(J, loc[i]));
+		return STM0(EMPTY);
+	}
+	if (jsP_accept(J, TK_DEFAULT)) {
+		int async = 0;
+		if (isword(J, "async")) {
+			int nl, t = jsP_peek(J, &nl);
+			if (t == TK_FUNCTION && !nl) {
+				jsP_next(J);
+				async = 1;
+			}
+		}
+		if (J->lookahead == TK_FUNCTION) {
+			int t = jsP_peek(J, NULL);
+			if (t == TK_IDENTIFIER || (t == '*' && 0)) {
+				jsP_next(J);
+				stm = fundec(J, line, async);
+				modexport(J, "default", idexp(J, stm->a->string));
+				return stm;
+			}
+			if (t == '*') {
+				jsP_LexState ls;
+				lexsave(J, &ls);
+				jsP_next(J);
+				jsP_next(J);
+				t = J->lookahead;
+				lexrestore(J, &ls);
+				if (t == TK_IDENTIFIER) {
+					jsP_next(J);
+					stm = fundec(J, line, async);
+					modexport(J, "default", idexp(J, stm->a->string));
+					return stm;
+				}
+			}
+			jsP_next(J);
+			nm = funexp(J, line, async);
+		} else if (!async && isword(J, "class") && jsP_peek(J, NULL) == TK_IDENTIFIER) {
+			jsP_next(J);
+			nm = identifier(J);
+			declname(J, nm, 0);
+			modexport(J, "default", idexp(J, nm->string));
+			return STM1(VAR, LIST(EXP2(VAR, nm, classexp(J, line, nm))));
+		} else {
+			nm = assignment(J, 0);
+			semicolon(J);
+		}
+		modexport(J, "default", idexp(J, "%default"));
+		return STM1(VAR, LIST(EXP2(VAR, idast(J, "%default"), nm)));
+	}
+	/* export var / let / const / function / class: the names it declares */
+	old = J->es_names;
+	stm = scriptelement(J);
+	for (nm = J->es_names; nm && nm != old; nm = nm->b)
+		modexport(J, nm->string, idexp(J, nm->a ? nm->a->string : nm->string));
+	return stm;
+}
+
 /* Program */
 
 static js_Ast *scriptelement(js_State *J)
 {
 	int line = J->lexline;
+	if (J->es_module && J->es_level == J->es_modlevel && J->lookahead == TK_IDENTIFIER) {
+		if (!strcmp(J->text, "import")) {
+			int t = jsP_peek(J, NULL);
+			if (t != '(' && t != '.') {
+				jsP_next(J);
+				return importstm(J);
+			}
+		} else if (!strcmp(J->text, "export")) {
+			jsP_next(J);
+			return exportstm(J);
+		}
+	}
 	if (jsP_accept(J, TK_FUNCTION))
 		return fundec(J, line, 0);
 	if (isword(J, "async")) {
@@ -2166,6 +2436,49 @@ js_Ast *jsP_parse(js_State *J, const char *filename, const char *source)
 	if (p)
 		jsP_foldconst(p);
 
+	return p;
+}
+
+/* Browser 9300: a module: a script whose value is its function (%ns, %meta) */
+js_Ast *jsP_parsemodule(js_State *J, const char *filename, const char *source)
+{
+	jsP_FunCtx c0, c1;
+	jsP_Build b = { 0, 0 };
+	js_Ast *body, *l, *f, *p;
+	int line;
+	jsY_initlex(J, filename, source);
+	J->es_arrow = J->es_this = J->es_args = 0;
+	J->es_tmps = J->es_pro = J->es_names = J->es_class = NULL;
+	J->es_level = J->es_block = J->es_renamed = J->es_gen = J->es_async = 0;
+	J->es_imph = J->es_impt = J->es_bndh = J->es_bndt = J->es_exph = J->es_expt = NULL;
+	jsP_next(J);
+	J->astdepth = 0;
+	line = J->lexline;
+	funbegin(J, &c0, 0, 0, 0);
+	funbegin(J, &c1, 0, 0, 1);	/* (async: top-level await) */
+	J->es_module = 1;
+	J->es_modlevel = J->es_level;
+	if (js_try(J)) {
+		J->es_module = 0;
+		js_throw(J);
+	}
+	body = script(J, 0);
+	js_endtry(J);
+	J->es_module = 0;
+	for (l = J->es_imph; l; l = l->b)
+		bpush(J, &b, l->a);
+	bpush(J, &b, helpercall(J, "%impcheck", LIST(idexp(J, "%meta"))));
+	for (l = J->es_bndh; l; l = l->b)
+		bpush(J, &b, l->a);
+	for (l = J->es_exph; l; l = l->b)
+		bpush(J, &b, l->a);
+	for (l = body; l; l = l->b)
+		bpush(J, &b, l->a);
+	body = funend(J, &c1, jsP_list(b.head), 0);
+	f = EXP3(FUN, NULL, list2(J, idast(J, "%ns"), idast(J, "%meta")), body);
+	f->number = 2;	/* async */
+	p = funend(J, &c0, LIST(f), 0);
+	jsP_foldconst(p);
 	return p;
 }
 

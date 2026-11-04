@@ -24,6 +24,40 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.52** (not yet run on the phone): **a quicker JavaScript start, ES modules, and engine fixes
+  found on real pages.** Every page has its own engine, and setting one up (the ES2015+ runtime
+  and the page's window and DOM, both JavaScript) took 61 M instructions (PC; 18.6 M of them the
+  runtime: 9.4 M now on the emulated phone). Now 34 M: interned strings in a hash table (was a
+  tree, a dozen string compares per word of every script), local names compared as pointers,
+  ASCII fast paths in the lexer, and the rarely needed parts (Map / Set, Promise and async, fetch
+  / XMLHttpRequest, URL, typed arrays and Blob, TreeWalker, crypto, MessageChannel, the module
+  loader) compiled only when a page's script first names one of their globals.
+  `<script type="module">` runs (after the page is read, in order; `nomodule` scripts are now
+  skipped): `import` / `export` in every form (bindings live), top-level `await`, `import.meta.url`,
+  `import()`; a
+  module the browser has not fetched yet is noted and fetched like a script, and the page runs
+  again with it. Fixes (each from a page that failed): `lastIndex` counted bytes instead of
+  characters past non-ASCII text (MDN's Fluent parser looped until out of memory); sticky (`y`)
+  and dotAll (`s`) regexps; `[x].reduce(f)` threw "no initial value"; a named function
+  expression called itself by name past a renamed `let` of the same name (react.dev); defining a
+  read-only property again with the same value threw (Next.js); `Function.prototype.name`,
+  `Symbol` / `Map` / `Set` lengths, Object functions on primitives, Unicode spaces in `trim` and
+  numbers, U+2028 in strings, Promise subclasses (`@@species`): polyfill bundles tested these and
+  replaced the built-ins with slower ones that broke. New in the DOM: TreeWalker / NodeIterator,
+  `<template>.content`, `isEqualNode`, `hasAttributes`, `DocumentType`, more `HTML*Element`
+  names, marks and measures in `performance`, `getComputedStyle` display by tag, URLs against
+  non-http bases. react.dev now runs with no errors (its page used to end up blank: 8 words, now
+  1236); MDN's and the Guardian's modules run.
+  **WebAssembly (an experiment):** an interpreter in C (`js/mujs/jswasm.c`: the MVP with sign
+  extension, saturating conversions, bulk memory and multi-value blocks; no SIMD, threads or
+  BigInt) behind `WebAssembly.Module` / `Instance` / `Memory` / `Global` / `Table`,
+  `instantiate`, `instantiateStreaming` and `validate`; a module's `.wasm` is fetched like a
+  script (`fetch` / XHR `arraybuffer` give its bytes). Its loops run about 5 times as fast as the
+  same loop in the JavaScript engine. Its memory is an `ArrayBuffer`, and ArrayBuffer, the typed
+  arrays and DataView are now C too (`js/mujs/jsbytes.c`; they were JavaScript arrays): views
+  share their buffer's bytes, little-endian, doubles in IEEE order on the phone's FPA too. A
+  fetched `.wasm` is kept as its bytes (not converted as text); a page may now fetch 4 rounds of
+  scripts (was 3: modules import modules). Test page: `localserver/jstest/modwasm.html`.
 - **0.51** (not yet run on the phone): **two connections over Bluetooth.** After the page's HTML,
   its stylesheets, its scripts and its pictures each had a connection of their own: three at once,
   where GnuBox measured that a third connection only adds waiting (the link carries ~35 kB/s

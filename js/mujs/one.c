@@ -1,5 +1,6 @@
 #include "jsarray.c"
 #include "jsboolean.c"
+#include "jsbytes.c"
 #include "jsbuiltin.c"
 #include "jscompile.c"
 #include "jsdate.c"
@@ -24,3 +25,4 @@
 #include "jsvalue.c"
 #include "regexp.c"
 #include "utf.c"
+#include "jswasm.c"

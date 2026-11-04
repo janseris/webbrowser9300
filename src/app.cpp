@@ -1373,7 +1373,7 @@ void CBrAppUi::ApplyArrivedStyles()
 // ------------------------------------------------------------------ a page's scripts
 
 const TInt KScriptCacheBytes = 1500 * 1024;     // the external scripts kept (the oldest go first)
-const TInt KScriptRounds = 3;                   // fetches for one page: the HTML's, then what they add
+const TInt KScriptRounds = 4;                   // fetches for one page: the HTML's, then what they add (modules: their imports)
 
 // the page's scripts read the external ones from the cache on their thread (the app's waits)
 static const char* JsFetch(void* aSelf, const char* aUrl, unsigned int* aLen)
@@ -1420,7 +1420,9 @@ void CBrAppUi::ScriptArrived(const TDesC8& aUrl, const TDesC8* aJs)
     HBufC8* t = NULL;
     if (aJs && aJs->Length())
         {
-        TInt cs = bw_doc_charset((const char*)aJs->Ptr(), aJs->Length(), NULL, -1);
+        // a WebAssembly module ("\0asm") stays as its bytes (__fetchBytes); text becomes UTF-8
+        TBool wasm = aJs->Length() >= 4 && (*aJs)[0] == 0 && (*aJs)[1] == 'a' && (*aJs)[2] == 's' && (*aJs)[3] == 'm';
+        TInt cs = wasm ? BW_CS_UTF8 : bw_doc_charset((const char*)aJs->Ptr(), aJs->Length(), NULL, -1);
         if (cs == BW_CS_UTF8)
             {
             t = HBufC8::New(aJs->Length() + 1);

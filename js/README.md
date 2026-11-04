@@ -11,8 +11,8 @@ in the source.
 | `bwdom.c`, `bwdom.h` | the page as a tree: HTML parser, writer, selectors |
 | `bwdomjs.c`, `bwjs.h` | the DOM for scripts: the tree's nodes as JavaScript objects |
 | `bwhost.c`, `bwhost.h` | a page's run: scripts in order, document.write, events, timers, external scripts |
-| `es.js` | the engine's ES2015+ runtime: the helpers the parser's lowerings call, Symbol, Map, Set, Promise, generators' objects, the newer methods (`genes.py` -> `mujs/jses.h`, every `js_State` runs it) |
-| `prelude.js` | the window and the DOM built on the C part, and the newer methods MuJS lacks (`genprelude.py` -> `prelude.h`) |
+| `es.js` | the engine's ES2015+ runtime: the helpers the parser's lowerings call, Symbol, Map, Set, Promise, generators' objects, the newer methods (`genes.py` -> `mujs/jses.h`, every `js_State` runs it; `//@lazy` blocks when first named) |
+| `prelude.js` | the window and the DOM built on the C part, and the newer methods MuJS lacks (`genprelude.py` -> `prelude.h`; `//@lazy` blocks when first named) |
 | `bwlibc.c` | the C half of that library (strings, setjmp, IEEE helpers, exact printf / strtod / shortest digits, GCC helpers EUSER lacks) |
 | `../src/jsplat.cpp` | the platform half (heap, Math::, clock, time zone), the 256 KB-stack thread, about:js |
 | `tests/` | the about:js scripts, `expected.txt` (Node 22's results), `gen.py` -> `../src/jstests.h` |
@@ -44,6 +44,23 @@ in the source.
 - Properties are kept in insertion order too (`jsproperty.c`): for-in, Object.keys and JSON in
   ES2015 order. `in` does not run getters. Regexps: a loop whose body can match nothing stops
   when an iteration matched nothing (`(a*)*`).
+- ES modules (`jsparse.c` `jsP_parsemodule`, `js_loadmodule`): a module is compiled into an async
+  function (`%ns`, `%meta`: top-level await); its imports first (`%imp`: the imported module's namespace, that
+  module run first; `%impcheck`: one not fetched yet stops it), imported names read as
+  `%mN["name"]` (live), exports getters on `%ns`. `import()` is `%dimp`. The loader is in
+  `prelude.js` (`__runModule`, modules by URL); `bwhost.c` runs module scripts after the others.
+- `jsbytes.c`: ArrayBuffer, typed arrays and DataView as userdata (bytes in C; elements through
+  the userdata index hooks `js_setuserindex`); a view made without a length follows its buffer's
+  (WebAssembly memory grows in place). `jswasm.c`: a WebAssembly interpreter (decoder, block
+  table per function, one value / label / frame stack); the API is `es.js`'s WebAssembly block.
+  Tests: `tests/d_typed.js`, `tests/d_wasm.js` (made by `tests/wasm/mkwasm.py`, a small
+  assembler; Node's results).
+- Startup (every page has its own engine): interned strings in a hash table (`jsintern.c`, was an
+  AA-tree), locals compared by pointer, ASCII fast paths and a first-letter keyword filter in the
+  lexer. Lazy globals (`jses.c`, `jsB_lazy`): the `//@lazy` blocks of `es.js` (Map / Set / Weak*,
+  Promise and async) and `prelude.js` (fetch / XHR, URL, typed arrays and Blob, crypto, ...) are
+  accessors on the global object until a script reads or sets one of their names, then compiled.
+  A page's engine: 61 M instructions before, 30 M after (PC, `pagetest`, an empty page).
 - Errors: "Cannot read properties of undefined (reading 'x')"; syntax errors with the column; PC
   test builds (`-DBW_CALLNAMES`) also name what was not a function.
 

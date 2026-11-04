@@ -32,6 +32,7 @@ static void js_newregexpx(js_State *J, const char *pattern, int flags, int is_cl
 	opts = 0;
 	if (flags & JS_REGEXP_I) opts |= REG_ICASE;
 	if (flags & JS_REGEXP_M) opts |= REG_NEWLINE;
+	if (flags & JS_REGEXP_S) opts |= REG_DOTALL;
 
 	prog = js_regcompx(J->alloc, J->actx, pattern, opts, &error);
 	if (!prog)
@@ -49,6 +50,20 @@ void js_newregexp(js_State *J, const char *pattern, int flags)
 	js_newregexpx(J, pattern, flags, 0);
 }
 
+/* Browser 9300: lastIndex counts UTF-16 units (it was a byte offset: wrong past non-ASCII
+ * text); the text's byte where index i is, NULL past the end */
+static const char *lastptr(const char *s, int i)
+{
+	Rune r;
+	while (i > 0) {
+		if (!*s)
+			return NULL;
+		if (*(unsigned char *)s < Runeself) { ++s; --i; }
+		else { s += chartorune(&r, s); i -= r >= 0x10000 ? 2 : 1; }
+	}
+	return s;
+}
+
 void js_RegExp_prototype_exec(js_State *J, js_Regexp *re, const char *text)
 {
 	const char *haystack;
@@ -58,15 +73,15 @@ void js_RegExp_prototype_exec(js_State *J, js_Regexp *re, const char *text)
 	Resub m;
 
 	haystack = text;
-	opts = 0;
-	if (re->flags & JS_REGEXP_G) {
-		if ((size_t)re->last > strlen(haystack)) {
+	opts = (re->flags & JS_REGEXP_Y) ? REG_STICKY : 0;
+	if (re->flags & (JS_REGEXP_G | JS_REGEXP_Y)) {
+		haystack = lastptr(text, re->last);
+		if (!haystack) {
 			re->last = 0;
 			js_pushnull(J);
 			return;
 		}
-		if (re->last > 0) {
-			haystack = text + re->last;
+		if (haystack > text) {
 			if (!(re->flags & JS_REGEXP_M) || haystack[-1] != '\n')
 				opts |= REG_NOTBOL;
 		}
@@ -88,12 +103,12 @@ void js_RegExp_prototype_exec(js_State *J, js_Regexp *re, const char *text)
 			js_pushlstring(J, m.sub[i].sp, m.sub[i].ep - m.sub[i].sp);
 			js_setindex(J, -2, i);
 		}
-		if (re->flags & JS_REGEXP_G)
-			re->last = m.sub[0].ep - text;
+		if (re->flags & (JS_REGEXP_G | JS_REGEXP_Y))
+			re->last = js_utfptrtoidx(text, m.sub[0].ep);
 		return;
 	}
 
-	if (re->flags & JS_REGEXP_G)
+	if (re->flags & (JS_REGEXP_G | JS_REGEXP_Y))
 		re->last = 0;
 
 	js_pushnull(J);
@@ -102,7 +117,7 @@ void js_RegExp_prototype_exec(js_State *J, js_Regexp *re, const char *text)
 static void Rp_test(js_State *J)
 {
 	js_Regexp *re;
-	const char *text;
+	const char *text, *start;
 	int result;
 	int opts;
 	Resub m;
@@ -110,18 +125,20 @@ static void Rp_test(js_State *J)
 	re = js_toregexp(J, 0);
 	text = js_tostring(J, 1);
 
-	opts = 0;
-	if (re->flags & JS_REGEXP_G) {
-		if ((size_t)re->last > strlen(text)) {
+	opts = (re->flags & JS_REGEXP_Y) ? REG_STICKY : 0;
+	if (re->flags & (JS_REGEXP_G | JS_REGEXP_Y)) {
+		const char *at = lastptr(text, re->last);
+		if (!at) {
 			re->last = 0;
 			js_pushboolean(J, 0);
 			return;
 		}
-		if (re->last > 0) {
-			text += re->last;
-			if (!(re->flags & JS_REGEXP_M) || text[-1] != '\n')
+		if (at > text) {
+			if (!(re->flags & JS_REGEXP_M) || at[-1] != '\n')
 				opts |= REG_NOTBOL;
 		}
+		start = text;
+		text = at;
 	}
 
 	if (J->runlimit)
@@ -131,13 +148,13 @@ static void Rp_test(js_State *J)
 	if (result < 0)
 		js_error(J, "regexec failed");
 	if (result == 0) {
-		if (re->flags & JS_REGEXP_G)
-			re->last = re->last + (m.sub[0].ep - text);
+		if (re->flags & (JS_REGEXP_G | JS_REGEXP_Y))
+			re->last = js_utfptrtoidx(start, m.sub[0].ep);
 		js_pushboolean(J, 1);
 		return;
 	}
 
-	if (re->flags & JS_REGEXP_G)
+	if (re->flags & (JS_REGEXP_G | JS_REGEXP_Y))
 		re->last = 0;
 
 	js_pushboolean(J, 0);
@@ -175,6 +192,10 @@ static void jsB_new_RegExp(js_State *J)
 			if (*s == 'g') ++g;
 			else if (*s == 'i') ++i;
 			else if (*s == 'm') ++m;
+			else if (*s == 'y') flags |= JS_REGEXP_Y;	/* Browser 9300 */
+			else if (*s == 's') flags |= JS_REGEXP_S;
+			else if (*s == 'u' || *s == 'v') flags |= JS_REGEXP_U;
+			else if (*s == 'd') ;
 			else js_syntaxerror(J, "invalid regular expression flag: '%c'", *s);
 			++s;
 		}
@@ -208,13 +229,16 @@ static void Rp_toString(js_State *J)
 		js_throw(J);
 	}
 
-	out = js_malloc(J, strlen(re->source) + 6); /* extra space for //gim */
+	out = js_malloc(J, strlen(re->source) + 9); /* extra space for //gimsuy */
 	strcpy(out, "/");
 	strcat(out, re->source);
 	strcat(out, "/");
 	if (re->flags & JS_REGEXP_G) strcat(out, "g");
 	if (re->flags & JS_REGEXP_I) strcat(out, "i");
 	if (re->flags & JS_REGEXP_M) strcat(out, "m");
+	if (re->flags & JS_REGEXP_S) strcat(out, "s");
+	if (re->flags & JS_REGEXP_U) strcat(out, "u");
+	if (re->flags & JS_REGEXP_Y) strcat(out, "y");
 
 	js_pop(J, 0);
 	js_pushstring(J, out);

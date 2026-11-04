@@ -29,98 +29,55 @@ void js_putm(js_State *J, js_Buffer **sb, const char *s, const char *e)
 		js_putc(J, sb, *s++);
 }
 
-/* Use an AA-tree to quickly look up interned strings. */
+/* Browser 9300: a hash table of the interned strings (was an AA-tree: every token of every
+ * script walked a dozen strcmps down it and rebalanced on the way back). Chains, doubling. */
 
 struct js_StringNode
 {
-	js_StringNode *left, *right;
-	int level;
+	js_StringNode *left, *right;	/* (left: the next in the chain) */
+	int level;			/* (the hash) */
 	char string[1];
 };
 
 #define jsS_sentinel (*J->ssent)
 
-
-static js_StringNode *jsS_newstringnode(js_State *J, const char *string, const char **result)
+static unsigned int jsS_hash(const char *s)
 {
-	size_t n = strlen(string);
-	js_StringNode *node;
-	if (n > JS_STRLIMIT)
-		js_rangeerror(J, "invalid string length");
-	node = js_malloc(J, soffsetof(js_StringNode, string) + n + 1);
-	node->left = node->right = &jsS_sentinel;
-	node->level = 1;
-	memcpy(node->string, string, n + 1);
-	return *result = node->string, node;
+	unsigned int h = 2166136261u;
+	while (*s)
+		h = (h ^ (unsigned char)*s++) * 16777619u;
+	return h;
 }
 
-static js_StringNode *jsS_skew(js_StringNode *node)
+static void jsS_grow(js_State *J)
 {
-	if (node->left->level == node->level) {
-		js_StringNode *temp = node;
-		node = node->left;
-		temp->left = node->right;
-		node->right = temp;
+	int n = J->stabn ? J->stabn * 2 : 1024, i;
+	js_StringNode **t = js_malloc(J, n * sizeof *t);
+	for (i = 0; i < n; ++i)
+		t[i] = NULL;
+	for (i = 0; i < J->stabn; ++i) {
+		js_StringNode *node = J->stab[i], *next;
+		for (; node; node = next) {
+			next = node->left;
+			node->left = t[(unsigned int)node->level & (n - 1)];
+			t[(unsigned int)node->level & (n - 1)] = node;
+		}
 	}
-	return node;
-}
-
-static js_StringNode *jsS_split(js_StringNode *node)
-{
-	if (node->right->right->level == node->level) {
-		js_StringNode *temp = node;
-		node = node->right;
-		temp->right = node->left;
-		node->left = temp;
-		++node->level;
-	}
-	return node;
-}
-
-static js_StringNode *jsS_insert(js_State *J, js_StringNode *node, const char *string, const char **result)
-{
-	if (node != &jsS_sentinel) {
-		int c = strcmp(string, node->string);
-		if (c < 0)
-			node->left = jsS_insert(J, node->left, string, result);
-		else if (c > 0)
-			node->right = jsS_insert(J, node->right, string, result);
-		else
-			return *result = node->string, node;
-		node = jsS_skew(node);
-		node = jsS_split(node);
-		return node;
-	}
-	return jsS_newstringnode(J, string, result);
-}
-
-static void dumpstringnode(js_State *J, js_StringNode *node, int level)
-{
-	int i;
-	if (node->left != &jsS_sentinel)
-		dumpstringnode(J, node->left, level + 1);
-	printf("%d: ", node->level);
-	for (i = 0; i < level; ++i)
-		putchar('\t');
-	printf("'%s'\n", node->string);
-	if (node->right != &jsS_sentinel)
-		dumpstringnode(J, node->right, level + 1);
+	if (J->stab)
+		js_free(J, J->stab);
+	J->stab = t;
+	J->stabn = n;
 }
 
 void jsS_dumpstrings(js_State *J)
 {
-	js_StringNode *root = J->strings;
+	int i;
+	js_StringNode *node;
 	printf("interned strings {\n");
-	if (root && root != &jsS_sentinel)
-		dumpstringnode(J, root, 1);
+	for (i = 0; i < J->stabn; ++i)
+		for (node = J->stab[i]; node; node = node->left)
+			printf("\t'%s'\n", node->string);
 	printf("}\n");
-}
-
-static void jsS_freestringnode(js_State *J, js_StringNode *node)
-{
-	if (node->left != &jsS_sentinel) jsS_freestringnode(J, node->left);
-	if (node->right != &jsS_sentinel) jsS_freestringnode(J, node->right);
-	js_free(J, node);
 }
 
 /* Browser 9300: the string tree's sentinel, one per state (was a writable static) */
@@ -137,15 +94,40 @@ int jsS_initsentinel(js_State *J)
 
 void jsS_freestrings(js_State *J)
 {
-	if (J->strings && J->strings != &jsS_sentinel)
-		jsS_freestringnode(J, J->strings);
+	int i;
+	for (i = 0; i < J->stabn; ++i) {
+		js_StringNode *node = J->stab[i], *next;
+		for (; node; node = next) {
+			next = node->left;
+			js_free(J, node);
+		}
+	}
+	if (J->stab)
+		js_free(J, J->stab);
+	J->stab = NULL;
+	J->stabn = J->stabcount = 0;
 }
 
 const char *js_intern(js_State *J, const char *s)
 {
-	const char *result;
-	if (!J->strings)
-		J->strings = &jsS_sentinel;
-	J->strings = jsS_insert(J, J->strings, s, &result);
-	return result;
+	unsigned int h = jsS_hash(s);
+	js_StringNode *node;
+	size_t n;
+	if (J->stabn)
+		for (node = J->stab[h & (J->stabn - 1)]; node; node = node->left)
+			if ((unsigned int)node->level == h && !strcmp(node->string, s))
+				return node->string;
+	n = strlen(s);
+	if (n > JS_STRLIMIT)
+		js_rangeerror(J, "invalid string length");
+	if (J->stabcount >= J->stabn)
+		jsS_grow(J);
+	node = js_malloc(J, soffsetof(js_StringNode, string) + n + 1);
+	memcpy(node->string, s, n + 1);
+	node->level = (int)h;
+	node->left = J->stab[h & (J->stabn - 1)];
+	node->right = NULL;
+	J->stab[h & (J->stabn - 1)] = node;
+	J->stabcount++;
+	return node->string;
 }

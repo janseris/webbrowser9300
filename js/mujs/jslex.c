@@ -101,7 +101,9 @@ int jsY_findword(const char *s, const char **list, int num)
 
 static int jsY_findkeyword(js_State *J, const char *s)
 {
-	int i = jsY_findword(s, keywords, nelem(keywords));
+	/* Browser 9300: most identifiers can't be keywords by their first letter or length */
+	unsigned int c0 = (unsigned char)s[0] - 'a';
+	int i = c0 < 26 && ((0x6e213eu >> c0) & 1) && J->lexbuf.len <= 11 ? jsY_findword(s, keywords, nelem(keywords)) : -1;
 	if (i >= 0) {
 		J->text = keywords[i];
 		return TK_BREAK + i; /* first keyword + i */
@@ -112,12 +114,38 @@ static int jsY_findkeyword(js_State *J, const char *s)
 
 int jsY_iswhite(int c)
 {
-	return c == 0x9 || c == 0xB || c == 0xC || c == 0x20 || c == 0xA0 || c == 0xFEFF;
+	return c == 0x9 || c == 0xB || c == 0xC || c == 0x20 || c == 0xA0 || c == 0xFEFF ||
+		(c >= 0x1680 && (c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x202F || c == 0x205F || c == 0x3000));	/* Browser 9300: (the Zs spaces) */
 }
 
 int jsY_isnewline(int c)
 {
 	return c == 0xA || c == 0xD || c == 0x2028 || c == 0x2029;
+}
+
+/* Browser 9300: white space and line breaks skipped in UTF-8 text (they were looked for byte by byte) */
+const char *jsY_skipspace(const char *s)
+{
+	Rune c;
+	for (;;) {
+		int n = *(unsigned char *)s < Runeself ? (c = *(unsigned char *)s, 1) : chartorune(&c, s);
+		if (!c || !(jsY_iswhite(c) || jsY_isnewline(c)))
+			return s;
+		s += n;
+	}
+}
+
+/* the end of s..e without its trailing white space */
+const char *jsY_trimend(const char *s, const char *e)
+{
+	const char *last = s;
+	Rune c;
+	while (s < e) {
+		s += *(unsigned char *)s < Runeself ? (c = *(unsigned char *)s, 1) : chartorune(&c, s);
+		if (!(jsY_iswhite(c) || jsY_isnewline(c)))
+			last = s;
+	}
+	return last;
 }
 
 #ifndef isalpha
@@ -132,12 +160,14 @@ int jsY_isnewline(int c)
 
 static int jsY_isidentifierstart(int c)
 {
-	return isalpha(c) || c == '$' || c == '_' || isalpharune(c);
+	if (c < 128) return isalpha(c) || c == '$' || c == '_';	/* Browser 9300: (ASCII first) */
+	return isalpharune(c);
 }
 
 static int jsY_isidentifierpart(int c)
 {
-	return isdigit(c) || isalpha(c) || c == '$' || c == '_' || isalpharune(c);
+	if (c < 128) return isdigit(c) || isalpha(c) || c == '$' || c == '_';
+	return isalpharune(c);
 }
 
 static int jsY_isdec(int c)
@@ -165,14 +195,18 @@ static void jsY_next(js_State *J)
 		J->lexchar = EOF;
 		return;
 	}
-	J->source += chartorune(&c, J->source);
+	if ((unsigned char)*J->source < 0x80)	/* Browser 9300: (ASCII first) */
+		c = (unsigned char)*J->source++;
+	else
+		J->source += chartorune(&c, J->source);
 	/* consume CR LF as one unit */
 	if (c == '\r' && *J->source == '\n')
 		++J->source;
 	if (jsY_isnewline(c)) {
 		J->line++;
 		J->es_linestart = J->source;
-		c = '\n';
+		if (c < 0x2028)	/* Browser 9300: U+2028 / U+2029 stay (a string may hold them, ES2019) */
+			c = '\n';
 	}
 	J->lexchar = c;
 }
@@ -216,6 +250,10 @@ static void textinit(js_State *J)
 static void textpush(js_State *J, Rune c)
 {
 	int n, newcap;
+	if (c > 0 && c < 0x80 && J->lexbuf.len < J->lexbuf.cap) {	/* Browser 9300: (ASCII first) */
+		J->lexbuf.text[J->lexbuf.len++] = (char)c;
+		return;
+	}
 	if (c == EOF)
 		n = 1;
 	else
@@ -239,7 +277,7 @@ static char *textend(js_State *J)
 
 static void lexlinecomment(js_State *J)
 {
-	while (J->lexchar != EOF && J->lexchar != '\n')
+	while (J->lexchar != EOF && J->lexchar != '\n' && J->lexchar != 0x2028 && J->lexchar != 0x2029)
 		jsY_next(J);
 }
 
@@ -644,12 +682,16 @@ static int lexregexp(js_State *J)
 
 	/* regexp flags */
 	g = i = m = 0;
+	flags = 0;
 
 	while (jsY_isidentifierpart(J->lexchar)) {
 		if (jsY_accept(J, 'g')) ++g;
 		else if (jsY_accept(J, 'i')) ++i;
 		else if (jsY_accept(J, 'm')) ++m;
-		else if (jsY_accept(J, 'u') || jsY_accept(J, 'y') || jsY_accept(J, 's') || jsY_accept(J, 'd')) ; /* Browser 9300: accepted, not honoured */
+		else if (jsY_accept(J, 'y')) flags |= JS_REGEXP_Y; /* Browser 9300 */
+		else if (jsY_accept(J, 's')) flags |= JS_REGEXP_S;
+		else if (jsY_accept(J, 'u') || jsY_accept(J, 'v')) flags |= JS_REGEXP_U;
+		else if (jsY_accept(J, 'd')) ; /* (accepted, not honoured) */
 		else jsY_error(J, "illegal flag in regular expression: %c", J->lexchar);
 	}
 
@@ -658,7 +700,6 @@ static int lexregexp(js_State *J)
 
 	J->text = s;
 
-	flags = 0;
 	if (g) flags |= JS_REGEXP_G;
 	if (i) flags |= JS_REGEXP_I;
 	if (m) flags |= JS_REGEXP_M;
@@ -690,7 +731,7 @@ static int jsY_lexx(js_State *J)
 		while (jsY_iswhite(J->lexchar))
 			jsY_next(J);
 
-		if (jsY_accept(J, '\n')) {
+		if (jsY_accept(J, '\n') || jsY_accept(J, 0x2028) || jsY_accept(J, 0x2029)) {
 			J->newline = 1;
 			if (isnlthcontext(J->lasttoken))
 				return ';';
@@ -1032,7 +1073,7 @@ int jsY_lexjson(js_State *J)
 	while (1) {
 		J->lexline = J->line; /* save location of beginning of token */
 
-		while (jsY_iswhite(J->lexchar) || J->lexchar == '\n')
+		while (jsY_iswhite(J->lexchar) || J->lexchar == '\n' || J->lexchar == 0x2028 || J->lexchar == 0x2029)
 			jsY_next(J);
 
 		if ((J->lexchar >= '0' && J->lexchar <= '9') || J->lexchar == '-')

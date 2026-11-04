@@ -762,10 +762,13 @@ static void Ap_reduce(js_State *J)
 	if (hasinitial)
 		js_copy(J, 2);
 	else {
+		int found = 0;	/* Browser 9300: (a one-element array has its element as the result) */
 		while (k < len)
-			if (js_hasindex(J, 0, k++))
+			if (js_hasindex(J, 0, k++)) {
+				found = 1;
 				break;
-		if (k == len)
+			}
+		if (!found)
 			js_typeerror(J, "no initial value");
 	}
 
@@ -803,10 +806,13 @@ static void Ap_reduceRight(js_State *J)
 	if (hasinitial)
 		js_copy(J, 2);
 	else {
+		int found = 0;
 		while (k >= 0)
-			if (js_hasindex(J, 0, k--))
+			if (js_hasindex(J, 0, k--)) {
+				found = 1;
 				break;
-		if (k < 0)
+			}
+		if (!found)
 			js_typeerror(J, "no initial value");
 	}
 

@@ -648,11 +648,38 @@ static int jsR_hasproperty(js_State *J, js_Object *obj, const char *name)
 			js_pushnumber(J, obj->u.r.last);
 			return 1;
 		}
+		if (!strcmp(name, "sticky") || !strcmp(name, "dotAll") || !strcmp(name, "unicode")) {	/* Browser 9300 */
+			js_pushboolean(J, obj->u.r.flags & (name[0] == 's' ? JS_REGEXP_Y : name[0] == 'd' ? JS_REGEXP_S : JS_REGEXP_U));
+			return 1;
+		}
+		if (!strcmp(name, "flags")) {
+			char f[8];
+			int n = 0;
+			if (obj->u.r.flags & JS_REGEXP_G) f[n++] = 'g';
+			if (obj->u.r.flags & JS_REGEXP_I) f[n++] = 'i';
+			if (obj->u.r.flags & JS_REGEXP_M) f[n++] = 'm';
+			if (obj->u.r.flags & JS_REGEXP_S) f[n++] = 's';
+			if (obj->u.r.flags & JS_REGEXP_U) f[n++] = 'u';
+			if (obj->u.r.flags & JS_REGEXP_Y) f[n++] = 'y';
+			f[n] = 0;
+			js_pushstring(J, f);
+			return 1;
+		}
 	}
 
 	else if (obj->type == JS_CUSERDATA) {
 		if (obj->u.user.has && obj->u.user.has(J, obj->u.user.data, name))
 			return 1;
+	}
+
+	/* Browser 9300: a function's name (unless it has its own) */
+	else if ((obj->type == JS_CFUNCTION || obj->type == JS_CCFUNCTION) && name[0] == 'n' && !strcmp(name, "name") &&
+			!jsV_getownproperty(J, obj, name)) {
+		const char *n = obj->type == JS_CCFUNCTION ? obj->u.c.name : obj->u.f.function->name;
+		if (n && obj->type == JS_CCFUNCTION && strrchr(n, '.'))
+			n = strrchr(n, '.') + 1;	/* ("Math.max": max) */
+		js_pushstring(J, n && n[0] != '%' ? n : "");
+		return 1;
 	}
 
 	ref = jsV_getproperty(J, obj, name);
@@ -686,14 +713,16 @@ static int jsR_inproperty(js_State *J, js_Object *obj, const char *name)
 			return 1;
 	} else if (obj->type == JS_CREGEXP) {
 		if (!strcmp(name, "source") || !strcmp(name, "global") || !strcmp(name, "ignoreCase") ||
-				!strcmp(name, "multiline") || !strcmp(name, "lastIndex"))
+				!strcmp(name, "multiline") || !strcmp(name, "lastIndex") || !strcmp(name, "sticky") ||
+				!strcmp(name, "dotAll") || !strcmp(name, "unicode") || !strcmp(name, "flags"))
 			return 1;
 	} else if (obj->type == JS_CUSERDATA) {
 		if (obj->u.user.has && obj->u.user.has(J, obj->u.user.data, name)) {
 			js_pop(J, 1);
 			return 1;
 		}
-	}
+	} else if ((obj->type == JS_CFUNCTION || obj->type == JS_CCFUNCTION) && !strcmp(name, "name"))
+		return 1;
 	return jsV_getproperty(J, obj, name) != NULL;
 }
 
@@ -706,6 +735,8 @@ static void jsR_getproperty(js_State *J, js_Object *obj, const char *name)
 static int jsR_hasindex(js_State *J, js_Object *obj, int k)
 {
 	char buf[32];
+	if (obj->type == JS_CUSERDATA && obj->u.user.geti && obj->u.user.geti(J, obj->u.user.data, k))
+		return 1;
 	if (obj->type == JS_CARRAY && obj->u.a.simple) {
 		if (k >= 0 && k < obj->u.a.flat_length) {
 			js_pushvalue(J, obj->u.a.array[k]);
@@ -859,6 +890,8 @@ readonly:
 static void jsR_setindex(js_State *J, js_Object *obj, int k, int transient)
 {
 	char buf[32];
+	if (obj->type == JS_CUSERDATA && obj->u.user.puti && obj->u.user.puti(J, obj->u.user.data, k))
+		return;
 	if (obj->type == JS_CARRAY && obj->u.a.simple && k >= 0 && k <= obj->u.a.flat_length) {
 		jsR_setarrayindex(J, obj, k, stackidx(J, -1));
 	} else {
@@ -906,8 +939,15 @@ static void jsR_defproperty(js_State *J, js_Object *obj, const char *name,
 		if (value) {
 			if (!(ref->atts & JS_READONLY))
 				ref->value = *value;
-			else if (J->strict)
-				js_typeerror(J, "'%s' is read-only", name);
+			else if (J->strict) {	/* Browser 9300: the same value again is no change (Object.defineProperty(exports, '__esModule', ...) twice) */
+				int same;
+				js_pushvalue(J, ref->value);
+				js_pushvalue(J, *value);
+				same = js_strictequal(J);
+				js_pop(J, 2);
+				if (!same)
+					js_typeerror(J, "'%s' is read-only", name);
+			}
 		}
 		if (getter) {
 			if (!(ref->atts & JS_DONTCONF))

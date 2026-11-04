@@ -66,5 +66,13 @@ try { throw { code: 3 }; } catch ({ code }) { p(code); }
 var C3 = class { m() { return 'anon'; } }; p(new C3().m());
 // arrows in class fields keep this
 class Btn { label = 'ok'; click = () => this.label; } var bt = new Btn(); var cl = bt.click; p(cl());
+// block shadowing in nested functions, loops, switch and catch (renamed names)
+(function () { var x = 1, y = 'o';
+function f() { var x = 2; if (true) { let x = 3; const y = x + 1; p([x, y, typeof x]); for (let x = 0; x < 1; x++) p('L' + x); p(x); } p([x, y]); }
+f(); { let y = 'in'; p([y.length, `${y}`, [y][0], {y}.y, y?.length]); } p(y);
+switch (1) { case 1: { let x = 9; p(x * 2); } }
+try { throw 1 } catch (x) { { let x = 5; p(x); } p(x); } })();
+// a function expression's own name inside it, past a renamed let of the same name
+(function (e) { { let e = [1, 2, 3], n = 3; n = function e(k) { return k > 0 ? e(k - 1) + 1 : 0; }(n); p([n, e.length]); } })(0);
 return out.join(';');
 })()

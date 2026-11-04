@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")"
 J=../..
 export PATH=$HOME/sym/gcc539/bin:$HOME/sym/wrap:$PATH
-CC="arm-epoc-pe-gcc -O2 -nostdinc -D__MARM__ -D__MARM_ARMI__ -D__SYMBIAN32__ -I$J/shim -I$J/mujs -I$J/../core"
+CC="arm-epoc-pe-gcc -fomit-frame-pointer -O -march=armv4t -mthumb-interwork -O2 -nostdinc -D__MARM__ -D__MARM_ARMI__ -D__SYMBIAN32__ -I$J/shim -I$J/mujs -I$J/../core"
 LG=$(dirname $(arm-epoc-pe-gcc -print-libgcc-file-name))/libgcc.a
 mkdir -p o
 $CC -I$J -c drv.c -o o/drv.o

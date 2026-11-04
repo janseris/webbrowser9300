@@ -12,6 +12,7 @@
  * of time or memory ends them all (the page is then as they left it). C89, no static data;
  * tested on a PC (test/pagetest.c) and in the ARM emulator (test/emu). */
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "bwjs.h"
@@ -105,6 +106,7 @@ static int js_type_ok(const char* t, unsigned int n, int isLanguage)
         return at_ci(t, n, s, "javascript") || at_ci(t, n, s, "jscript") || at_ci(t, n, s, "ecmascript") || at_ci(t, n, s, "livescript");
     e = s;
     while (e < n && t[e] != ';' && t[e] != ' ') e++;
+    if (e - s == 6 && at_ci(t, e, s, "module")) return 2;      /* (an ES module) */
     for (k = 0; ok[k]; k++) if (e - s == strlen(ok[k]) && at_ci(t, e, s, ok[k])) return 1;
     return 0;
 }
@@ -150,6 +152,7 @@ static int next_script(const char* s, unsigned int n, unsigned int i, Script* sc
             if (attr(s, i + 7, te, "type", &vs, &vl) == 0) sc->isJs = js_type_ok(s + vs, vl, 0);
             else if (attr(s, i + 7, te, "language", &vs, &vl) == 0) sc->isJs = js_type_ok(s + vs, vl, 1);
             else sc->isJs = 1;
+            if (attr(s, i + 7, te, "nomodule", &vs, &vl) == 0) sc->isJs = 0;   /* (for browsers without modules) */
             return 1;
         }
         k = skip_raw(s, n, i);
@@ -292,14 +295,50 @@ static void h_fetchtext(js_State* J)
     unsigned int len = 0;
     if (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)) { js_pushnull(J); return; }
     text = r->pg->fetch ? r->pg->fetch(r->pg->fetchCtx, url, &len) : 0;
-    if (text) { js_pushstring(J, text); return; }
-    if (!listed(&r->missing, url) && r->data < BW_MAX_DATA) {
-        r->data++;
+    if (text) {
+        if (js_toboolean(J, 2) && len > BW_MAX_EXTERNAL) js_error(J, "%s: too big", url);
+        js_pushstring(J, text);
+        return;
+    }
+    if (!listed(&r->missing, url) && (js_toboolean(J, 2) || r->data < BW_MAX_DATA)) {
+        if (!js_toboolean(J, 2)) r->data++;     /* (a module: as a script) */
         bwb_str(&r->missing, url);
         bwb_add(&r->missing, "\n", 1);
         r->pg->externalMissing++;
     }
     js_pushnull(J);
+}
+
+/* __fetchBytes(url): what the browser fetched, as an ArrayBuffer (WebAssembly); null as __fetchText */
+static void h_fetchbytes(js_State* J)
+{
+    Run* r = (Run*)js_getcontext(J);
+    const char* url = js_tostring(J, 1);
+    const char* text;
+    unsigned int len = 0, n;
+    if (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)) { js_pushnull(J); return; }
+    text = r->pg->fetch ? r->pg->fetch(r->pg->fetchCtx, url, &len) : 0;
+    if (text) {
+        unsigned char* b;
+        jsB_newbuffer(J, len);
+        b = jsB_bufferbytes(J, -1, &n);
+        if (b && len) memcpy(b, text, len);
+        return;
+    }
+    if (!listed(&r->missing, url)) {
+        bwb_str(&r->missing, url);
+        bwb_add(&r->missing, "\n", 1);
+        r->pg->externalMissing++;
+    }
+    js_pushnull(J);
+}
+
+/* __module(text, name): an ES module compiled, its function (namespace, meta) */
+static void h_module(js_State* J)
+{
+    js_loadmodule(J, js_tostring(J, 2), js_tostring(J, 1));
+    js_pushundefined(J);
+    js_call(J, 0);
 }
 
 /* __resolve(base, url): url made absolute */
@@ -349,6 +388,7 @@ static void run_jobs(Run* r)
 {
     js_State* J = r->J;
     int i, n;
+    if (jsB_lazypending(J, "%runJobs")) return;     /* (no promise yet) */
     js_getglobal(J, "%runJobs");
     if (!js_iscallable(J, -1)) { js_pop(J, 1); return; }
     js_pushundefined(J);
@@ -362,7 +402,23 @@ static void run_jobs(Run* r)
     for (i = 0; i < n && i < 3; i++) {
         js_getindex(J, -1, i);
         js_getproperty(J, -1, "%v");
-        bwdj_note(&r->d, "unhandled promise rejection: ", js_trystring(J, -1, "?"));
+        {   /* (with where it was thrown: the first two calls of its trace) */
+            char m[300], tr[120];
+            unsigned int t = 0;
+            tr[0] = 0;
+            if (js_isobject(J, -1)) {
+                js_getproperty(J, -1, "stackTrace");
+                if (js_isstring(J, -1)) {
+                    const char* st = js_tostring(J, -1);
+                    int lines = 0;
+                    while (st[t] && t < sizeof tr - 1) { if (st[t] == '\n' && ++lines == 3) break; tr[t] = st[t] == '\n' || st[t] == '\t' ? ' ' : st[t]; t++; }
+                    tr[t] = 0;
+                }
+                js_pop(J, 1);
+            }
+            snprintf(m, sizeof m, "%s%s", js_trystring(J, -1, "?"), tr);
+            bwdj_note(&r->d, "unhandled promise rejection: ", m);
+        }
         js_pop(J, 2);
     }
     js_pop(J, 1);
@@ -385,17 +441,22 @@ static int call_global(Run* r, const char* name, double a, double b, int nargs, 
     return err ? -1 : 0;
 }
 
-static BwNode* next_script_node(BwTree* t)
+static int script_is_js(BwNode* s);
+
+/* the next script not run yet; modules (deferred) only when modules is set */
+static BwNode* next_script_node(BwTree* t, int modules)
 {
     BwNode* n = t->doc;
     while ((n = bwd_next(t->doc, n, 1)) != 0)
-        if (n->type == BWN_ELEMENT && !(n->flags & BWF_RAN) && !strcmp(n->name, "script")) return n;
+        if (n->type == BWN_ELEMENT && !(n->flags & BWF_RAN) && !strcmp(n->name, "script") && (modules || script_is_js(n) != 2)) return n;
     return 0;
 }
 
+/* 1 a classic script, 2 a module, 0 not JavaScript (or nomodule: the one for browsers without) */
 static int script_is_js(BwNode* s)
 {
     const char* v = bwd_attr(s, "type");
+    if (bwd_attr(s, "nomodule")) return 0;
     if (v) return js_type_ok(v, (unsigned int)strlen(v), 0);
     v = bwd_attr(s, "language");
     if (v) return js_type_ok(v, (unsigned int)strlen(v), 1);
@@ -488,8 +549,10 @@ static void run_one(Run* r, BwNode* s)
     const char* text;
     unsigned int len = 0;
     char name[160];
+    char* murl = 0;     /* a module's URL */
+    int kind = script_is_js(s);
     s->flags |= BWF_RAN;
-    if (!script_is_js(s)) { pg->skipped++; return; }
+    if (!kind) { pg->skipped++; return; }
     if (src) {
         char* url = script_url(r->base, src, (unsigned int)strlen(src));
         if (!url) { pg->skipped++; return; }
@@ -510,8 +573,8 @@ static void run_one(Run* r, BwNode* s)
             name[n] = 0;
             { char* q = strchr(name, '?'); if (q) *q = 0; }
         }
-        free(url);
-        if (len > BW_MAX_EXTERNAL) { pg->big++; return; }
+        if (kind == 2) murl = url; else free(url);
+        if (len > BW_MAX_EXTERNAL) { pg->big++; free(murl); return; }
         pg->external++;
     } else {
         own = inline_source(s, &len);
@@ -526,12 +589,20 @@ static void run_one(Run* r, BwNode* s)
     set_current(r, s);
     r->d.current = s;
     r->d.wr.n = 0;
-    if (js_ploadstring(J, name, text)) note_thrown(r, name);
+    if (kind == 2) {    /* a module: run by the prelude's loader (its imports fetched like scripts) */
+        js_getglobal(J, "__runModule");
+        js_pushundefined(J);
+        js_pushstring(J, text);
+        js_pushstring(J, murl ? murl : r->base);
+        js_pushstring(J, name);
+        if (js_pcall(J, 3)) note_thrown(r, name);
+    } else if (js_ploadstring(J, name, text)) note_thrown(r, name);
     else {
         js_pushundefined(J);
         if (js_pcall(J, 0)) note_thrown(r, name);
     }
     js_pop(J, 1);
+    free(murl);
     if (!pg->stopped) run_jobs(r);
     free(own);
     flush_written(r, s);
@@ -547,10 +618,10 @@ static int out_of_time(Run* r)
     return r->pg->stopped;
 }
 
-static void run_scripts(Run* r)
+static void run_scripts(Run* r, int modules)
 {
     BwNode* s;
-    while (!out_of_time(r) && r->pg->run < BW_MAX_SCRIPTS && (s = next_script_node(r->d.tree)) != 0) run_one(r, s);
+    while (!out_of_time(r) && r->pg->run < BW_MAX_SCRIPTS && (s = next_script_node(r->d.tree, modules)) != 0) run_one(r, s);
 }
 
 static char* take(BwBuf* b) { char* p = b->oom ? (free(b->p), (char*)0) : b->p; b->p = 0; return p; }
@@ -559,7 +630,7 @@ int bw_js_page(js_State* J, BwJsPage* pg)
 {
     Run* r = (Run*)malloc(sizeof(Run));
     BwJsPage keep;
-    int result = -1;
+    int result = -1, i;
     keep = *pg;
     memset(pg, 0, sizeof *pg);
     pg->html = keep.html; pg->len = keep.len; pg->href = keep.href; pg->ua = keep.ua; pg->ref = keep.ref;
@@ -591,6 +662,8 @@ int bw_js_page(js_State* J, BwJsPage* pg)
     js_newcfunction(J, h_setcookie, "__setCookie", 1); js_setglobal(J, "__setCookie");
     js_newcfunction(J, h_fetchtext, "__fetchText", 1); js_setglobal(J, "__fetchText");
     js_newcfunction(J, h_resolve, "__resolve", 2); js_setglobal(J, "__resolve");
+    js_newcfunction(J, h_module, "__module", 2); js_setglobal(J, "__module");
+    js_newcfunction(J, h_fetchbytes, "__fetchBytes", 1); js_setglobal(J, "__fetchBytes");
     js_pushstring(J, pg->href ? pg->href : ""); js_setglobal(J, "__href");
     js_pushstring(J, pg->ua ? pg->ua : ""); js_setglobal(J, "__ua");
     js_pushstring(J, pg->ref ? pg->ref : ""); js_setglobal(J, "__ref");
@@ -600,6 +673,8 @@ int bw_js_page(js_State* J, BwJsPage* pg)
     js_pushnumber(J, pg->h); js_setglobal(J, "__h");
     if (js_try(J)) { bwdj_note(&r->d, "setting up the DOM failed: ", js_tostring(J, -1)); js_pop(J, 1); goto done; }
     bwdj_setup(J, &r->d);
+    for (i = 0; i < (int)(sizeof kBwPreludeLazy / sizeof kBwPreludeLazy[0]); i++)   /* (compiled when used) */
+        jsB_lazy(J, kBwPreludeLazy[i].names, kBwPreludeLazy[i].src, kBwPreludeLazy[i].file);
     js_endtry(J);
     if (js_ploadstring(J, "[prelude]", kBwPrelude)) { bwdj_note(&r->d, "prelude: ", js_tostring(J, -1)); js_pop(J, 1); goto done; }
     js_pushundefined(J);
@@ -609,17 +684,18 @@ int bw_js_page(js_State* J, BwJsPage* pg)
 
     /* the page as it is read */
     r->d.parsing = 1;
-    run_scripts(r);
+    run_scripts(r, 0);
     r->d.parsing = 0;
+    run_scripts(r, 1);  /* (modules are deferred: after the page is read) */
     /* read: DOMContentLoaded (and the scripts it added), load */
-    if (!out_of_time(r)) { call_global(r, "__loaded", 1, 0, 1, 0); run_scripts(r); }
-    if (!out_of_time(r)) { call_global(r, "__loaded", 2, 0, 1, 0); run_scripts(r); }
+    if (!out_of_time(r)) { call_global(r, "__loaded", 1, 0, 1, 0); run_scripts(r, 1); }
+    if (!out_of_time(r)) { call_global(r, "__loaded", 2, 0, 1, 0); run_scripts(r, 1); }
     /* the first seconds' timers */
     while (!out_of_time(r) && pg->timers < BW_TIMER_CALLS) {
         double ran = 0;
         if (call_global(r, "__runTimers", BW_TIMER_MS, 20, 2, &ran) || ran < 1) break;
         pg->timers += (int)ran;
-        run_scripts(r);
+        run_scripts(r, 1);
     }
     js_setlimit(J, 1000000, 0);         /* (our own last step: even after a script was stopped) */
     call_global(r, "__flushStyles", 0, 0, 0, 0);

@@ -24,6 +24,19 @@ static void Op_toString(js_State *J)
 		js_pushliteral(J, "[object Null]");
 	else {
 		js_Object *self = js_toobject(J, 0);
+		/* Browser 9300: @@toStringTag (Symbol.toStringTag: "@@toStringTag", js/es.js) */
+		if (self->type != JS_CARRAY && self->type != JS_CFUNCTION && self->type != JS_CCFUNCTION) {
+			js_getproperty(J, 0, "@@toStringTag");
+			if (js_isstring(J, -1)) {
+				js_pushliteral(J, "[object ");
+				js_rot2(J);
+				js_concat(J);
+				js_pushliteral(J, "]");
+				js_concat(J);
+				return;
+			}
+			js_pop(J, 1);
+		}
 		switch (self->type) {
 		case JS_COBJECT: js_pushliteral(J, "[object Object]"); break;
 		case JS_CARRAY: js_pushliteral(J, "[object Array]"); break;

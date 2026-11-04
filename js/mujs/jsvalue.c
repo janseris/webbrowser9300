@@ -227,7 +227,7 @@ double jsV_stringtonumber(js_State *J, const char *s)
 {
 	char *e;
 	double n;
-	while (jsY_iswhite(*s) || jsY_isnewline(*s)) ++s;
+	s = jsY_skipspace(s);
 	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X') && s[2] != 0)
 		n = js_strtol(s + 2, &e, 16);
 	else if (!strncmp(s, "Infinity", 8))
@@ -238,7 +238,7 @@ double jsV_stringtonumber(js_State *J, const char *s)
 		n = -INFINITY, e = (char*)s + 9;
 	else
 		n = js_stringtofloat(s, &e);
-	while (jsY_iswhite(*e) || jsY_isnewline(*e)) ++e;
+	e = (char *)jsY_skipspace(e);
 	if (*e) return NAN;
 	return n;
 }
@@ -537,6 +537,16 @@ void js_newcconstructor(js_State *J, js_CFunction cfun, js_CFunction ccon, const
 		js_copy(J, -2); /* obj proto obj */
 		js_defproperty(J, -2, "constructor", JS_DONTENUM);
 		js_defproperty(J, -2, "prototype", JS_DONTENUM | JS_DONTCONF);
+	}
+}
+
+/* Browser 9300: index hooks for the userdata at idx */
+void js_setuserindex(js_State *J, int idx, js_GetIndex geti, js_PutIndex puti)
+{
+	js_Object *obj = js_toobject(J, idx);
+	if (obj->type == JS_CUSERDATA) {
+		obj->u.user.geti = geti;
+		obj->u.user.puti = puti;
 	}
 }
 

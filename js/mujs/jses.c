@@ -1,5 +1,107 @@
 /* Browser 9300: the engine's ES2015+ runtime: js/es.js (as jses.h) and the parts in C. */
+typedef struct { const char *names, *src, *file; } BwLazyChunk;
 #include "jses.h"
+
+/* Browser 9300: lazy globals. Each name of a chunk is an accessor on the global object until a
+ * script reads one (the getter compiles and runs the chunk, which defines them all; the
+ * accessors still there are deleted first) or sets one (that name becomes a plain value). */
+typedef struct { const char *names, *src, *file; char name[40]; } BwLazyName;
+
+static void ES_lazyget(js_State *J);
+
+static void lazy_free(js_State *J, void *data)
+{
+	js_free(J, data);
+}
+
+static int lazy_pending(js_State *J, const char *name)
+{
+	js_Property *p = jsV_getownproperty(J, J->G, name);
+	return p && p->getter && p->getter->type == JS_CCFUNCTION && p->getter->u.c.function == ES_lazyget;
+}
+
+static void lazy_load(js_State *J, BwLazyName *n)
+{
+	const char *s = n->names, *e;
+	char name[40];
+	while (*s) {
+		for (e = s; *e && *e != ' '; ++e)
+			;
+		if (e - s < (int)sizeof name) {
+			memcpy(name, s, e - s);
+			name[e - s] = 0;
+			if (lazy_pending(J, name))
+				jsV_delproperty(J, J->G, name);
+		}
+		s = *e ? e + 1 : e;
+	}
+	js_loadstring(J, n->file, n->src);
+	js_pushglobal(J);
+	js_call(J, 0);
+	js_pop(J, 1);
+}
+
+static void ES_lazyget(js_State *J)
+{
+	BwLazyName *n = js_currentfunctiondata(J);
+	char name[40];
+	memcpy(name, n->name, sizeof name);	/* (n may be collected once the accessor is gone) */
+	lazy_load(J, n);
+	js_getglobal(J, name);
+}
+
+static void ES_lazyset(js_State *J)
+{
+	BwLazyName *n = js_currentfunctiondata(J);
+	char name[40];
+	memcpy(name, n->name, sizeof name);
+	if (lazy_pending(J, name))
+		jsV_delproperty(J, J->G, name);
+	js_copy(J, 1);
+	js_setglobal(J, name);
+	js_pushundefined(J);
+}
+
+static void lazy_fun(js_State *J, js_CFunction f, const char *names, const char *src, const char *file, const char *name, int len)
+{
+	BwLazyName *n = js_malloc(J, sizeof *n);
+	n->names = names;
+	n->src = src;
+	n->file = file;
+	memcpy(n->name, name, len);
+	n->name[len] = 0;
+	js_newcfunctionx(J, f, n->name, f == ES_lazyset, n, lazy_free);
+}
+
+/* names: space separated; src and file stay (static text) */
+void jsB_lazy(js_State *J, const char *names, const char *src, const char *file)
+{
+	const char *s = names, *e;
+#ifdef BW_LAZY_OFF
+	js_loadstring(J, file, src); js_pushglobal(J); js_call(J, 0); js_pop(J, 1); return;
+#endif
+	while (*s) {
+		for (e = s; *e && *e != ' '; ++e)
+			;
+		if (e > s && e - s < 40) {
+			char name[40];
+			memcpy(name, s, e - s);
+			name[e - s] = 0;
+			js_pushglobal(J);
+			lazy_fun(J, ES_lazyget, names, src, file, s, (int)(e - s));
+			lazy_fun(J, ES_lazyset, names, src, file, s, (int)(e - s));
+			js_defaccessor(J, -3, name, JS_DONTENUM);
+			js_pop(J, 1);
+		}
+		s = *e ? e + 1 : e;
+	}
+}
+
+/* still not compiled (the host's %runJobs: no promise yet, no jobs) */
+int jsB_lazypending(js_State *J, const char *name)
+{
+	return lazy_pending(J, name);
+}
 
 static void ES_construct(js_State *J)
 {
@@ -83,6 +185,13 @@ void jsB_inites(js_State *J)
 	if (js_ploadstring(J, "[es]", kBwEs) || (js_pushglobal(J), js_pcall(J, 0)))
 		js_report(J, js_trystring(J, -1, "[es] failed"));
 	js_pop(J, 1);
+	{
+		int i;
+		jsB_initbytes(J);
+		jsB_initwasm(J);
+		for (i = 0; i < (int)(sizeof kBwEsLazy / sizeof kBwEsLazy[0]); ++i)
+			jsB_lazy(J, kBwEsLazy[i].names, kBwEsLazy[i].src, kBwEsLazy[i].file);
+	}
 	js_getglobal(J, "%genproto");
 	if (js_isobject(J, -1)) {
 		js_newcfunction(J, ES_co, "%co", 2);

@@ -11,7 +11,8 @@ function isObj(x) { return x !== null && (typeof x === 'object' || typeof x === 
 
 // ---- Symbol (strings)
 var symN = 0;
-function Symbol(d) {
+function Symbol() {   // (length 0, as polyfills test)
+    var d = arguments[0];
     if (this instanceof Symbol) throw new TypeError('Symbol is not a constructor');
     return '@@' + (d === undefined ? '' : String(d)) + '@' + (++symN);
 }
@@ -198,8 +199,8 @@ def(SP, 'substr', function (start, len) {
     len = len === undefined ? n - start : len | 0;
     return len <= 0 ? '' : s.substring(start, start + len);
 });
-def(SP, 'trimStart', function () { return String(this).replace(/^[\s﻿\xA0]+/, ''); });
-def(SP, 'trimEnd', function () { return String(this).replace(/[\s﻿\xA0]+$/, ''); });
+def(SP, 'trimStart', function () { var s = String(this), t = s.trim(); return t ? s.slice(s.indexOf(t)) : ''; });
+def(SP, 'trimEnd', function () { var s = String(this), t = s.trim(); return t ? s.slice(0, s.indexOf(t) + t.length) : ''; });
 def(SP, 'trimLeft', SP.trimStart);
 def(SP, 'trimRight', SP.trimEnd);
 def(SP, 'startsWith', function (t, p) { p = p | 0; t = String(t); return String(this).substring(p, p + t.length) === t; });
@@ -222,7 +223,7 @@ def(SP, 'codePointAt', function (i) {
     if (c >= 0xD800 && c < 0xDC00) { d = s.charCodeAt((i | 0) + 1); if (d >= 0xDC00 && d < 0xE000) return (c - 0xD800) * 0x400 + d - 0xDC00 + 0x10000; }
     return c;
 });
-def(String, 'fromCodePoint', function () {
+def(String, 'fromCodePoint', function (cp) {
     var r = '', c;
     for (var i = 0; i < arguments.length; i++) {
         c = +arguments[i];
@@ -275,6 +276,25 @@ def(Math, 'tanh', function (x) { var a = Math.exp(x), b = Math.exp(-x); return a
 def(Math, 'fround', function (x) { return +x; });
 def(Math, 'imul', function (a, b) { var ah = (a >>> 16) & 0xffff, al = a & 0xffff, bh = (b >>> 16) & 0xffff, bl = b & 0xffff; return ((al * bl) + (((ah * bl + al * bh) << 16) >>> 0) | 0); });
 def(Math, 'clz32', function (x) { x = x >>> 0; if (!x) return 32; var n = 0; while (!(x & 0x80000000)) { x <<= 1; n++; } return n; });
+def(Math, 'acosh', function (x) { return Math.log(x + Math.sqrt(x * x - 1)); });
+def(Math, 'asinh', function (x) { x = +x; return x === -Infinity || x === 0 ? x : Math.log(x + Math.sqrt(x * x + 1)); });
+def(Math, 'atanh', function (x) { return Math.log((1 + x) / (1 - x)) / 2; });
+// ES2015: the Object functions take primitives (as their wrapper objects)
+(function () {
+    function obj(o) { if (o == null) throw new TypeError('Cannot convert undefined or null to object'); return Object(o); }
+    function prim(o) { return o === null || (typeof o !== 'object' && typeof o !== 'function'); }
+    var keys = Object.keys, gopn = Object.getOwnPropertyNames, gopd = Object.getOwnPropertyDescriptor, gpo = Object.getPrototypeOf;
+    hid(Object, 'keys', function keys_(o) { return keys(prim(o) ? obj(o) : o); });
+    hid(Object, 'getOwnPropertyNames', function getOwnPropertyNames(o) { return gopn(prim(o) ? obj(o) : o); });
+    hid(Object, 'getOwnPropertyDescriptor', function getOwnPropertyDescriptor(o, k) {
+        if (typeof o === 'string' && (k = String(k)) === String(k >>> 0) && +k < o.length) return { value: o.charAt(+k), writable: false, enumerable: true, configurable: false };
+        return gopd(prim(o) ? obj(o) : o, k);
+    });
+    hid(Object, 'getPrototypeOf', function getPrototypeOf(o) { return gpo(prim(o) ? obj(o) : o); });
+    ['seal', 'freeze', 'preventExtensions'].forEach(function (n) { var f = Object[n]; if (f) hid(Object, n, function (o) { return prim(o) ? o : f(o); }); });
+    ['isSealed', 'isFrozen'].forEach(function (n) { var f = Object[n]; if (f) hid(Object, n, function (o) { return prim(o) ? true : f(o); }); });
+    var ie = Object.isExtensible; if (ie) hid(Object, 'isExtensible', function (o) { return prim(o) ? false : ie(o); });
+})();
 def(G, 'globalThis', G);
 
 // Annex B leftovers old scripts call
@@ -289,6 +309,184 @@ def(OP, '__lookupSetter__', function (k) { for (var o = this; o; o = Object.getP
 def(RegExp.prototype, 'compile', function (p, f) { return new RegExp(p, f); });
 def(FP, 'toSource', function () { return FP.toString.call(this); });
 
+def(Object, 'groupBy', function (it, f) { var o = {}, a = toArr(it); for (var i = 0; i < a.length; i++) { var k = f(a[i], i); (o[k] || (o[k] = [])).push(a[i]); } return o; });
+
+// ---- generators and async functions (the engine's coroutines: %gen makes the object)
+function Generator() {}
+var GP = Generator.prototype;
+function gstep(g, mode, v) {
+    var r = g['%co'](mode, v); // [value, done]
+    return iterResult(r[0], r[1]);
+}
+hid(GP, 'next', function (v) { return gstep(this, 0, v); });
+hid(GP, 'throw', function (e) { return gstep(this, 1, e); });
+hid(GP, 'return', function (v) { return gstep(this, 2, v); });
+hid(GP, ITER, function () { return this; });
+hid(GP, '@@toStringTag', 'Generator');
+hid(G, '%genproto', GP);
+
+// yield* inside a generator: the inner iterator's values one by one (the engine calls this)
+hid(G, '%iter', function (x) {
+    if (x == null) throw new TypeError(x + ' is not iterable');
+    var f = x[ITER];
+    if (typeof f !== 'function') { if (typeof x === 'string' || typeof x.length === 'number') return new ArrayIterator(toArr(x), 0); throw new TypeError('not iterable'); }
+    return f.call(x);
+});
+hid(G, '%ystep', function (it, v) { var r = it.next(v); if (!isObj(r)) throw new TypeError('Iterator result ' + r + ' is not an object'); return r; });
+hid(G, '%aiter', function (x) {
+    var f = x != null && x[AITER];
+    return typeof f === 'function' ? f.call(x) : G['%iter'](x);
+});
+hid(G, '%es', { OP: OP, AP: AP, SP: SP, FP: FP, hasOwn: hasOwn, slice: slice, defp: defp, hid: hid, def: def, isObj: isObj, ITER: ITER, AITER: AITER, iterResult: iterResult, ArrayIterator: ArrayIterator, IterProto: IterProto, toArr: toArr, assign: assign });
+})(this);
+
+// ---- the rest, compiled when a page first names one of its globals (js/genes.py: each //@lazy
+// block runs with G the global object and the core's helpers above)
+//@lazy ArrayBuffer Int8Array Uint8Array Uint8ClampedArray Int16Array Uint16Array Int32Array Uint32Array Float32Array Float64Array BigInt64Array BigUint64Array DataView %TypedArrayPrototype
+// ---- ArrayBuffer, typed arrays, DataView: in C (js/mujs/jsbytes.c); the generic methods here
+G['%bytes']();
+var TAP = G['%TypedArrayPrototype'];
+['values', 'keys', 'entries', 'forEach', 'every', 'some', 'find', 'findIndex', 'findLast', 'findLastIndex', 'indexOf', 'lastIndexOf',
+ 'includes', 'join', 'reduce', 'reduceRight', 'reverse', 'at', 'toLocaleString'].forEach(function (n) { if (AP[n]) hid(TAP, n, AP[n]); });
+hid(TAP, ITER, AP[ITER] || AP.values);
+hid(TAP, 'toString', AP.toString);
+function num(a, b) { return a < b ? -1 : a > b ? 1 : a === b ? (a === 0 && 1 / a < 1 / b ? -1 : 0) : a !== a ? (b !== b ? 0 : 1) : -1; }
+hid(TAP, 'sort', function (f) { var a = slice.call(this).sort(f || num); this.set(a); return this; });
+hid(TAP, 'toSorted', function (f) { return new this.constructor(slice.call(this).sort(f || num)); });
+hid(TAP, 'toReversed', function () { return new this.constructor(slice.call(this).reverse()); });
+hid(TAP, 'with', function (i, v) { var r = new this.constructor(this); i = i < 0 ? i + this.length : i; if (!(i >= 0 && i < this.length)) throw new RangeError('Invalid typed array index'); r[i] = v; return r; });
+hid(TAP, 'map', function (f, t) { var n = this.length, r = new this.constructor(n); for (var i = 0; i < n; i++) r[i] = f.call(t, this[i], i, this); return r; });
+hid(TAP, 'filter', function (f, t) { var a = []; for (var i = 0, n = this.length; i < n; i++) if (f.call(t, this[i], i, this)) a.push(this[i]); return new this.constructor(a); });
+['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array'].forEach(function (n) {
+    var C = G[n];
+    hid(C.prototype, '@@toStringTag', n);
+    hid(C, 'from', function (a, f, t) { return new this(Array.from(a, f, t)); });
+    hid(C, 'of', function () { return new this(slice.call(arguments)); });
+});
+hid(G.ArrayBuffer.prototype, '@@toStringTag', 'ArrayBuffer');
+hid(G.DataView.prototype, '@@toStringTag', 'DataView');
+//@end
+//@lazy WebAssembly
+// ---- WebAssembly: the interpreter is C (js/mujs/jswasm.c, %wasm*); the API here
+G['%wasminit']();
+var WA = {}, W = function (n) { return G['%wasm' + n]; };
+function wErr(name) {
+    function E(m) {
+        if (!(this instanceof E)) return new E(m);
+        var e = new Error(m === undefined ? '' : m);
+        this.message = e.message;
+        hid(this, 'stackTrace', e.stackTrace);
+    }
+    E.prototype = Object.create(Error.prototype);
+    hid(E.prototype, 'constructor', E);
+    hid(E.prototype, 'name', name);
+    return E;
+}
+WA.CompileError = wErr('CompileError'); WA.LinkError = wErr('LinkError'); WA.RuntimeError = wErr('RuntimeError');
+hid(G, '%wasmTrap', function (m) { throw new WA.RuntimeError(m); });
+hid(G, '%wasmCompileError', function (m) { throw new WA.CompileError('WebAssembly.Module(): ' + m); });
+function Module(bytes) {
+    if (!(this instanceof Module)) throw new TypeError("WebAssembly.Module must be invoked with 'new'");
+    hid(this, '%m', W('Compile')(bytes));
+}
+Module.imports = function (m) { return W('Imports')(m['%m']); };
+Module.exports = function (m) { return W('Exports')(m['%m']).map(function (e) { return { name: e.name, kind: e.kind }; }); };
+Module.customSections = function () { return []; };
+function Memory(d) {
+    if (!(this instanceof Memory)) throw new TypeError("WebAssembly.Memory must be invoked with 'new'");
+    var n = d && d.initial !== undefined ? d.initial >>> 0 : 0, mx = d && d.maximum !== undefined ? d.maximum >>> 0 : 65536;
+    if (n > 32768 || n > mx) throw new RangeError('WebAssembly.Memory(): could not allocate memory');
+    hid(this, '%b', new G.ArrayBuffer(n * 65536));
+    hid(this, '%max', mx);
+}
+defp(Memory.prototype, 'buffer', { get: function () { return this['%b']; }, configurable: true });
+hid(Memory.prototype, 'grow', function (n) {
+    var r = W('Grow')(this['%b'], n >>> 0, this['%max']);
+    if (r < 0) throw new RangeError('WebAssembly.Memory.grow(): Maximum memory size exceeded');
+    return r;
+});
+function Global(d, v) {
+    if (!(this instanceof Global)) throw new TypeError("WebAssembly.Global must be invoked with 'new'");
+    hid(this, '%t', d && d.value); hid(this, '%mut', !!(d && d.mutable)); hid(this, '%v', v === undefined ? 0 : +v);
+}
+defp(Global.prototype, 'value', {
+    get: function () { return this['%i'] ? W('Global')(this['%i'], this['%g']) : this['%v']; },
+    set: function (v) { if (!this['%mut']) throw new TypeError("Can't set the value of an immutable global."); if (this['%i']) W('Global')(this['%i'], this['%g'], v); else this['%v'] = +v; },
+    configurable: true
+});
+hid(Global.prototype, 'valueOf', function () { return this.value; });
+function fnFor(inst, i, np) {
+    var c = inst['%fc'] || (hid(inst, '%fc', {}), inst['%fc']);
+    if (c[i]) return c[i];
+    var f = function () { return W('Call')(inst, i, arguments); };
+    hid(f, '%wi', [inst, i]);
+    return c[i] = f;
+}
+function Table(d) {
+    if (!(this instanceof Table)) throw new TypeError("WebAssembly.Table must be invoked with 'new'");
+    hid(this, '%a', []); var n = d && d.initial >>> 0; for (var i = 0; i < n; i++) this['%a'].push(null);
+}
+defp(Table.prototype, 'length', { get: function () { return this['%i'] ? W('Table')(this['%i']) : this['%a'].length; }, configurable: true });
+hid(Table.prototype, 'get', function (i) {
+    if (!this['%i']) return this['%a'][i] === undefined ? null : this['%a'][i];
+    var f = W('Table')(this['%i'], i >>> 0);
+    return f < 0 ? null : fnFor(this['%i'], f);
+});
+hid(Table.prototype, 'set', function (i, f) {
+    if (!this['%i']) { this['%a'][i] = f; return; }
+    if (f == null) { W('Table')(this['%i'], i >>> 0, null); return; }
+    if (!f['%wi'] || f['%wi'][0] !== this['%i']) throw new TypeError('WebAssembly.Table.set(): only this instance\'s functions');
+    W('Table')(this['%i'], i >>> 0, f['%wi'][1]);
+});
+hid(Table.prototype, 'grow', function () { throw new RangeError('WebAssembly.Table.grow(): not supported'); });
+function Instance(module, imports) {
+    if (!(this instanceof Instance)) throw new TypeError("WebAssembly.Instance must be invoked with 'new'");
+    if (!(module instanceof Module)) throw new TypeError('WebAssembly.Instance(): Argument 0 must be a WebAssembly.Module');
+    var m = module['%m'], imps = W('Imports')(m), vals = [], mem = null, info = W('MemoryInfo')(m), ex = {};
+    for (var i = 0; i < imps.length; i++) {
+        var im = imps[i], o = imports && imports[im.module];
+        if (!isObj(o)) throw new TypeError('WebAssembly.Instance(): Import #' + i + ' "' + im.module + '": module is not an object or function');
+        var v = o[im.name];
+        if (im.kind === 'function') {
+            if (typeof v !== 'function') throw new WA.LinkError('WebAssembly.Instance(): Import #' + i + ' "' + im.module + '" "' + im.name + '": function import requires a callable');
+            vals[i] = v;
+        } else if (im.kind === 'memory') {
+            if (!(v instanceof Memory)) throw new WA.LinkError('WebAssembly.Instance(): Import #' + i + ' "' + im.module + '" "' + im.name + '": memory import must be a WebAssembly.Memory object');
+            mem = v; vals[i] = null;
+        } else if (im.kind === 'global') vals[i] = v instanceof Global ? v.value : +v;
+        else vals[i] = v;
+    }
+    if (info && !info[2]) mem = new Memory({ initial: info[0], maximum: info[1] });
+    var inst = W('Instantiate')(m, vals, mem ? mem['%b'] : null);
+    var es = W('Exports')(m);
+    for (i = 0; i < es.length; i++) {
+        var e = es[i];
+        if (e.kind === 'function') ex[e.name] = fnFor(inst, e.index, e.params);
+        else if (e.kind === 'memory') ex[e.name] = mem;
+        else if (e.kind === 'global') { var g = Object.create(Global.prototype); hid(g, '%i', inst); hid(g, '%g', e.index); hid(g, '%mut', true); ex[e.name] = g; }
+        else if (e.kind === 'table') { var t = Object.create(Table.prototype); hid(t, '%i', inst); ex[e.name] = t; }
+    }
+    hid(this, '%i', inst);
+    this.exports = ex;
+    W('Start')(inst);
+}
+function bytesOf(b) { return b; }
+WA.Module = Module; WA.Instance = Instance; WA.Memory = Memory; WA.Global = Global; WA.Table = Table;
+WA.validate = function (b) { try { W('Compile')(b); return true; } catch (e) { return false; } };
+WA.compile = function (b) { return new G.Promise(function (r) { r(new Module(b)); }); };
+WA.instantiate = function (src, imports) {
+    return new G.Promise(function (r) {
+        if (src instanceof Module) r(new Instance(src, imports));
+        else { var m = new Module(src); r({ module: m, instance: new Instance(m, imports) }); }
+    });
+};
+function streamed(resp) { return G.Promise.resolve(resp).then(function (r) { return r.arrayBuffer(); }); }
+WA.compileStreaming = function (resp) { return streamed(resp).then(function (b) { return new Module(b); }); };
+WA.instantiateStreaming = function (resp, imports) { return streamed(resp).then(function (b) { return WA.instantiate(b, imports); }); };
+hid(WA, '@@toStringTag', 'WebAssembly');
+hid(G, 'WebAssembly', WA);
+//@end
+//@lazy Map Set WeakMap WeakSet WeakRef FinalizationRegistry
 // ---- Map, Set (insertion order; object keys get a hidden id)
 var idN = 0;
 function keyOf(k, make) {
@@ -338,12 +536,14 @@ hid(CollIter.prototype, 'next', function () {
     return iterResult(undefined, true);
 });
 hid(CollIter.prototype, ITER, function () { return this; });
-function Map(it) {
+function Map() {
+    var it = arguments[0];
     if (!(this instanceof Map)) throw new TypeError("Constructor Map requires 'new'");
     hid(this, '%m', new MapImpl(false));
     if (it != null) { var a = toArr(it); for (var i = 0; i < a.length; i++) this.set(a[i][0], a[i][1]); }
 }
-function Set(it) {
+function Set() {
+    var it = arguments[0];
     if (!(this instanceof Set)) throw new TypeError("Constructor Set requires 'new'");
     hid(this, '%m', new MapImpl(true));
     if (it != null) { var a = toArr(it); for (var i = 0; i < a.length; i++) this.add(a[i]); }
@@ -374,10 +574,10 @@ hid(SetP, ITER, SetP.values);
 defp(SetP, 'size', { get: function () { return M(this).n; }, configurable: true });
 hid(SetP, '@@toStringTag', 'Set');
 def(Map, 'groupBy', function (it, f) { var m = new Map(), a = toArr(it); for (var i = 0; i < a.length; i++) { var k = f(a[i], i); if (!m.has(k)) m.set(k, []); m.get(k).push(a[i]); } return m; });
-def(Object, 'groupBy', function (it, f) { var o = {}, a = toArr(it); for (var i = 0; i < a.length; i++) { var k = f(a[i], i); (o[k] || (o[k] = [])).push(a[i]); } return o; });
 // WeakMap / WeakSet: a hidden property on the key (nothing is held by the map)
 var wmN = 0;
-function WeakMap(it) {
+function WeakMap() {
+    var it = arguments[0];
     if (!(this instanceof WeakMap)) throw new TypeError("Constructor WeakMap requires 'new'");
     hid(this, '%w', '@@wm' + (++wmN));
     if (it != null) { var a = toArr(it); for (var i = 0; i < a.length; i++) this.set(a[i][0], a[i][1]); }
@@ -394,7 +594,8 @@ hid(WMP, 'set', function (k, v) {
 });
 hid(WMP, 'has', function (k) { return isObj(k) && (hasOwn.call(k, this['%w']) || !!(this['%f'] && this['%f'].has(k))); });
 hid(WMP, 'delete', function (k) { if (isObj(k) && hasOwn.call(k, this['%w'])) { delete k[this['%w']]; return true; } return !!(this['%f'] && this['%f']['delete'](k)); });
-function WeakSet(it) {
+function WeakSet() {
+    var it = arguments[0];
     if (!(this instanceof WeakSet)) throw new TypeError("Constructor WeakSet requires 'new'");
     WeakMap.call(this);
     if (it != null) { var a = toArr(it); for (var i = 0; i < a.length; i++) this.add(a[i]); }
@@ -413,7 +614,8 @@ if (typeof G.WeakMap !== 'function') hid(G, 'WeakMap', WeakMap);
 if (typeof G.WeakSet !== 'function') hid(G, 'WeakSet', WeakSet);
 if (typeof G.WeakRef !== 'function') hid(G, 'WeakRef', WeakRef);
 if (typeof G.FinalizationRegistry !== 'function') hid(G, 'FinalizationRegistry', FinalizationRegistry);
-
+//@end
+//@lazy Promise queueMicrotask %runJobs %unhandled %async %abox %asyncgen
 // ---- Promise (jobs run by %runJobs, which the host calls after each script and callback)
 var jobs = [], jobHead = 0;
 function queue(f, a, b) { jobs.push(f, a, b); }
@@ -470,21 +672,33 @@ function react(p, h) {
     resolve(h.p, v);
 }
 var PP = Promise.prototype;
+function noop() {}
 hid(PP, 'then', function (ok, err) {
-    var p = new Promise(function () {}), h = { ok: ok, err: err, p: p };
+    var p = new Promise(noop), h = { ok: ok, err: err, p: p }, C = this.constructor, S, cap;
+    if (C !== Promise && isObj(C)) {   /* a subclass's then makes its own kind (@@species; core-js tests it) */
+        S = C['@@species'];
+        if (typeof S === 'function' && S !== Promise) {
+            var res, rej;
+            cap = new S(function (a, b) { res = a; rej = b; });
+            p['%q'].push({ ok: function (v) { res(v); }, err: function (e) { rej(e); }, p: new Promise(noop) });
+            p['%h'] = true;
+        }
+    }
     if (this['%s'] === 2 && !this['%h']) { var i = unhandled.indexOf(this); if (i >= 0) unhandled.splice(i, 1); }
     this['%h'] = true;
     if (this['%s']) queue(react, this, h); else this['%q'].push(h);
-    return p;
+    return cap || p;
 });
+defp(Promise, '@@species', { get: function () { return this; }, configurable: true });
 hid(PP, 'catch', function (err) { return this.then(undefined, err); });
 hid(PP, 'finally', function (f) {
     return this.then(function (v) { return Promise.resolve(f()).then(function () { return v; }); },
                      function (e) { return Promise.resolve(f()).then(function () { throw e; }); });
 });
 hid(PP, '@@toStringTag', 'Promise');
-hid(Promise, 'resolve', function (v) { if (v instanceof Promise) return v; return new Promise(function (r) { r(v); }); });
-hid(Promise, 'reject', function (e) { return new Promise(function (r, j) { j(e); }); });
+function PC(c) { return typeof c === 'function' && c !== Promise ? c : Promise; }   /* (a subclass: its own kind) */
+hid(Promise, 'resolve', function (v) { var C = PC(this); if (v instanceof C && v.constructor === C) return v; return new C(function (r) { r(v); }); });
+hid(Promise, 'reject', function (e) { return new (PC(this))(function (r, j) { j(e); }); });
 hid(Promise, 'withResolvers', function () { var o = {}; o.promise = new Promise(function (a, b) { o.resolve = a; o.reject = b; }); return o; });
 function combine(it, onv, one, all, fin) {
     return new Promise(function (res, rej) {
@@ -513,19 +727,6 @@ hid(Promise, 'any', function (it) {
 if (typeof G.Promise !== 'function') hid(G, 'Promise', Promise);
 def(G, 'queueMicrotask', function (f) { queue(function () { f(); }); });
 
-// ---- generators and async functions (the engine's coroutines: %gen makes the object)
-function Generator() {}
-var GP = Generator.prototype;
-function gstep(g, mode, v) {
-    var r = g['%co'](mode, v); // [value, done]
-    return iterResult(r[0], r[1]);
-}
-hid(GP, 'next', function (v) { return gstep(this, 0, v); });
-hid(GP, 'throw', function (e) { return gstep(this, 1, e); });
-hid(GP, 'return', function (v) { return gstep(this, 2, v); });
-hid(GP, ITER, function () { return this; });
-hid(GP, '@@toStringTag', 'Generator');
-hid(G, '%genproto', GP);
 // an async function's body runs as a coroutine: await yields the awaited value
 hid(G, '%async', function (g) {
     return new Promise(function (res, rej) {
@@ -569,17 +770,4 @@ hid(AGP, 'return', function (v) { return agreq(this, 2, v); });
 hid(AGP, AITER, function () { return this; });
 hid(AGP, '@@toStringTag', 'AsyncGenerator');
 hid(G, '%asyncgen', function (g) { return new AsyncGen(g); });
-
-// yield* inside a generator: the inner iterator's values one by one (the engine calls this)
-hid(G, '%iter', function (x) {
-    if (x == null) throw new TypeError(x + ' is not iterable');
-    var f = x[ITER];
-    if (typeof f !== 'function') { if (typeof x === 'string' || typeof x.length === 'number') return new ArrayIterator(toArr(x), 0); throw new TypeError('not iterable'); }
-    return f.call(x);
-});
-hid(G, '%ystep', function (it, v) { var r = it.next(v); if (!isObj(r)) throw new TypeError('Iterator result ' + r + ' is not an object'); return r; });
-hid(G, '%aiter', function (x) {
-    var f = x != null && x[AITER];
-    return typeof f === 'function' ? f.call(x) : G['%iter'](x);
-});
-})(this);
+//@end

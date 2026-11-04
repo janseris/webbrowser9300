@@ -45,6 +45,8 @@ typedef void (*js_CFunction)(js_State *J);
 typedef void (*js_Finalize)(js_State *J, void *p);
 typedef int (*js_HasProperty)(js_State *J, void *p, const char *name);
 typedef int (*js_Put)(js_State *J, void *p, const char *name);
+typedef int (*js_GetIndex)(js_State *J, void *p, int k);	/* Browser 9300: push obj[k], 1 */
+typedef int (*js_PutIndex)(js_State *J, void *p, int k);	/* the value at -1; 1 when done */
 typedef int (*js_Delete)(js_State *J, void *p, const char *name);
 typedef void (*js_Report)(js_State *J, const char *message);
 
@@ -85,6 +87,9 @@ enum {
 	JS_REGEXP_G = 1,
 	JS_REGEXP_I = 2,
 	JS_REGEXP_M = 4,
+	JS_REGEXP_Y = 8,	/* Browser 9300: sticky, dotAll, unicode (kept for flags) */
+	JS_REGEXP_S = 16,
+	JS_REGEXP_U = 32,
 };
 
 /* Property attribute flags */
@@ -179,6 +184,7 @@ void js_newcfunctionx(js_State *J, js_CFunction fun, const char *name, int lengt
 void js_newcconstructor(js_State *J, js_CFunction fun, js_CFunction con, const char *name, int length);
 void js_newuserdata(js_State *J, const char *tag, void *data, js_Finalize finalize);
 void js_newuserdatax(js_State *J, const char *tag, void *data, js_HasProperty has, js_Put put, js_Delete del, js_Finalize finalize);
+void js_setuserindex(js_State *J, int idx, js_GetIndex geti, js_PutIndex puti);
 void js_newregexp(js_State *J, const char *pattern, int flags);
 
 void js_pushiterator(js_State *J, int idx, int own);
@@ -246,6 +252,16 @@ int js_type(js_State *J, int idx);
 void js_repr(js_State *J, int idx);
 const char *js_torepr(js_State *J, int idx);
 const char *js_tryrepr(js_State *J, int idx, const char *error);
+
+/* Browser 9300: globals compiled when first used (js/mujs/jses.c): names space separated, the
+ * texts static */
+void jsB_lazy(js_State *J, const char *names, const char *src, const char *file);
+int jsB_lazypending(js_State *J, const char *name);
+/* Browser 9300: an ES module's text: a script whose value is its function (namespace, meta) */
+void js_loadmodule(js_State *J, const char *filename, const char *source);
+/* Browser 9300: a new ArrayBuffer of n zero bytes pushed (js/mujs/jsbytes.c), and its bytes */
+void jsB_newbuffer(js_State *J, unsigned int n);
+unsigned char *jsB_bufferbytes(js_State *J, int idx, unsigned int *n);
 
 #ifdef __cplusplus
 }

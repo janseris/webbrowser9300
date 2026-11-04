@@ -814,7 +814,7 @@ loop:
 		break;
 
 	case P_ANY:
-		emit(prog, I_ANY);
+		emit(prog, (prog->flags & REG_DOTALL) ? I_ANYNL : I_ANY);
 		break;
 	case P_CHAR:
 		inst = emit(prog, I_CHAR);
@@ -1280,7 +1280,8 @@ int regexec(Reprog *prog, const char *sp, Resub *sub, int eflags)
 	for (i = 0; i < REG_MAXSUB; ++i)
 		sub->sub[i].sp = sub->sub[i].ep = NULL;
 
-	return match(prog->start, sp, sp, prog->flags | eflags, sub, 0, &runaway);
+	/* (sticky: past the program's leading .*? : split, anynl, jump) */
+	return match((eflags & REG_STICKY) ? prog->start + 3 : prog->start, sp, sp, prog->flags | eflags, sub, 0, &runaway);
 }
 
 #ifdef TEST
