@@ -24,6 +24,8 @@ own browser; it installs on the Nokia 9300 and 9500.
 
 ## Status
 
+- **0.54**: 0.53's comparison left out the "error: " in front of a result that is an error, so
+  c_runaway (which expects "error: script ran too long") showed WRONG; both parts compared now.
 - **0.53**: the JavaScript test compares a script's whole result (d_builtins' grew past the 512
   characters kept for the screen and the log, so it showed as WRONG on the phone while right).
 - **0.52** (phone: 22 of 23 in the JS test, d_builtins only cut short; modwasm.html 13 OK): **a quicker JavaScript start, ES modules, and engine fixes

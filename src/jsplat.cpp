@@ -278,7 +278,11 @@ static void JsTestsOnThread(TAny* aRun)
         while (buf[n]) n++;
         CopyC(buf + n, sizeof buf - n, res);
         CopyC(r.iGot, sizeof r.iGot, buf);
-        r.iOk = n == 0 && res && SameC(res, t.iExpect) ? 1 : 0;   // (the whole result: d_builtins' is past 512)
+        {   // the whole result ("error: ..." too): d_builtins' is past the 512 kept
+        TInt k = 0;
+        while (k < n && t.iExpect[k] == buf[k]) k++;
+        r.iOk = k == n && res && SameC(res, t.iExpect + n) ? 1 : 0;
+        }
         r.iPeakKb = ctx.iPeak / 1024;
         JsDone(J, ctx);
         }
